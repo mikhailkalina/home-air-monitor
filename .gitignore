@@ -31,6 +31,9 @@ dependencies.lock
 *.elf
 *.map
 size.json
+# ...except golden-test reference fixtures, which are checked-in binary test
+# data, not a build artifact.
+!tests/golden/*.bin
 
 # ---- Simulator and test artifacts -----------------------------------------
 frames/

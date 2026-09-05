@@ -15,6 +15,7 @@ whenever a dependency is added or removed.
 | SDL2 | 2.x | Zlib | `platform/host/sim_gui` | No (system package) |
 | Eclipse Mosquitto client (`libmosquitto`) | 2.x | EPL-2.0 / EDL-1.0 | `platform/host/adp_telemetry_mqtt.c` | No (system package) |
 | Unity | 2.x | MIT | `tests/` | Vendored |
+| DejaVu Sans | 2.35 | Bitstream Vera (permissive; see below) | `core/ui/fonts/font_dejavu_sans_*.generated.c` | Vendored (source TTF under `third_party/fonts/dejavu-sans/`) |
 
 ## Notes on the LGPL-3.0 display backend
 
@@ -43,3 +44,18 @@ indicator, as recommended in the requirements document.
 Pre-built firmware binaries containing BSEC must not be attached to GitHub
 Releases without first confirming that Bosch's terms permit that form of
 redistribution.
+
+## Notes on DejaVu Sans
+
+DejaVu Sans is a superset/derivative of the Bitstream Vera fonts, released
+under a permissive license that allows copying, modifying and embedding
+(including in a commercial product) provided the copyright notice is kept and
+any modified font is renamed away from "Bitstream" or "Vera" — DejaVu already
+satisfies that by construction. The full text is vendored at
+`third_party/fonts/dejavu-sans/LICENSE`.
+
+`core/ui/fonts/font_dejavu_sans_16.generated.c` and `_32.generated.c` are a
+rasterized subset (the printable ASCII range only, at two fixed pixel sizes)
+produced from the vendored TTF by `apps/tools/font_gen/generate_fonts.py`;
+regenerate and commit the result if the sizes, the covered range, or the
+source font change.
