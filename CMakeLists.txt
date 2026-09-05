@@ -5,8 +5,8 @@
 # The ESP-IDF build lives in apps/firmware_esp32 and is driven by idf.py; it
 # reuses cmake/sources_core.cmake rather than repeating the file list.
 #
-# Phase 0 wires up core/ and tests/ only. drivers/, platform/host/ and
-# apps/simulator/ are added by their own phases (see docs/architecture.md §10).
+# Phase 1b adds platform/host/ (virtual clock, CSV scenario replay). drivers/
+# and apps/simulator/ are added by their own phases (see docs/architecture.md §10).
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -37,6 +37,8 @@ find_library(HAC_LIBM m)
 if(HAC_LIBM)
     target_link_libraries(hac_core PUBLIC ${HAC_LIBM})
 endif()
+
+add_subdirectory(platform/host)
 
 enable_testing()
 add_subdirectory(tests)

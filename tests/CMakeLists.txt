@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Phase 0 has unit tests only. contract/, scenario/, golden/ and fuzz/ arrive
-# together with the ports and screens they exercise.
+# scenario/ arrives together with app_core (see docs/architecture.md §10).
 
 # Shared harness and fakes. The fake clock lives here rather than under
 # platform/host/ because it is a test double, not an adapter that ships.
@@ -23,6 +22,9 @@ set(HAC_UNIT_TESTS
     test_measurement
     test_framebuffer
     test_gfx
+    test_adp_clock_virtual
+    test_replay_source
+    test_fault_inject
 )
 
 foreach(test IN LISTS HAC_UNIT_TESTS)
@@ -32,4 +34,17 @@ foreach(test IN LISTS HAC_UNIT_TESTS)
     add_test(NAME ${test} COMMAND ${test})
 endforeach()
 
+# The platform/host tests additionally need adp_clock_virtual and
+# replay/fault_inject; test_replay_source also writes scratch CSV files
+# under its own binary directory for the duration of one check.
+target_link_libraries(test_adp_clock_virtual PRIVATE hac_platform_host)
+target_link_libraries(test_replay_source PRIVATE hac_platform_host)
+target_link_libraries(test_fault_inject PRIVATE hac_platform_host)
+target_compile_definitions(test_replay_source PRIVATE
+    HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+    HAC_SCENARIOS_DIR="${HAC_ROOT}/scenarios"
+)
+
 add_subdirectory(golden)
+add_subdirectory(contract)
+add_subdirectory(fuzz)

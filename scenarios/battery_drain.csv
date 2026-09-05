@@ -1,0 +1,21 @@
+# scenarios/battery_drain.csv
+# A battery-only run: roughly 85 h from full to a recharge back to 100%.
+# Reserved for a future adp_power_sim battery profile (see
+# docs/architecture.md §6.1, phase 4 in §7.1/§10); not consumed by
+# replay_source, whose sensor_sample_t carries no battery fields.
+#
+# Schema: t_offset_s,battery_percent,battery_mv,charging,status
+t_offset_s,battery_percent,battery_mv,charging,status
+0,100,4150,0,ok
+21600,97,4090,0,ok
+43200,93,4020,0,ok
+86400,85,3920,0,ok
+129600,76,3820,0,ok
+172800,66,3720,0,ok
+216000,52,3620,0,ok
+259200,38,3540,0,ok
+280800,18,3430,0,ok
+295200,6,3320,0,ok
+298800,6,3480,1,ok
+302400,45,3850,1,ok
+306000,100,4180,1,ok

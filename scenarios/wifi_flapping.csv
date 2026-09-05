@@ -1,0 +1,18 @@
+# scenarios/wifi_flapping.csv
+# A flaky access point: RSSI degrading before each drop, a brief outage, then
+# reconnecting at a different signal strength. Reserved for a future
+# adp_net_sim link profile (see docs/architecture.md §6.1, §7.1); not
+# consumed by replay_source.
+#
+# Schema: t_offset_s,net_up,rssi_dbm,status
+t_offset_s,net_up,rssi_dbm,status
+0,1,-58,ok
+120,1,-61,ok
+240,1,-70,ok
+260,0,0,error
+300,0,0,error
+340,1,-65,ok
+600,1,-59,ok
+620,0,0,error
+640,1,-72,ok
+900,1,-60,ok

@@ -1,0 +1,17 @@
+# scenarios/sensor_scd41_fault.csv
+# CO2 only: a warm-up, a few normal readings, a bus fault (SCD41 stops
+# answering), an implausible spike, then recovery. Exercises the §15.1
+# requirement that a sensor fault is visible on screen and in MQTT, not just
+# a suspiciously round number.
+t_offset_s,co2_ppm,status
+0,,warmup
+30,650,ok
+60,700,ok
+120,900,ok
+180,1100,ok
+210,,error
+270,,error
+300,1250,ok
+360,980,ok
+420,90000,out_of_range
+480,750,ok
