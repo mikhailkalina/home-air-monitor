@@ -8,8 +8,18 @@
 // 1bpp fast-refresh mode (see docs/architecture.md §5.5):
 //
 //   PIXFMT_GRAY4  4 bits per pixel, 16 grey levels, two pixels per byte.
-//                 The even pixel of a row occupies the high nibble, the odd
+//                 The odd pixel of a row occupies the high nibble, the even
 //                 pixel the low nibble.
+//
+//                 That order is deliberate, and it is the opposite of the one
+//                 a reader might assume: it matches the ED047TC1 reference
+//                 layout used by LilyGo-EPD47 (`epd_draw_pixel()`,
+//                 src/epd_driver.c:339-346 on branch `esp32s3`), which packs
+//                 `x % 2` into the high nibble. Keeping the same order means
+//                 the display adapter can hand this buffer straight to the
+//                 panel driver with a memcpy, instead of walking 253 125
+//                 bytes to swap every nibble on each flush.
+//                 See docs/adr/0003-gray4-nibble-order.md.
 //   PIXFMT_MONO1  1 bit per pixel, MSB-first, eight pixels per byte.
 //
 // Every row is padded to a whole number of bytes, so `stride` may exceed the
