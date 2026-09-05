@@ -1,0 +1,50 @@
+# ---- Secrets: never commit -------------------------------------------------
+# After menuconfig, sdkconfig holds the Wi-Fi SSID, password and broker address.
+# Only sdkconfig.defaults, without credentials, belongs in the repository.
+sdkconfig
+sdkconfig.old
+sdkconfig.ci
+**/secrets.h
+**/credentials.h
+.env
+*.pem
+*.key
+
+# ---- Third-party binaries under restrictive licenses ----------------------
+# BSEC/BSEC2 is downloaded from Bosch after accepting their license agreement.
+third_party/bsec/
+**/libalgobsec.a
+
+# ---- Build output ---------------------------------------------------------
+build/
+build-*/
+out/
+cmake-build-*/
+_deps/
+CMakeUserPresets.json
+compile_commands.json
+
+# ---- ESP-IDF --------------------------------------------------------------
+managed_components/
+dependencies.lock
+*.bin
+*.elf
+*.map
+size.json
+
+# ---- Simulator and test artifacts -----------------------------------------
+frames/
+*.png.actual
+sim_state/
+Testing/
+*.profraw
+*.gcda
+*.gcno
+
+# ---- Editors and OS -------------------------------------------------------
+.vscode/
+.idea/
+.cache/
+*.swp
+.DS_Store
+Thumbs.db

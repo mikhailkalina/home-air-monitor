@@ -1,0 +1,49 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "host-debug",
+            "displayName": "Host debug",
+            "description": "Native build of the core, the simulator and the tests",
+            "generator": "Ninja",
+            "binaryDir": "build/host-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "SIM_GUI": "ON"
+            }
+        },
+        {
+            "name": "host-asan",
+            "displayName": "Host debug + ASan/UBSan",
+            "description": "Catches framebuffer overruns and use-after-free on a PC",
+            "inherits": "host-debug",
+            "binaryDir": "build/host-asan",
+            "cacheVariables": {
+                "HAC_SANITIZERS": "address,undefined"
+            }
+        },
+        {
+            "name": "host-release",
+            "displayName": "Host release",
+            "inherits": "host-debug",
+            "binaryDir": "build/host-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "ci-headless",
+            "displayName": "CI, no SDL2",
+            "description": "Same build tree as host-debug, with the GUI switched off",
+            "inherits": "host-debug",
+            "cacheVariables": {
+                "SIM_GUI": "OFF"
+            }
+        }
+    ]
+}

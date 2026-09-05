@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Formatting for C11 (ports/, core/, drivers/, platform/) and the C++17
+# simulator GUI. Enforced by the format job in .github/workflows/checks.yml:
+#
+#   clang-format -i <file>        # fix
+#   clang-format --dry-run --Werror <file>   # what CI runs
+---
+BasedOnStyle: LLVM
+
+IndentWidth: 4
+ColumnLimit: 100
+UseTab: Never
+
+# Brace on its own line for a function definition, attached everywhere else.
+BreakBeforeBraces: Linux
+
+# Braces are mandatory, so nothing collapses onto one line.
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+# const char *name, not const char* name.
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+IndentCaseLabels: true
+SpacesBeforeTrailingComments: 2
+AlignTrailingComments: true
+
+# Keep macro line continuations next to the code instead of pushed out to the
+# column limit.
+AlignEscapedNewlines: Left
+
+# Keep the "own header, then system, then project" grouping that the sources
+# use; sort only within each group.
+IncludeBlocks: Preserve
+SortIncludes: true

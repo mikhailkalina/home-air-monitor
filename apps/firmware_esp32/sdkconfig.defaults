@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Defaults only. sdkconfig itself is gitignored: after menuconfig it holds the
+# Wi-Fi SSID, the password and the broker address.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# The 960x540 4bpp framebuffer is 253 KB and lives in PSRAM (phase 2).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
