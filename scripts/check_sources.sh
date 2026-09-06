@@ -24,7 +24,9 @@ EXCLUDE=(
     -not -path './*/third_party/*'
     -not -path './third_party/*'
     -not -path '*/vendor/*'
-    -not -path './build*/*'
+    -not -path '*/build/*'
+    -not -path '*/build-*/*'
+    -not -path '*/cmake-build-*/*'
     -not -name '*.generated.*'
 )
 

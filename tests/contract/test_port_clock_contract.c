@@ -8,6 +8,8 @@
 
 #include "port_clock_contract.h"
 
+#include <stddef.h>
+
 #include "adp_clock_virtual.h"
 #include "fake_clock.h"
 #include "hac_test.h"

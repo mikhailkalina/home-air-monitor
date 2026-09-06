@@ -2,6 +2,8 @@
 
 #include "port_clock_contract.h"
 
+#include <stddef.h>
+
 // A wall clock that claims to be synchronized had better not claim a time
 // before this project existed. Not a calendar check, just a sanity floor:
 // 2020-01-01T00:00:00Z in milliseconds since the Unix epoch.
