@@ -42,28 +42,28 @@ static hal_status_t null_flush(port_display_t *port, const rect_t *area, refresh
     const rect_t whole_panel = {0u, 0u, d->port.width, d->port.height};
     const rect_t resolved = (area != NULL) ? *area : whole_panel;
 
-    const log_field_t resolved_fields[] = {
-        log_u64("x", resolved.x),
-        log_u64("y", resolved.y),
-        log_u64("w", resolved.w),
-        log_u64("h", resolved.h),
+    // `resolved` is the rect that will actually reach the panel: for a
+    // partial refresh, this is apps/firmware_esp32/main/event_loop.c's
+    // framebuffer_diff_dirty_rect() result against the previous frame, not
+    // everything screen_home_render() touched -- that would always be the
+    // whole panel, since it redraws unconditionally every time (see the
+    // fb.dirty_rect comment above framebuffer_reset_dirty() below). A
+    // sub-region here is the signal that the diff, not just the render,
+    // survived the trip to real hardware; it must match what
+    // apps/simulator/main.c's SDL highlight shows, since both read this same
+    // core-computed rect.
+    const log_field_t dirty_fields[] = {
+        log_u64("dirty_x", resolved.x),           log_u64("dirty_y", resolved.y),
+        log_u64("dirty_w", resolved.w),           log_u64("dirty_h", resolved.h),
         log_str("mode", refresh_mode_name(mode)),
     };
-    port_log_write(d->log, LOG_LEVEL_INFO, "adp_display_null", "flush: resolved area",
-                   resolved_fields, sizeof(resolved_fields) / sizeof(resolved_fields[0]));
+    port_log_write(d->log, LOG_LEVEL_INFO, "adp_display_null", "flush", dirty_fields,
+                   sizeof(dirty_fields) / sizeof(dirty_fields[0]));
 
-    // Logged before framebuffer_reset_dirty() below, so this is the
-    // rectangle screen_home_render() actually touched since the previous
-    // flush -- a sub-region here, not the whole panel, is the signal that
-    // dirty-rect tracking survived the trip to real hardware.
-    const log_field_t dirty_fields[] = {
-        log_bool("dirty", d->fb.dirty),         log_u64("dirty_x", d->fb.dirty_rect.x),
-        log_u64("dirty_y", d->fb.dirty_rect.y), log_u64("dirty_w", d->fb.dirty_rect.w),
-        log_u64("dirty_h", d->fb.dirty_rect.h),
-    };
-    port_log_write(d->log, LOG_LEVEL_INFO, "adp_display_null", "flush: framebuffer dirty rect",
-                   dirty_fields, sizeof(dirty_fields) / sizeof(dirty_fields[0]));
-
+    // fb.dirty_rect itself (unrelated to `resolved` above) still reports
+    // whatever screen_home_render() touched this frame -- the whole panel,
+    // always, since it redraws unconditionally. Reset for the next render;
+    // not logged, since it no longer answers a question phase 2c needs.
     framebuffer_reset_dirty(&d->fb);
     return HAL_OK;
 }

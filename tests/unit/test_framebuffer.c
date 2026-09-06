@@ -269,6 +269,113 @@ static void out_of_range_writes_do_not_affect_the_dirty_rect(void)
     HAC_CHECK_EQ_INT(fb.dirty_rect.h, 1);
 }
 
+// --- diffing against a previous frame ---------------------------------
+//
+// framebuffer_diff_dirty_rect() is what turns "screen_home redraws
+// everything every time" back into a small flush: it compares the freshly
+// rendered buffer against a snapshot of what the panel last showed and
+// reports only the bytes that actually differ, instead of relying on
+// dirty_rect above (which correctly reports the whole panel touched, since
+// screen_home_render() redraws unconditionally). All buffers below are 8x4
+// GRAY4 (4 bytes/row), so pixel x and byte index line up predictably: byte
+// bx covers pixels [2*bx, 2*bx+2).
+
+#define DIFF_W 8
+#define DIFF_H 4
+#define DIFF_STORAGE_SIZE 16u  // 4 bytes/row * 4 rows
+
+static void diff_pair_init(framebuffer_t *current, uint8_t *current_storage,
+                           framebuffer_t *previous, uint8_t *previous_storage)
+{
+    framebuffer_init(current, current_storage, DIFF_STORAGE_SIZE, DIFF_W, DIFF_H, PIXFMT_GRAY4);
+    framebuffer_init(previous, previous_storage, DIFF_STORAGE_SIZE, DIFF_W, DIFF_H, PIXFMT_GRAY4);
+    framebuffer_clear(current, 0x3);
+    framebuffer_clear(previous, 0x3);
+}
+
+static void diff_reports_no_change_as_no_dirty_rect(void)
+{
+    uint8_t a[DIFF_STORAGE_SIZE];
+    uint8_t b[DIFF_STORAGE_SIZE];
+    framebuffer_t current, previous;
+    diff_pair_init(&current, a, &previous, b);
+
+    rect_t rect;
+    HAC_CHECK(!framebuffer_diff_dirty_rect(&current, &previous, &rect));
+}
+
+static void diff_reports_a_single_changed_pixel(void)
+{
+    uint8_t a[DIFF_STORAGE_SIZE];
+    uint8_t b[DIFF_STORAGE_SIZE];
+    framebuffer_t current, previous;
+    diff_pair_init(&current, a, &previous, b);
+
+    framebuffer_set_pixel(&current, 2, 2, 0x7);  // even x: alone in its byte
+
+    rect_t rect;
+    HAC_CHECK(framebuffer_diff_dirty_rect(&current, &previous, &rect));
+    HAC_CHECK_EQ_INT(rect.x, 2);
+    HAC_CHECK_EQ_INT(rect.y, 2);
+    HAC_CHECK_EQ_INT(rect.w, 2);
+    HAC_CHECK_EQ_INT(rect.h, 1);
+}
+
+static void diff_at_an_odd_x_rounds_outward_to_the_even_byte_boundary(void)
+{
+    uint8_t a[DIFF_STORAGE_SIZE];
+    uint8_t b[DIFF_STORAGE_SIZE];
+    framebuffer_t current, previous;
+    diff_pair_init(&current, a, &previous, b);
+
+    framebuffer_set_pixel(&current, 5, 1, 0x7);  // x=5 is odd; its byte also covers x=4
+
+    rect_t rect;
+    HAC_CHECK(framebuffer_diff_dirty_rect(&current, &previous, &rect));
+    HAC_CHECK_EQ_INT(rect.x, 4);
+    HAC_CHECK_EQ_INT(rect.y, 1);
+    HAC_CHECK_EQ_INT(rect.w, 2);
+    HAC_CHECK_EQ_INT(rect.h, 1);
+}
+
+static void diff_at_every_corner_spans_the_whole_buffer(void)
+{
+    uint8_t a[DIFF_STORAGE_SIZE];
+    uint8_t b[DIFF_STORAGE_SIZE];
+    framebuffer_t current, previous;
+    diff_pair_init(&current, a, &previous, b);
+
+    framebuffer_set_pixel(&current, 0, 0, 0x7);
+    framebuffer_set_pixel(&current, DIFF_W - 1, 0, 0x7);
+    framebuffer_set_pixel(&current, 0, DIFF_H - 1, 0x7);
+    framebuffer_set_pixel(&current, DIFF_W - 1, DIFF_H - 1, 0x7);
+
+    rect_t rect;
+    HAC_CHECK(framebuffer_diff_dirty_rect(&current, &previous, &rect));
+    HAC_CHECK_EQ_INT(rect.x, 0);
+    HAC_CHECK_EQ_INT(rect.y, 0);
+    HAC_CHECK_EQ_INT(rect.w, DIFF_W);
+    HAC_CHECK_EQ_INT(rect.h, DIFF_H);
+}
+
+static void diff_spans_two_distant_changes(void)
+{
+    uint8_t a[DIFF_STORAGE_SIZE];
+    uint8_t b[DIFF_STORAGE_SIZE];
+    framebuffer_t current, previous;
+    diff_pair_init(&current, a, &previous, b);
+
+    framebuffer_set_pixel(&current, 1, 0, 0x7);  // byte 0, row 0
+    framebuffer_set_pixel(&current, 4, 3, 0x7);  // byte 2, row 3
+
+    rect_t rect;
+    HAC_CHECK(framebuffer_diff_dirty_rect(&current, &previous, &rect));
+    HAC_CHECK_EQ_INT(rect.x, 0);
+    HAC_CHECK_EQ_INT(rect.y, 0);
+    HAC_CHECK_EQ_INT(rect.w, 6);
+    HAC_CHECK_EQ_INT(rect.h, 4);
+}
+
 int main(void)
 {
     HAC_RUN(required_size_packs_two_gray4_pixels_per_byte);
@@ -295,6 +402,12 @@ int main(void)
     HAC_RUN(writing_the_same_pixel_twice_does_not_widen_the_rect);
     HAC_RUN(reset_dirty_clears_the_flag_and_rect);
     HAC_RUN(out_of_range_writes_do_not_affect_the_dirty_rect);
+
+    HAC_RUN(diff_reports_no_change_as_no_dirty_rect);
+    HAC_RUN(diff_reports_a_single_changed_pixel);
+    HAC_RUN(diff_at_an_odd_x_rounds_outward_to_the_even_byte_boundary);
+    HAC_RUN(diff_at_every_corner_spans_the_whole_buffer);
+    HAC_RUN(diff_spans_two_distant_changes);
 
     return hac_test_summary();
 }

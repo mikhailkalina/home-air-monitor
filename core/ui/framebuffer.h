@@ -93,6 +93,33 @@ uint8_t framebuffer_get_pixel(const framebuffer_t *fb, int32_t x, int32_t y);
 // display, so the next round of drawing starts a fresh bounding box.
 void framebuffer_reset_dirty(framebuffer_t *fb);
 
+// Computes the bounding box of every byte that differs between `current` and
+// `previous` -- typically the buffer a screen was just rendered into and a
+// snapshot of what the panel was last successfully flushed with. This is
+// deliberately independent of `dirty`/`dirty_rect` above: a screen that
+// redraws unconditionally on every call (as screen_home_render() does) marks
+// the whole buffer touched every time, which is a correct answer to "what
+// got drawn" and a useless one for "what should reach the panel". This
+// function answers the second question by looking at the actual pixel
+// bytes, so the caller never has to teach every draw routine to track what
+// changed.
+//
+// `current` and `previous` must share width, height, format and stride --
+// true of every real caller, since both are sized from the same display's
+// geometry. A mismatch (or either buffer being unset) is reported as no
+// difference rather than read out of bounds.
+//
+// Because PIXFMT_GRAY4 packs two pixels per byte, comparing whole bytes
+// rather than individual pixels rounds the rectangle's x extent outward to
+// an even pixel boundary automatically: the caller never receives a rect
+// whose left or right edge splits a byte that a flush of that rect would
+// have to touch anyway.
+//
+// Returns false, leaving *out zeroed, when the two buffers are pixel-for-
+// pixel identical.
+bool framebuffer_diff_dirty_rect(const framebuffer_t *current, const framebuffer_t *previous,
+                                 rect_t *out);
+
 #ifdef __cplusplus
 }
 #endif

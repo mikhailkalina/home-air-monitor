@@ -145,6 +145,46 @@ assumption made elsewhere in this repository:
   on the same register (`README.MD` FAQ 4 mentions it only as something
   `epd_poweroff()` cannot turn off by itself).
 
+## Memory budget
+
+**Measured 2026-09-06, phase 2a**, from `idf.py size` and `idf.py
+size-components` on the phase 2a bring-up build: `adp_clock`, `adp_log`, the
+null display adapter and the FreeRTOS pump, with no Wi-Fi, no MQTT, no
+sensors and no real display driver linked in yet. These numbers describe
+that build only — they are a baseline, not a steady-state budget.
+
+- **App binary:** 261,197 bytes of the 4 MB app partition — 94% free.
+- **DIRAM:** 61,171 of 341,760 bytes used, **280,589 free**.
+- **IRAM: reported as 100% used — this figure is misleading and worth
+  explaining rather than quoting on its own.** IRAM and DRAM are two views
+  onto the same DIRAM pool on the ESP32-S3: whatever IRAM does not claim
+  becomes ordinary data heap, so "IRAM 100%" does not mean the chip is out of
+  usable RAM, only that nothing more is available for *code that must run
+  from IRAM specifically*. The occupants are all ESP-IDF system components
+  that are required to live there, not application code: `esp_system`
+  (3,882 bytes), `esp_hw_support` (2,254), `xtensa` (2,031, including a
+  427-byte vector table), `heap` (1,591), `spi_flash` (1,438). `libhac_core`
+  contributes zero bytes of IRAM. **DIRAM free is the number to watch here,
+  not the IRAM percentage.**
+
+**Consequence for phase 2b.** The 960×540 GRAY4 framebuffer is 253 KB.
+Against 280 KB of free internal DIRAM, that is nearly the entire remaining
+budget — which is why `adp_display.c` must allocate it in PSRAM via
+`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`, not from the default heap. An
+accidental internal allocation would work fine at first and only fail later,
+once Wi-Fi claims its share of DIRAM — the worst possible failure shape,
+because the crash site does not point at its cause. Phase 2b should log
+which heap the framebuffer actually came from at allocation time, so this is
+something observed at boot rather than assumed from this budget.
+
+Free PSRAM is a runtime-only figure (`heap_caps_get_free_size`), not
+something `idf.py size` reports, and has not been measured yet — the board
+has not been flashed (see open items).
+
+Re-run `idf.py size-components` when Wi-Fi lands in phase 4 and again when
+Matter lands in phase 7: both claim their own share of IRAM and DIRAM, and
+this bring-up baseline is what makes their actual cost visible.
+
 ## Known constraints (vendor warning, verbatim intent)
 
 The e-paper panel must not be partially refreshed for an extended period —
@@ -224,6 +264,12 @@ layout settles, not before.
       building one. Deferred to phase 2d, where `port_i2c` will need a real
       on-target test runner regardless — recorded here so the boot-time
       runner reads as a stated interim choice, not an unexamined shortcut.
+- [ ] Free PSRAM at runtime (`heap_caps_get_free_size(MALLOC_CAP_SPIRAM)`).
+      The memory budget above covers only internal DIRAM/IRAM, which is what
+      `idf.py size` reports at build time; PSRAM headroom is a runtime figure
+      and the board has not been flashed yet. Measure once phase 2b puts the
+      framebuffer in PSRAM, and again once phase 3's sensor drivers and
+      phase 4's Wi-Fi stack are linked in.
 - [ ] Measured refresh durations for each `refresh_mode_t`, and the real
       partial-refresh count at which ghosting becomes visible in the CO₂
       headline region. These replace the estimates in
@@ -232,3 +278,11 @@ layout settles, not before.
       together, or the device and the simulator stop agreeing on what
       `update_policy` should do. See the ghosting section above for where to
       look and what the simulator suggests.
+- [ ] `update_policy`'s status trigger can fire on `charging` or
+      `telemetry_connected` alone, neither of which `screen_home` draws yet,
+      making the empty-diff skip in `event_loop.c`'s `redraw()`
+      (`apps/firmware_esp32/main/event_loop.c`) repeat every tick with no
+      visible change -- harmless, just wasteful. Unreachable today: phase
+      2a's bringup reading is fabricated and never sets either flag.
+      Becomes reachable for `telemetry_connected` once MQTT lands in phase
+      4, and for `charging` once the battery adapter lands in phase 5.

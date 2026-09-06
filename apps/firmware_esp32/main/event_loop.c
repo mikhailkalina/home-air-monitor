@@ -8,6 +8,8 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include "esp_heap_caps.h"
+
 #include "ui/screen_home.h"
 #include "ui/view_model.h"
 
@@ -37,6 +39,14 @@ typedef struct {
     QueueHandle_t queue;
     air_reading_t reading;
     bool deferral_logged;
+
+    // A snapshot of what the panel was last successfully flushed with, so a
+    // partial redraw can be shrunk to what actually changed instead of the
+    // whole panel screen_home_render() unconditionally repaints every time.
+    // Lives in PSRAM for the same reason the display's own framebuffer does
+    // (docs/hardware/board_notes.md's memory budget): DIRAM has nowhere near
+    // enough headroom for a second 253 KB buffer.
+    framebuffer_t previous_fb;
 } event_loop_state_t;
 
 static void log_decision(const event_loop_state_t *s, const update_decision_t *d)
@@ -68,9 +78,38 @@ static void redraw(event_loop_state_t *s, const update_decision_t *d)
     view_model_build(&vm, &s->reading, s->deps.clock->now_ms(s->deps.clock));
     screen_home_render(fb, &vm);
 
-    const refresh_mode_t mode = (d->action == UPDATE_FULL) ? REFRESH_FULL : REFRESH_PARTIAL;
-    if (s->deps.display->flush(s->deps.display, NULL, mode) == HAL_OK) {
+    const bool full = (d->action == UPDATE_FULL);
+    const refresh_mode_t mode = full ? REFRESH_FULL : REFRESH_PARTIAL;
+
+    // NULL still means "whole panel" (the port contract), and is still the
+    // right thing for a full refresh: there is no previous image a partial
+    // diff could even be measured against on the first frame, and a forced
+    // full repaints everything regardless. Only a partial redraw benefits
+    // from shrinking to what actually changed.
+    rect_t dirty_rect;
+    const rect_t *area = NULL;
+    if (!full) {
+        if (!framebuffer_diff_dirty_rect(fb, &s->previous_fb, &dirty_rect)) {
+            // update_policy decided a redraw was due, but nothing that
+            // actually reaches the glass moved. This is expected, not a
+            // bug: statuses_differ() also fires on `charging` and
+            // `telemetry_connected`, neither of which screen_home draws yet
+            // (docs/hardware/board_notes.md open items), so this path can be
+            // reached every tick, harmless but wasteful, until `reading`
+            // changes again. Flushing anyway would spend a partial-refresh
+            // budget slot for zero visible change, which is exactly what
+            // that budget exists to prevent, so update_policy_commit() is
+            // skipped along with the flush.
+            port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG,
+                           "redraw skipped: partial refresh diff was empty", NULL, 0u);
+            return;
+        }
+        area = &dirty_rect;
+    }
+
+    if (s->deps.display->flush(s->deps.display, area, mode) == HAL_OK) {
         update_policy_commit(s->deps.policy, &s->reading, d);
+        memcpy(s->previous_fb.pixels, fb->pixels, fb->pixels_size);
         s->deferral_logged = false;
     }
 }
@@ -168,6 +207,21 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
                        NULL, 0u);
         return;
     }
+
+    const size_t previous_fb_size = framebuffer_required_size(
+        deps->display->width, deps->display->height, deps->display->format);
+    uint8_t *previous_fb_pixels =
+        heap_caps_malloc(previous_fb_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (previous_fb_pixels == NULL) {
+        // Without this buffer, redraw() has nothing to diff a partial
+        // refresh against; failing loudly here beats starting a pump that
+        // would silently skip every partial redraw from its first tick.
+        port_log_write(s_state.deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG,
+                       "heap_caps_malloc failed for the previous-frame diff buffer", NULL, 0u);
+        return;
+    }
+    framebuffer_init(&s_state.previous_fb, previous_fb_pixels, previous_fb_size,
+                     deps->display->width, deps->display->height, deps->display->format);
 
     // xTaskCreatePinnedToCore's stack-size parameter is in BYTES on every
     // ESP-IDF FreeRTOS port (unlike vanilla FreeRTOS, where it is in words of
