@@ -27,7 +27,7 @@ OUT_DIR = ROOT / "core" / "ui" / "fonts"
 
 FIRST_CODEPOINT = 0x20
 LAST_CODEPOINT = 0x7E
-SIZES = (16, 32)
+SIZES = (16, 32, 64)
 
 # Large enough that no glyph at any generated size gets clipped by the canvas
 # itself; only the font's own ink is measured back out via getbbox().

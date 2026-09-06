@@ -12,7 +12,7 @@ whenever a dependency is added or removed.
 | Bosch BME68x Sensor API | — | BSD-3-Clause | `drivers/bme68x` | Vendored |
 | Bosch BSEC2 headers & config | 2.x | BSD-3-Clause | `drivers/bme68x/bsec` | Headers only |
 | Bosch BSEC2 library binary (`libalgobsec.a`) | 2.x | **Proprietary — Bosch Sensortec license agreement** | optional IAQ backend | **No — see below** |
-| SDL2 | 2.x | Zlib | `platform/host/sim_gui` | No (system package) |
+| SDL2 | 2.x | Zlib | `platform/host/adp_display_sdl.c`, `platform/host/adp_input_sdl.c`, later `platform/host/sim_gui` | No (system package; optional, see below) |
 | Eclipse Mosquitto client (`libmosquitto`) | 2.x | EPL-2.0 / EDL-1.0 | `platform/host/adp_telemetry_mqtt.c` | No (system package) |
 | Unity | 2.x | MIT | `tests/` | Vendored |
 | DejaVu Sans | 2.35 | Bitstream Vera (permissive; see below) | `core/ui/fonts/font_dejavu_sans_*.generated.c` | Vendored (source TTF under `third_party/fonts/dejavu-sans/`) |
@@ -54,8 +54,25 @@ any modified font is renamed away from "Bitstream" or "Vera" — DejaVu already
 satisfies that by construction. The full text is vendored at
 `third_party/fonts/dejavu-sans/LICENSE`.
 
-`core/ui/fonts/font_dejavu_sans_16.generated.c` and `_32.generated.c` are a
-rasterized subset (the printable ASCII range only, at two fixed pixel sizes)
-produced from the vendored TTF by `apps/tools/font_gen/generate_fonts.py`;
-regenerate and commit the result if the sizes, the covered range, or the
-source font change.
+`core/ui/fonts/font_dejavu_sans_16.generated.c`, `_32.generated.c` and
+`_64.generated.c` are a rasterized subset (the printable ASCII range only, at
+three fixed pixel sizes) produced from the vendored TTF by
+`apps/tools/font_gen/generate_fonts.py`; regenerate and commit the result if the
+sizes, the covered range, or the source font change.
+
+## Notes on SDL2
+
+SDL2 is an optional build dependency, needed only for the simulator's window
+and its mouse-to-touch input. It is looked for solely when the build is
+configured with `SIM_GUI=ON`; the `ci-headless` preset sets `SIM_GUI=OFF`, and
+that build never calls `find_package(SDL2)` at all, so CI and any machine
+without SDL2 build the whole project and run the whole test suite. Without it
+the simulator still runs, headless, writing PNG frames:
+
+```bash
+cmake --preset ci-headless && cmake --build build/host-debug
+./build/host-debug/apps/simulator/simulator --scenario-co2 scenarios/co2_spike_meeting.csv --headless --frames out/ --duration 600
+```
+
+SDL2 is Zlib-licensed and is linked dynamically from the system package; it is
+never redistributed here, and it is never linked into the firmware.

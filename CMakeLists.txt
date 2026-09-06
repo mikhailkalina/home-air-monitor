@@ -5,13 +5,14 @@
 # The ESP-IDF build lives in apps/firmware_esp32 and is driven by idf.py; it
 # reuses cmake/sources_core.cmake rather than repeating the file list.
 #
-# Phase 1b adds platform/host/ (virtual clock, CSV scenario replay). drivers/
-# and apps/simulator/ are added by their own phases (see docs/architecture.md §10).
+# Phase 2c adds the display and input adapters and apps/simulator. drivers/
+# arrives with its own phase (see docs/architecture.md §10).
 
 cmake_minimum_required(VERSION 3.20)
 
-# C only for now. CXX is enabled in phase 1, together with the C++17 simulator
-# GUI under platform/host/sim_gui/.
+# C only. CXX is enabled when the C++17 control panel under
+# platform/host/sim_gui/ arrives; the SDL display and input adapters are C11
+# like the rest of platform/.
 project(home_air_monitor C)
 
 set(HAC_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
@@ -20,9 +21,9 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# Consumed from phase 1 onwards; declared here so the presets that set it do
-# not trip CMake's "manually-specified variables were not used" warning.
-option(SIM_GUI "Build the SDL2 simulator GUI" ON)
+# With SIM_GUI=OFF, platform/host does not even look for SDL2, so the
+# ci-headless preset configures and builds on a machine that has none.
+option(SIM_GUI "Build the SDL2 simulator window" ON)
 set(HAC_SANITIZERS "" CACHE STRING "Sanitizers to enable, e.g. address,undefined")
 
 include(cmake/sources_core.cmake)
@@ -39,6 +40,7 @@ if(HAC_LIBM)
 endif()
 
 add_subdirectory(platform/host)
+add_subdirectory(apps/simulator)
 
 enable_testing()
 add_subdirectory(tests)

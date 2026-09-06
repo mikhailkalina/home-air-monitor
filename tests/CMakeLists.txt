@@ -4,12 +4,9 @@
 
 # Shared harness and fakes. The fake clock lives here rather than under
 # platform/host/ because it is a test double, not an adapter that ships.
-# png_write is a golden-test diagnostic (dumps a mismatch as PNG); it never
-# participates in a pass/fail assertion.
 add_library(hac_test_support STATIC
     support/hac_test.c
     support/fake_clock.c
-    support/png_write.c
 )
 target_include_directories(hac_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/support)
 target_link_libraries(hac_test_support PUBLIC hac_core)  # for ports/ and core/ headers
@@ -22,9 +19,12 @@ set(HAC_UNIT_TESTS
     test_measurement
     test_framebuffer
     test_gfx
+    test_update_policy
+    test_view_model
     test_adp_clock_virtual
     test_replay_source
     test_fault_inject
+    test_epd_model
 )
 
 foreach(test IN LISTS HAC_UNIT_TESTS)
@@ -40,6 +40,7 @@ endforeach()
 target_link_libraries(test_adp_clock_virtual PRIVATE hac_platform_host)
 target_link_libraries(test_replay_source PRIVATE hac_platform_host)
 target_link_libraries(test_fault_inject PRIVATE hac_platform_host)
+target_link_libraries(test_epd_model PRIVATE hac_platform_host)
 target_compile_definitions(test_replay_source PRIVATE
     HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
     HAC_SCENARIOS_DIR="${HAC_ROOT}/scenarios"
