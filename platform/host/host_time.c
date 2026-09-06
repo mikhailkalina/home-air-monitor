@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// clock_gettime()/CLOCK_MONOTONIC and nanosleep() are POSIX, not C11: with
+// CMAKE_C_EXTENSIONS OFF (-std=c11, not gnu11), glibc's <time.h> hides them
+// unless a feature-test macro asks for POSIX explicitly. It has to be defined
+// before the first system header this translation unit includes -- so before
+// "host_time.h" itself, which pulls in <stdint.h> -- or it is too late.
+#define _POSIX_C_SOURCE 199309L
 
 #include "host_time.h"
 

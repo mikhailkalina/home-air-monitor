@@ -1,4 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// mkdir() is POSIX.1 (not C11), and the mode below strict-C11-builds this
+// project with CMAKE_C_EXTENSIONS OFF. On a glibc target, that can hide
+// <sys/stat.h>'s declaration under -std=c11 unless a feature-test macro asks
+// for it explicitly -- the same class of build failure host_time.c hit for
+// clock_gettime()/nanosleep(). The macro has to be defined before the first
+// system header this translation unit includes -- so before "adp_display_png.h"
+// itself -- or it is too late. 200809L is POSIX.1-2008, the ordinary baseline
+// mkdir needs; it is not a realtime-specific level like host_time.c's 199309L,
+// so claiming it here is not claiming more than this file actually uses.
+#define _POSIX_C_SOURCE 200809L
 
 #include "adp_display_png.h"
 
