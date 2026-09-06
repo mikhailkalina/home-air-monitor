@@ -13,3 +13,6 @@ idf_component_register(
     SRCS ${HAC_CORE_SOURCES}
     INCLUDE_DIRS ${HAC_CORE_INCLUDES}
 )
+
+include(${HAC_ROOT}/cmake/warnings_idf.cmake)
+hac_apply_warnings_idf(${COMPONENT_LIB})

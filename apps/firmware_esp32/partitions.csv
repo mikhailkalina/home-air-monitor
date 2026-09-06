@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Sized for the N16R8 module's 16 MB flash (sdkconfig.defaults:
+# CONFIG_ESPTOOLPY_FLASHSIZE_16MB), with two OTA app slots so phase 5's OTA
+# work has somewhere to land without a partition-table change. There is no
+# factory slot: first boot runs ota_0, exactly as if an OTA update had
+# already happened once. `storage` is spiffs rather than littlefs for
+# subtype-support portability across ESP-IDF versions; nothing in this phase
+# uses it yet.
+#
+# Offsets and sizes below sum to exactly 0x1000000 (16 MiB) from the first
+# data partition onward; each app partition starts on a 0x10000 boundary, as
+# gen_esp32part.py requires.
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000
+otadata,    data, ota,      0xF000,   0x2000
+phy_init,   data, phy,      0x11000,  0x1000
+ota_0,      app,  ota_0,    0x20000,  0x400000
+ota_1,      app,  ota_1,    0x420000, 0x400000
+storage,    data, spiffs,   0x820000, 0x7E0000

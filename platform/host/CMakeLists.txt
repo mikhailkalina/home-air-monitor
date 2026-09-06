@@ -14,6 +14,7 @@
 add_library(hac_platform_host STATIC
     adp_clock_virtual.c
     adp_display_png.c
+    adp_log_console.c
     epd_model.c
     host_time.c
     png_write.c

@@ -8,12 +8,14 @@ on:
 
 jobs:
   static:
-    name: SPDX and layering
+    name: SPDX, layering and pin literals
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Run repository checks
         run: bash scripts/check_sources.sh
+      - name: Verify the checks themselves
+        run: bash scripts/tests/test_pin_literal_check.sh
 
   format:
     name: clang-format
