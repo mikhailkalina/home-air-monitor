@@ -22,8 +22,7 @@ extern "C" {
 typedef struct {
     port_display_t port;
     framebuffer_t fb;
-    uint8_t *pixels;   // the GRAY4 framebuffer the core draws into
-    uint8_t *scratch;  // width * height bytes, for the 8-bit conversion
+    uint8_t *pixels;  // the GRAY4 framebuffer the core draws into
     epd_model_t model;
 
     char out_dir[512];
@@ -36,7 +35,7 @@ typedef struct {
 // but no files are written -- useful for a scenario run that only cares about
 // the refresh sequence.
 //
-// Returns HAL_ERR_NO_MEM if the buffers cannot be allocated, HAL_ERR_IO if the
+// Returns HAL_ERR_NO_MEM if the buffer cannot be allocated, HAL_ERR_IO if the
 // directory cannot be created.
 hal_status_t adp_display_png_init(adp_display_png_t *d, uint16_t width, uint16_t height,
                                   const char *out_dir);

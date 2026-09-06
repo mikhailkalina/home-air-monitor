@@ -8,60 +8,70 @@
 
 #include "png_write.h"
 
-static void framebuffer_to_gray8(const framebuffer_t *fb, uint8_t *out)
+// GitHub renders a `.bin` diff as "Binary file not shown", so a layout
+// regression in a golden reference is invisible in review without this.
+// png_write_framebuffer_gray8() is the same unpacking path every other PNG
+// dump in this codebase uses (the golden mismatch dumps below, and the
+// headless simulator's frames), so a packing bug shows up here rather than
+// being hidden by a second, independent decoder.
+static bool write_companion_png(const framebuffer_t *fb, const char *dir, const char *name)
 {
-    for (uint16_t y = 0; y < fb->height; ++y) {
-        for (uint16_t x = 0; x < fb->width; ++x) {
-            const uint8_t v = framebuffer_get_pixel(fb, x, y);
-            const uint8_t gray8 =
-                (fb->format == PIXFMT_GRAY4) ? (uint8_t)(v * 17) : (uint8_t)(v != 0 ? 255 : 0);
-            out[(size_t)y * (size_t)fb->width + (size_t)x] = gray8;
-        }
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s.png", dir, name);
+
+    if (!png_write_framebuffer_gray8(fb, path)) {
+        fprintf(stderr, "failed to write %s\n", path);
+        return false;
     }
+    printf("updated %s\n", path);
+    return true;
 }
 
-static void dump_png(const framebuffer_t *fb, const char *dump_dir, const char *label)
+static void dump_mismatch_png(const framebuffer_t *fb, const char *dump_dir, const char *label)
 {
-    uint8_t *gray8 = malloc((size_t)fb->width * (size_t)fb->height);
-    if (gray8 == NULL) {
-        return;
-    }
-    framebuffer_to_gray8(fb, gray8);
-
     char path[512];
     snprintf(path, sizeof(path), "%s/%s.png", dump_dir, label);
-    if (png_write_gray8(path, gray8, fb->width, fb->height)) {
+
+    if (png_write_framebuffer_gray8(fb, path)) {
         fprintf(stderr, "  wrote %s\n", path);
     }
-    free(gray8);
 }
 
-static bool write_golden(const framebuffer_t *fb, const char *path, size_t size)
+// Writes both tests/golden/<name>.bin (the assertion) and tests/golden/<name>.png
+// (documentation for reviewers) from the same buffer, so they can never drift
+// apart from each other.
+static bool write_golden(const framebuffer_t *fb, const char *golden_dir, const char *name)
 {
-    FILE *out = fopen(path, "wb");
+    char bin_path[512];
+    snprintf(bin_path, sizeof(bin_path), "%s/%s.bin", golden_dir, name);
+
+    const size_t size = fb->stride * (size_t)fb->height;
+
+    FILE *out = fopen(bin_path, "wb");
     if (out == NULL || fwrite(fb->pixels, 1, size, out) != size) {
-        fprintf(stderr, "failed to write %s\n", path);
+        fprintf(stderr, "failed to write %s\n", bin_path);
         if (out != NULL) {
             fclose(out);
         }
         return false;
     }
     fclose(out);
-    printf("updated %s (%zu bytes)\n", path, size);
-    return true;
+    printf("updated %s (%zu bytes)\n", bin_path, size);
+
+    return write_companion_png(fb, golden_dir, name);
 }
 
 bool golden_check_framebuffer(const framebuffer_t *fb, const char *golden_dir, const char *dump_dir,
                               const char *name)
 {
+    if (getenv("UPDATE_GOLDEN") != NULL) {
+        return write_golden(fb, golden_dir, name);
+    }
+
     char golden_path[512];
     snprintf(golden_path, sizeof(golden_path), "%s/%s.bin", golden_dir, name);
 
     const size_t actual_size = fb->stride * (size_t)fb->height;
-
-    if (getenv("UPDATE_GOLDEN") != NULL) {
-        return write_golden(fb, golden_path, actual_size);
-    }
 
     FILE *in = fopen(golden_path, "rb");
     if (in == NULL) {
@@ -89,14 +99,14 @@ bool golden_check_framebuffer(const framebuffer_t *fb, const char *golden_dir, c
 
         char label[128];
         snprintf(label, sizeof(label), "%s.actual", name);
-        dump_png(fb, dump_dir, label);
+        dump_mismatch_png(fb, dump_dir, label);
 
         if (read <= actual_size) {
             framebuffer_t expected_fb;
             framebuffer_init(&expected_fb, expected, actual_size, fb->width, fb->height,
                              fb->format);
             snprintf(label, sizeof(label), "%s.expected", name);
-            dump_png(&expected_fb, dump_dir, label);
+            dump_mismatch_png(&expected_fb, dump_dir, label);
         }
     }
 

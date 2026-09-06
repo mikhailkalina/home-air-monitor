@@ -159,3 +159,27 @@ bool png_write_gray8(const char *path, const uint8_t *pixels, uint32_t width, ui
     fclose(f);
     return ok;
 }
+
+bool png_write_framebuffer_gray8(const framebuffer_t *fb, const char *path)
+{
+    if (fb == NULL || fb->width == 0u || fb->height == 0u) {
+        return false;
+    }
+
+    uint8_t *gray8 = malloc((size_t)fb->width * (size_t)fb->height);
+    if (gray8 == NULL) {
+        return false;
+    }
+
+    for (uint16_t y = 0; y < fb->height; ++y) {
+        for (uint16_t x = 0; x < fb->width; ++x) {
+            const uint8_t v = framebuffer_get_pixel(fb, x, y);
+            gray8[(size_t)y * (size_t)fb->width + (size_t)x] =
+                (fb->format == PIXFMT_GRAY4) ? (uint8_t)(v * 17) : (uint8_t)(v != 0 ? 255 : 0);
+        }
+    }
+
+    const bool ok = png_write_gray8(path, gray8, fb->width, fb->height);
+    free(gray8);
+    return ok;
+}

@@ -28,20 +28,6 @@ static framebuffer_t *png_get_framebuffer(port_display_t *port)
     return &self_of(port)->fb;
 }
 
-// The panel shows 16 grey levels; the PNG is 8-bit grey, so a level maps to
-// level * 17 and 15 lands exactly on 255.
-static void to_gray8(const framebuffer_t *fb, uint8_t *out)
-{
-    for (uint16_t y = 0; y < fb->height; ++y) {
-        for (uint16_t x = 0; x < fb->width; ++x) {
-            const uint8_t v = framebuffer_get_pixel(fb, x, y);
-            const uint8_t gray8 =
-                (fb->format == PIXFMT_GRAY4) ? (uint8_t)(v * 17) : (uint8_t)(v != 0 ? 255 : 0);
-            out[(size_t)y * (size_t)fb->width + (size_t)x] = gray8;
-        }
-    }
-}
-
 static hal_status_t png_flush(port_display_t *port, const rect_t *area, refresh_mode_t mode)
 {
     adp_display_png_t *d = self_of(port);
@@ -58,12 +44,10 @@ static hal_status_t png_flush(port_display_t *port, const rect_t *area, refresh_
 
     // The whole panel is written every time, not just the flushed rectangle:
     // a frame dump is meant to be the picture a person would be looking at.
-    to_gray8(&d->fb, d->scratch);
-
     char path[600];
     snprintf(path, sizeof(path), "%s/frame_%04u.png", d->out_dir, d->frame_index);
 
-    if (!png_write_gray8(path, d->scratch, d->fb.width, d->fb.height)) {
+    if (!png_write_framebuffer_gray8(&d->fb, path)) {
         fprintf(stderr, "[epd] failed to write %s\n", path);
         return HAL_ERR_IO;
     }
@@ -85,11 +69,9 @@ hal_status_t adp_display_png_init(adp_display_png_t *d, uint16_t width, uint16_t
     memset(d, 0, sizeof(*d));
 
     const size_t fb_size = framebuffer_required_size(width, height, PIXFMT_GRAY4);
-    const size_t scratch_size = (size_t)width * (size_t)height;
 
     d->pixels = calloc(1u, fb_size);
-    d->scratch = calloc(1u, scratch_size);
-    if (d->pixels == NULL || d->scratch == NULL) {
+    if (d->pixels == NULL) {
         adp_display_png_deinit(d);
         return HAL_ERR_NO_MEM;
     }
@@ -143,7 +125,5 @@ port_display_t *adp_display_png_port(adp_display_png_t *d)
 void adp_display_png_deinit(adp_display_png_t *d)
 {
     free(d->pixels);
-    free(d->scratch);
     d->pixels = NULL;
-    d->scratch = NULL;
 }

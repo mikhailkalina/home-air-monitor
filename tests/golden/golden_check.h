@@ -6,7 +6,15 @@
 //
 // The assertion itself is a byte comparison. That is exact, needs no image
 // library, and fails on a one-pixel change -- which is what a golden test is
-// for. The PNGs are a diagnostic only and never decide pass or fail.
+// for. Every PNG this file writes is documentation, never part of the
+// assertion: the `.bin` stays the thing that is actually compared, in this
+// file and in UPDATE_GOLDEN=1, so a golden test never depends on an image
+// decoder existing.
+//
+// GitHub renders a `.bin` diff as "Binary file not shown", which makes a
+// layout regression invisible in review. So tests/golden/<name>.bin always
+// ships with a tests/golden/<name>.png rendered from the same buffer -- kept
+// current by UPDATE_GOLDEN=1, committed alongside the `.bin` it documents.
 
 #ifndef HAC_TESTS_GOLDEN_CHECK_H
 #define HAC_TESTS_GOLDEN_CHECK_H
