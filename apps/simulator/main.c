@@ -241,6 +241,11 @@ typedef struct {
     const port_clock_t *clock;
     update_policy_t policy;
     air_reading_t reading;
+
+    // A snapshot of what the panel was last successfully flushed with, so a
+    // partial redraw can be shrunk to what actually changed instead of the
+    // whole panel screen_home_render() unconditionally repaints every time.
+    framebuffer_t previous_fb;
 } sim_t;
 
 static void log_decision(const update_decision_t *d, const update_policy_t *policy)
@@ -261,9 +266,29 @@ static void redraw(sim_t *sim, const update_decision_t *d)
     view_model_build(&vm, &sim->reading, sim->clock->now_ms(sim->clock));
     screen_home_render(fb, &vm);
 
-    const refresh_mode_t mode = (d->action == UPDATE_FULL) ? REFRESH_FULL : REFRESH_PARTIAL;
-    if (sim->display->flush(sim->display, NULL, mode) == HAL_OK) {
+    const bool full = (d->action == UPDATE_FULL);
+    const refresh_mode_t mode = full ? REFRESH_FULL : REFRESH_PARTIAL;
+
+    // NULL still means "whole panel" (the port contract), and is still the
+    // right thing for a full refresh: there is no previous image a partial
+    // diff could even be measured against on the first frame, and a forced
+    // full repaints everything regardless.
+    rect_t dirty_rect;
+    const rect_t *area = NULL;
+    if (!full) {
+        if (!framebuffer_diff_dirty_rect(fb, &sim->previous_fb, &dirty_rect)) {
+            // See apps/firmware_esp32/main/event_loop.c's redraw() for why
+            // this skips update_policy_commit() too, not just the flush.
+            printf("[policy] partial refresh skipped: framebuffer diff was empty (no visible "
+                   "change)\n");
+            return;
+        }
+        area = &dirty_rect;
+    }
+
+    if (sim->display->flush(sim->display, area, mode) == HAL_OK) {
         update_policy_commit(&sim->policy, &sim->reading, d);
+        memcpy(sim->previous_fb.pixels, fb->pixels, fb->pixels_size);
     }
 }
 
@@ -352,11 +377,26 @@ int main(int argc, char **argv)
 #endif
     }
 
+    // --- diff buffer ---
+    //
+    // A snapshot of what the panel was last successfully flushed with, so
+    // redraw() can shrink a partial refresh to what actually changed instead
+    // of the whole panel screen_home_render() unconditionally repaints.
+    const size_t previous_fb_size =
+        framebuffer_required_size(display->width, display->height, display->format);
+    uint8_t *previous_fb_pixels = malloc(previous_fb_size);
+    if (previous_fb_pixels == NULL) {
+        fprintf(stderr, "cannot allocate the %zu-byte diff buffer\n", previous_fb_size);
+        return 1;
+    }
+
     // --- logic ---
     sim_t sim;
     memset(&sim, 0, sizeof(sim));
     sim.display = display;
     sim.clock = clock;
+    framebuffer_init(&sim.previous_fb, previous_fb_pixels, previous_fb_size, display->width,
+                     display->height, display->format);
 
     const uint64_t stop_at_ms = (args.duration_s == 0u) ? 0u : (uint64_t)args.duration_s * 1000u;
 
@@ -466,6 +506,7 @@ int main(int argc, char **argv)
     for (size_t i = 0u; i < source_count; ++i) {
         sources[i]->deinit(sources[i]);
     }
+    free(previous_fb_pixels);
 
     return 0;
 }

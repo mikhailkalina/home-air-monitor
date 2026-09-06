@@ -92,6 +92,99 @@ Two things were checked against the reference and now line up:
   every flush. See `docs/adr/0003-gray4-nibble-order.md` for the two options
   considered and why matching the reference won.
 
+## Pin assignments
+
+**Resolved 2026-09-06, phase 2a.** Sources: `Xinyuan-LilyGO/LilyGo-EPD47`,
+branch `esp32s3`, commit `391b0e25d7a39897e3a00af34053250df031d699`
+(2026-08-19) -- the same commit already cited above for the panel
+orientation. Every pin is corroborated by two independent places in that
+repository: a driver header (with line numbers) and the vendor's own "GPIO
+List" table in `README.MD` (written by LilyGO, not reverse-engineered). The
+two never disagree. Carried forward as named constants in
+`platform/esp32_t5s3/board_config.h`, which cites the same lines.
+
+| Function | GPIO | Source |
+|---|---|---|
+| EPD `CFG_DATA` / `CFG_CLK` / `CFG_STR` (74HCT4094D shift register, sch. QP5) | 13 / 12 / **0** | `src/ed047tc1.h:48-50` (S3 block) |
+| EPD `CKV` / `STH` / `CKH` | 38 / 40 / 41 | `src/ed047tc1.h:53,54,57` |
+| EPD data bus `D0..D7` | 8, 1, 2, 3, 4, 5, 6, 7 | `src/ed047tc1.h:60-67` |
+| I2C `SDA` / `SCL` (shared: RTC + touch + our sensors) | 18 / 17 | `src/utilities.h:39-40` |
+| Touch IRQ | 47 | `src/utilities.h:41` |
+| Touch I2C address | `0x5A` | `src/touch.h:10` |
+| Button | 21 | `src/utilities.h:30` |
+| Battery ADC | 14 | `src/utilities.h:32` |
+| SD `MISO`/`MOSI`/`SCLK`/`CS` (free if no card fitted) | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
+| Genuinely free | 45, 10 (analog-in only), 48, 39 | `README.MD` "GPIO List" |
+
+Four findings worth carrying forward, because each one corrects or narrows an
+assumption made elsewhere in this repository:
+
+- **`CFG_STR` is GPIO0**, the boot-mode strapping pin. Driving it is safe
+  once the system has finished booting, but it is a reason to be deliberate
+  in phase 2b about exactly when the EPD control code first touches it.
+- **The touch controller is not a GT911**, which `docs/architecture.md` §6.2
+  and `docs/requirements.md` §6.2 both assume. `src/touch.h:10` sets
+  `TOUCH_SLAVE_ADDRESS 0x5A`, and `src/touch.cpp` reads it through a
+  `0xD0`/`0xD1` register protocol returning 5 bytes per touch point. A GT911
+  answers at `0x5D` or `0x14` with a completely different register map. The
+  address is now settled; the actual part number is not (see open items).
+- **There is no battery gauge IC on this board.** `BOARD_BATTERY_ADC_GPIO`
+  (14) is a plain resistor divider read directly by the ADC
+  (`examples/demo/demo.ino:331`:
+  `battery_voltage = (v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0)`), and the
+  divider only carries a valid reading while EPD power is on, because it
+  hangs off the same 74HCT4094 rail (`demo.ino:327-330`, "When reading the
+  battery voltage, POWER_EN must be turned on"). GPIO14 is an ADC2 pin on the
+  S3, and ADC2 is documented as unreliable while Wi-Fi is active -- a real
+  constraint for whichever phase reads battery level over Wi-Fi.
+- **Panel power is not a GPIO.** It is pin 13 of the 74HCT4094 shift
+  register, reached only through `CFG_DATA`/`CFG_CLK`/`CFG_STR`
+  (`README.MD` FAQ 1: "software must call `epd_poweron()` to enable it").
+  `epd_poweroff()` also cuts power to the Molex connector, since they share a
+  rail. There is no separate status-LED GPIO either -- the board's one LED is
+  on the same register (`README.MD` FAQ 4 mentions it only as something
+  `epd_poweroff()` cannot turn off by itself).
+
+## Memory budget
+
+**Measured 2026-09-06, phase 2a**, from `idf.py size` and `idf.py
+size-components` on the phase 2a bring-up build: `adp_clock`, `adp_log`, the
+null display adapter and the FreeRTOS pump, with no Wi-Fi, no MQTT, no
+sensors and no real display driver linked in yet. These numbers describe
+that build only — they are a baseline, not a steady-state budget.
+
+- **App binary:** 261,197 bytes of the 4 MB app partition — 94% free.
+- **DIRAM:** 61,171 of 341,760 bytes used, **280,589 free**.
+- **IRAM: reported as 100% used — this figure is misleading and worth
+  explaining rather than quoting on its own.** IRAM and DRAM are two views
+  onto the same DIRAM pool on the ESP32-S3: whatever IRAM does not claim
+  becomes ordinary data heap, so "IRAM 100%" does not mean the chip is out of
+  usable RAM, only that nothing more is available for *code that must run
+  from IRAM specifically*. The occupants are all ESP-IDF system components
+  that are required to live there, not application code: `esp_system`
+  (3,882 bytes), `esp_hw_support` (2,254), `xtensa` (2,031, including a
+  427-byte vector table), `heap` (1,591), `spi_flash` (1,438). `libhac_core`
+  contributes zero bytes of IRAM. **DIRAM free is the number to watch here,
+  not the IRAM percentage.**
+
+**Consequence for phase 2b.** The 960×540 GRAY4 framebuffer is 253 KB.
+Against 280 KB of free internal DIRAM, that is nearly the entire remaining
+budget — which is why `adp_display.c` must allocate it in PSRAM via
+`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`, not from the default heap. An
+accidental internal allocation would work fine at first and only fail later,
+once Wi-Fi claims its share of DIRAM — the worst possible failure shape,
+because the crash site does not point at its cause. Phase 2b should log
+which heap the framebuffer actually came from at allocation time, so this is
+something observed at boot rather than assumed from this budget.
+
+Free PSRAM is a runtime-only figure (`heap_caps_get_free_size`), not
+something `idf.py size` reports, and has not been measured yet — the board
+has not been flashed (see open items).
+
+Re-run `idf.py size-components` when Wi-Fi lands in phase 4 and again when
+Matter lands in phase 7: both claim their own share of IRAM and DIRAM, and
+this bring-up baseline is what makes their actual cost visible.
+
 ## Known constraints (vendor warning, verbatim intent)
 
 The e-paper panel must not be partially refreshed for an extended period —
@@ -99,17 +192,97 @@ doing so leaves residual ghosting and causes irreversible damage. This is the
 hardware fact behind `max_partial_refreshes_before_full` in
 `ports/port_display.h`; phase 2c calibrates the actual threshold.
 
+## Ghosting observed in the simulator — a calibration starting point
+
+**Observed 2026-09-06, phase 1c**, running `co2_spike_meeting.csv` at
+`--time-scale 60` in the windowed simulator, with the unmeasured emulation
+constants in `platform/host/epd_emulation.h`.
+
+Ghosting was clearly visible as grey residue of previous readings behind the
+64px CO₂ headline — the digits of earlier values remained legible underneath
+the current one. The rest of the screen stayed clean. That difference is the
+useful part of the observation: artifacts concentrate in the small region that
+actually changes between refreshes, because that is the only region receiving
+repeated partial updates. Static chrome (labels, rules, the status bar) is
+never redrawn and never ghosts.
+
+What this tells us, and what it does not:
+
+- **It does not tell us the real threshold.** The number of partial refreshes
+  before artifacts appear is currently a guess in `epd_emulation.h`, and the
+  visual severity is a guess on top of a guess. Nothing here should be treated
+  as a measurement.
+- **It does tell us where to look on the physical panel.** During phase 2c
+  calibration, watch the CO₂ headline region specifically, not the screen as a
+  whole. A whole-screen impression will understate the problem, because the
+  damage-relevant region is a small fraction of the panel.
+- **It suggests the current guessed threshold may be too permissive.** If real
+  hardware ghosts similarly at the same partial-refresh count, the value
+  wants lowering. Confirm against the panel rather than tuning the emulation
+  to look better.
+
+Also worth carrying into 2c: the refresh strategy determines the ghosting
+region, so a layout change that enlarges or moves the frequently-updated area
+changes the wear pattern. This is an argument for calibrating after the screen
+layout settles, not before.
+
 ## Open items to resolve during phase 2
 
-- [ ] Exact GPIO pin assignments for: EPD control/data bus, I²C (sensors +
-      RTC + touch), SD card if present, battery ADC or fuel-gauge I²C
-      address, user button(s), any status LED.
-      → source: schematic if available, otherwise reverse-engineered from the
-      `esp32s3` branch of LilyGo-EPD47, `src/utilities.h` S3 block.
-- [ ] Touch controller model and I²C address (assumed GT911 pending
-      verification).
-- [ ] Battery gauge / charge-detection chip model (onboard capability
-      confirmed by the vendor; part not yet identified — check schematic or
-      reference firmware).
+- [x] Exact GPIO pin assignments for: EPD control/data bus, I²C (sensors +
+      RTC + touch), SD card if present, battery ADC, user button(s), any
+      status LED. Resolved 2026-09-06 (phase 2a) — see "Pin assignments"
+      above. There is no separate status-LED GPIO: the board's one LED is on
+      the same 74HCT4094 register as panel power.
+- [x] Battery gauge / charge-detection chip model. Resolved 2026-09-06
+      (phase 2a) — there is no gauge IC. Battery is a plain resistor divider
+      on `BOARD_BATTERY_ADC_GPIO`, valid only while EPD power is on; see "Pin
+      assignments" above.
+- [x] Touch I²C address. Resolved 2026-09-06 (phase 2a): `0x5A`, and the
+      controller is confirmed **not** a GT911 — see "Pin assignments" above.
+- [ ] Touch controller part number. The address and register protocol
+      (`0xD0`/`0xD1`, 5 bytes per point) are known and documented above; which
+      physical part answers to them is still unidentified. Check the
+      schematic, or the chip marking on the board itself.
 - [ ] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
       timestamps, or is only used for scheduling.
+- [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings
+      while Wi-Fi is active. The ESP32-S3 TRM documents ADC2 as unreliable
+      under Wi-Fi; confirm on this board before phase 3/4 tries to read
+      battery level during a Wi-Fi window, rather than assuming the divider
+      alone is the whole story.
+- [ ] Whether `esp_timer`-backed `now_ms()` (`platform/esp32_t5s3/adp_clock.c`)
+      genuinely resets to 0 across this board's deep sleep, the way a plain
+      power-on reset would, or behaves some other way. `adp_clock.c` and
+      `core/app/update_policy.c` both already tolerate a reset to 0 either
+      way (see `adp_clock.h`'s header comment), so nothing is blocked on this
+      — it only matters for whichever phase first relies on elapsed time
+      *across* a sleep cycle rather than merely surviving one.
+- [ ] The `idf.py -T` test app of `docs/architecture.md` §9.2. Phase 2a runs
+      the `port_clock` / `port_log` contract suites once at device boot
+      instead (see `docs/adr/0005-contract-suites-run-at-boot.md`), because
+      there was no test-app scaffold and no `port_i2c` yet to justify
+      building one. Deferred to phase 2d, where `port_i2c` will need a real
+      on-target test runner regardless — recorded here so the boot-time
+      runner reads as a stated interim choice, not an unexamined shortcut.
+- [ ] Free PSRAM at runtime (`heap_caps_get_free_size(MALLOC_CAP_SPIRAM)`).
+      The memory budget above covers only internal DIRAM/IRAM, which is what
+      `idf.py size` reports at build time; PSRAM headroom is a runtime figure
+      and the board has not been flashed yet. Measure once phase 2b puts the
+      framebuffer in PSRAM, and again once phase 3's sensor drivers and
+      phase 4's Wi-Fi stack are linked in.
+- [ ] Measured refresh durations for each `refresh_mode_t`, and the real
+      partial-refresh count at which ghosting becomes visible in the CO₂
+      headline region. These replace the estimates in
+      `platform/host/epd_emulation.h` and the matching guesses in
+      `platform/esp32_t5s3/board_config.h` — phase 2c must update both files
+      together, or the device and the simulator stop agreeing on what
+      `update_policy` should do. See the ghosting section above for where to
+      look and what the simulator suggests.
+- [ ] `update_policy`'s status trigger can fire on `charging` or
+      `telemetry_connected` alone, neither of which `screen_home` draws yet,
+      making the empty-diff skip in `event_loop.c`'s `redraw()`
+      (`apps/firmware_esp32/main/event_loop.c`) repeat every tick with no
+      visible change -- harmless, just wasteful. Unreachable today: phase
+      2a's bringup reading is fabricated and never sets either flag.
+      Becomes reachable for `telemetry_connected` once MQTT lands in phase
+      4, and for `charging` once the battery adapter lands in phase 5.

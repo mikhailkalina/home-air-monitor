@@ -140,3 +140,68 @@ void framebuffer_reset_dirty(framebuffer_t *fb)
     fb->dirty = false;
     memset(&fb->dirty_rect, 0, sizeof(fb->dirty_rect));
 }
+
+static uint32_t pixels_per_byte(pixel_format_t format)
+{
+    return (format == PIXFMT_GRAY4) ? 2u : 8u;
+}
+
+bool framebuffer_diff_dirty_rect(const framebuffer_t *current, const framebuffer_t *previous,
+                                 rect_t *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    if (current->pixels == NULL || previous->pixels == NULL || current->width != previous->width ||
+        current->height != previous->height || current->format != previous->format ||
+        current->stride != previous->stride) {
+        return false;
+    }
+
+    bool any = false;
+    uint16_t min_y = 0u;
+    uint16_t max_y = 0u;
+    size_t min_byte = 0u;
+    size_t max_byte = 0u;
+
+    for (uint16_t y = 0u; y < current->height; ++y) {
+        const uint8_t *row_a = current->pixels + (size_t)y * current->stride;
+        const uint8_t *row_b = previous->pixels + (size_t)y * previous->stride;
+
+        for (size_t bx = 0u; bx < current->stride; ++bx) {
+            if (row_a[bx] == row_b[bx]) {
+                continue;
+            }
+            if (!any) {
+                min_y = y;
+                min_byte = bx;
+                max_byte = bx;
+                any = true;
+            } else {
+                if (bx < min_byte) {
+                    min_byte = bx;
+                }
+                if (bx > max_byte) {
+                    max_byte = bx;
+                }
+            }
+            max_y = y;
+        }
+    }
+
+    if (!any) {
+        return false;
+    }
+
+    const uint32_t ppb = pixels_per_byte(current->format);
+    const uint32_t x0 = (uint32_t)min_byte * ppb;
+    uint32_t x1 = ((uint32_t)max_byte + 1u) * ppb;
+    if (x1 > current->width) {
+        x1 = current->width;
+    }
+
+    out->x = (uint16_t)x0;
+    out->y = min_y;
+    out->w = (uint16_t)(x1 - x0);
+    out->h = (uint16_t)(max_y - min_y + 1u);
+    return true;
+}

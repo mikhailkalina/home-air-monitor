@@ -6,9 +6,34 @@
 CONFIG_IDF_TARGET="esp32s3"
 
 # The 960x540 4bpp framebuffer is 253 KB and lives in PSRAM (phase 2).
+# N16R8: 16 MB flash, 8 MB octal PSRAM (docs/hardware/board_notes.md).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 
+# Lets heap_caps_malloc(..., MALLOC_CAP_SPIRAM) (adp_display_null.c) draw from
+# PSRAM through the normal heap allocator rather than requiring a capability
+# only esp_himem or a raw PSRAM API could grant.
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# apps/firmware_esp32/partitions.csv: two OTA app slots on the 16 MB module,
+# sized for phase 5's OTA work; no factory slot.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# This board's USB-C is the S3's native USB-Serial-JTAG (README.MD FAQ 4), not
+# a separate UART bridge chip. If idf.py monitor shows nothing, the one-line
+# fallback is CONFIG_ESP_CONSOLE_UART_DEFAULT=y in place of this.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Raises the COMPILE-TIME ceiling to DEBUG so ESP_LOGD calls are not
+# stripped from the binary; CONFIG_LOG_DEFAULT_LEVEL_INFO above is the
+# RUNTIME default and is unaffected -- the boot log stays at INFO unless a
+# specific tag is raised in code (see main.c's esp_log_level_set() call).
+# Costs a small amount of extra binary size for every already-written
+# ESP_LOGD call in the tree (this project's and ESP-IDF's own), even where
+# nothing raises that tag at runtime.
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

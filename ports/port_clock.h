@@ -26,8 +26,15 @@ struct port_clock_s {
     // Milliseconds since the Unix epoch (UTC), or 0 while unsynchronized.
     uint64_t (*wall_ms)(const port_clock_t *self);
 
-    // Busy-wait or yield for the given duration. A virtual clock implements
-    // this by advancing its own time instead of blocking.
+    // Busy-wait or yield for the given duration. Must return only after
+    // now_ms() has advanced by at least `ms` -- never less, for any `ms`,
+    // including values shorter than whatever scheduling granularity the
+    // platform happens to have (see tests/contract/port_clock_contract.c's
+    // clock.delay_ms(N).advances_by_at_least_n, and
+    // docs/adr/0006-delay-ms-rounds-up-a-full-extra-tick.md for a concrete
+    // case where an OS scheduler's own primitive does not honour this on its
+    // own). A virtual clock implements this by advancing its own time
+    // instead of blocking.
     void (*delay_ms)(const port_clock_t *self, uint32_t ms);
 
     void *impl;
