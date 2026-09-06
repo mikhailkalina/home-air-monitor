@@ -32,8 +32,11 @@ dependencies.lock
 *.map
 size.json
 # ...except golden-test reference fixtures, which are checked-in binary test
-# data, not a build artifact.
+# data, not a build artifact. Each .bin ships with a .png rendered from the
+# same buffer (see tests/golden/golden_check.c) so a layout regression is
+# visible in review -- GitHub renders a .bin diff as "Binary file not shown".
 !tests/golden/*.bin
+!tests/golden/*.png
 
 # ---- Simulator and test artifacts -----------------------------------------
 frames/

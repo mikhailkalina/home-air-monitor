@@ -75,15 +75,17 @@ static void gray4_even_and_odd_pixels_share_a_byte_independently(void)
     framebuffer_t fb;
     framebuffer_init(&fb, storage, sizeof(storage), 2, 1, PIXFMT_GRAY4);
 
-    framebuffer_set_pixel(&fb, 0, 0, 0xA);  // high nibble
+    // x=0 is even, so it lands in the LOW nibble: the ED047TC1 order, see
+    // the packing note in framebuffer.h.
+    framebuffer_set_pixel(&fb, 0, 0, 0xA);  // low nibble
     HAC_CHECK_EQ_INT(framebuffer_get_pixel(&fb, 0, 0), 0xA);
     HAC_CHECK_EQ_INT(framebuffer_get_pixel(&fb, 1, 0), 0x0);  // untouched
-    HAC_CHECK_EQ_INT(storage[0], 0xA0);
+    HAC_CHECK_EQ_INT(storage[0], 0x0A);
 
-    framebuffer_set_pixel(&fb, 1, 0, 0x5);                    // low nibble
+    framebuffer_set_pixel(&fb, 1, 0, 0x5);                    // high nibble
     HAC_CHECK_EQ_INT(framebuffer_get_pixel(&fb, 0, 0), 0xA);  // survives the neighbour write
     HAC_CHECK_EQ_INT(framebuffer_get_pixel(&fb, 1, 0), 0x5);
-    HAC_CHECK_EQ_INT(storage[0], 0xA5);
+    HAC_CHECK_EQ_INT(storage[0], 0x5A);
 }
 
 static void gray4_value_is_masked_to_four_bits(void)

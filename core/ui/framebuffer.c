@@ -98,9 +98,9 @@ void framebuffer_set_pixel(framebuffer_t *fb, int32_t x, int32_t y, uint8_t valu
         const uint8_t nibble = value & 0x0F;
         uint8_t byte = fb->pixels[index];
         if ((x & 1) == 0) {
-            byte = (uint8_t)((byte & 0x0F) | (uint8_t)(nibble << 4));
-        } else {
             byte = (uint8_t)((byte & 0xF0) | nibble);
+        } else {
+            byte = (uint8_t)((byte & 0x0F) | (uint8_t)(nibble << 4));
         }
         fb->pixels[index] = byte;
     } else {
@@ -127,7 +127,7 @@ uint8_t framebuffer_get_pixel(const framebuffer_t *fb, int32_t x, int32_t y)
 
     if (fb->format == PIXFMT_GRAY4) {
         const uint8_t byte = fb->pixels[row + (size_t)x / 2u];
-        return ((x & 1) == 0) ? (uint8_t)(byte >> 4) : (uint8_t)(byte & 0x0F);
+        return ((x & 1) == 0) ? (uint8_t)(byte & 0x0F) : (uint8_t)(byte >> 4);
     }
 
     const uint8_t byte = fb->pixels[row + (size_t)x / 8u];
