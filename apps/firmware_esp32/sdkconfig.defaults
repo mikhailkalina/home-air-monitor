@@ -28,3 +28,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Raises the COMPILE-TIME ceiling to DEBUG so ESP_LOGD calls are not
+# stripped from the binary; CONFIG_LOG_DEFAULT_LEVEL_INFO above is the
+# RUNTIME default and is unaffected -- the boot log stays at INFO unless a
+# specific tag is raised in code (see main.c's esp_log_level_set() call).
+# Costs a small amount of extra binary size for every already-written
+# ESP_LOGD call in the tree (this project's and ESP-IDF's own), even where
+# nothing raises that tag at runtime.
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

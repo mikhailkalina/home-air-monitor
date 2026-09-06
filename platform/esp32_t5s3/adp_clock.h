@@ -20,6 +20,7 @@
 #define HAC_PLATFORM_ESP32_T5S3_ADP_CLOCK_H
 
 #include "port_clock.h"
+#include "port_log.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,9 +28,15 @@ extern "C" {
 
 typedef struct {
     port_clock_t port;
+    const port_log_t *log;  // may be NULL; port_log_write() is NULL-safe
 } adp_clock_t;
 
-void adp_clock_init(adp_clock_t *c);
+// `log` is borrowed and may be NULL (before a logger exists, or if none is
+// wanted); delay_ms() uses it to report each call's requested and actual
+// duration at LOG_LEVEL_DEBUG -- see the reasoning in adp_clock.c and
+// docs/adr/0006-delay-ms-rounds-up-a-full-extra-tick.md for why that number
+// is worth watching.
+void adp_clock_init(adp_clock_t *c, const port_log_t *log);
 
 const port_clock_t *adp_clock_port(const adp_clock_t *c);
 

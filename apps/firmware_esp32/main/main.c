@@ -110,7 +110,7 @@ void app_main(void)
     adp_log_init(&s_log);
     const port_log_t *log = adp_log_port(&s_log);
 
-    adp_clock_init(&s_clock);
+    adp_clock_init(&s_clock, log);
     const port_clock_t *clock = adp_clock_port(&s_clock);
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
