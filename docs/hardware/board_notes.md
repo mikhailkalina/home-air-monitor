@@ -257,6 +257,12 @@ layout settles, not before.
       way (see `adp_clock.h`'s header comment), so nothing is blocked on this
       — it only matters for whichever phase first relies on elapsed time
       *across* a sleep cycle rather than merely surviving one.
+- [ ] Phase 5: confirm whether `now_ms()` survives deep sleep before trusting
+      `persisted_state_t`'s `last_display_update_ms` and `last_publish_ms`,
+      which are stored as absolute values on that clock — if the epoch resets
+      across a sleep cycle, those comparisons produce garbage and the first
+      wake would misjudge every threshold. The `port_clock` contract suite
+      has no assertion covering this today; phase 5 should add one.
 - [ ] The `idf.py -T` test app of `docs/architecture.md` §9.2. Phase 2a runs
       the `port_clock` / `port_log` contract suites once at device boot
       instead (see `docs/adr/0005-contract-suites-run-at-boot.md`), because

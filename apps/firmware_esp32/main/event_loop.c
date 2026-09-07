@@ -49,14 +49,27 @@ typedef struct {
     framebuffer_t previous_fb;
 } event_loop_state_t;
 
-static void log_decision(const event_loop_state_t *s, const update_decision_t *d)
+// update_decision_t::next_deadline_ms is a point on the core's own clock
+// (the same epoch port_clock_t::now_ms() reads), not a duration -- see
+// core/app/update_policy.h's field comment. "next_deadline_ms=49" alone reads
+// as "wake up in 49 ms" to anyone who has not read that comment, when what it
+// actually means is "the clock read 49 ms at the moment this fired". The
+// "_abs_ms" suffix and the adjacent now_ms field name that fact instead of
+// relying on the reader to already know it. The two will always be equal
+// here: log_decision() only runs when update_policy_evaluate() decided a
+// redraw is due *now* (update_policy.c sets next_deadline_ms = now_ms in
+// that branch), so an interval field would always read 0 -- not logged for
+// that reason. The deferred-redraw log below, where the deadline is a real
+// future point, is where the interval is worth logging.
+static void log_decision(const event_loop_state_t *s, const update_decision_t *d, uint64_t now_ms)
 {
     const log_field_t fields[] = {
         log_str("action", update_policy_action_name(d->action)),
         log_str("reason", update_policy_reason_name(d->reason)),
         log_u64("partials", update_policy_partials_since_full(s->deps.policy)),
         log_bool("forced_full", d->full_forced_by_budget),
-        log_u64("next_deadline_ms", d->next_deadline_ms),
+        log_u64("now_ms", now_ms),
+        log_u64("next_deadline_abs_ms", d->next_deadline_ms),
     };
     port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "decision", fields,
                    sizeof(fields) / sizeof(fields[0]));
@@ -143,15 +156,23 @@ static void pump_task(void *arg)
         update_policy_evaluate(s->deps.policy, &s->reading, &decision);
 
         if (decision.action != UPDATE_NONE) {
-            log_decision(s, &decision);
+            log_decision(s, &decision, now_ms);
             redraw(s, &decision);
         } else if (decision.deferred_by_min_interval && !s->deferral_logged) {
             // Said once per episode, like the simulator's equivalent line
             // (apps/simulator/main.c:416-423): repeating it every tick would
             // bury everything else in the log.
+            //
+            // Unlike log_decision()'s always-now deadline, this one is a real
+            // future point (the panel's min-full-refresh-interval elapsing),
+            // so next_deadline_in_ms is the useful field here: it is what
+            // says how long the deferral will last, without the reader doing
+            // the now_ms subtraction by hand.
             const log_field_t fields[] = {
                 log_str("reason", update_policy_reason_name(decision.reason)),
-                log_u64("next_deadline_ms", decision.next_deadline_ms),
+                log_u64("now_ms", now_ms),
+                log_u64("next_deadline_abs_ms", decision.next_deadline_ms),
+                log_u64("next_deadline_in_ms", decision.next_deadline_ms - now_ms),
             };
             port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG,
                            "deferred: panel minimum full-refresh interval not elapsed", fields,
