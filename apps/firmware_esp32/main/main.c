@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Composition root for the ESP32-S3 firmware -- phase 2a, board bring-up
-// with no panel driven and no sensors attached (docs/architecture.md 6.2
-// wires adapters here; this is that wiring for the adapters this phase has).
+// Composition root for the ESP32-S3 firmware (docs/architecture.md 6.2 wires
+// adapters here). Phase 2a brought the board up with no panel driven and no
+// sensors attached; phase 2b (docs/adr/0007-epaper-backend.md) adds the real
+// display -- EPDiy driving the ED047TC1 through its row-by-row i80 engine,
+// behind platform/esp32_t5s3/adp_display.c. No I2C, no sensors yet.
 //
-// What runs: adp_log and adp_clock, a null display that reports the real
-// panel geometry and allocates the real PSRAM framebuffer, the port_clock
-// and port_log contract suites run once against those two real adapters
-// (docs/adr/0005), and the FreeRTOS pump from event_loop.c driving
-// update_policy against bringup_reading.c's synthetic data. No I2C, no
-// drivers, no real display -- see the phase-2a plan for what is deliberately
-// out of scope.
+// What runs: adp_log and adp_clock, the real display adapter (or the null
+// one, CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), the
+// port_clock and port_log contract suites run once against the real
+// adapters (docs/adr/0005), optionally the whole-panel bring-up diagnostic
+// (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
+// full-refresh interval before the first rendered frame -- see
+// run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
+// driving update_policy against bringup_reading.c's synthetic data.
 
 #include <stdint.h>
 
 #include "esp_heap_caps.h"
 
 #include "adp_clock.h"
+#include "adp_display.h"
 #include "adp_display_null.h"
 #include "adp_log.h"
 #include "board_config.h"
@@ -56,6 +60,67 @@ static void contract_report(void *ctx_v, const char *check, bool ok)
     const log_field_t fields[] = {log_bool("ok", ok)};
     port_log_write(ctx->log, ok ? LOG_LEVEL_DEBUG : LOG_LEVEL_ERROR, ctx->tag, check, fields, 1u);
 }
+
+#if CONFIG_HAC_EPD_TEST_PATTERN
+// Bring-up diagnostic (phase 2b/2c, CONFIG_HAC_EPD_TEST_PATTERN -- see
+// main/Kconfig.projbuild), run once at startup before the event loop: fill the
+// framebuffer solid black and flush it as a full refresh. On this backend that
+// is epd_clear() -- the panel visibly cycles to white -- followed by a
+// MODE_GC16 redraw of the buffer, so the panel should settle on solid black. That isolates "does
+// the panel respond to a drive sequence at all" from "is screen_home's rendering correct": a panel
+// that stays blank through this is a driver or wiring problem, while one that
+// goes black has been driven correctly and any later wrong image is a
+// rendering problem instead. Remove, or set the Kconfig option to n, once
+// phase 2c has confirmed the panel responds correctly to real content.
+//
+// Deliberately REFRESH_FULL rather than REFRESH_CLEAR, which is what this
+// used while FastEPD was the backend. Under EPDiy, REFRESH_CLEAR is
+// epd_clear() alone: a dedicated multi-cycle drive to white that ignores the
+// framebuffer by design, which would make a black fill meaningless. Going
+// through the ordinary full-refresh path also means this probe exercises the
+// same mapping every later frame uses, rather than a path of its own.
+//
+// ONE whole-panel drive, and then a wait.
+// port_display_t::min_full_refresh_interval_ms is what this adapter reports
+// to the core as the shortest time the panel tolerates between whole-panel
+// refreshes, and core/app/update_policy.c defers every later refresh to
+// honour it -- so a boot-time diagnostic that issued two of them two seconds
+// apart, and then handed over to a policy that immediately issued a third,
+// would be the one place in the firmware contradicting a limit the rest of
+// the code treats as the panel's own. The light direction is proved by the
+// event loop's own first frame: screen_home renders on a white ground.
+static void run_epd_test_pattern(port_display_t *display, const port_clock_t *clock,
+                                 const port_log_t *log)
+{
+    framebuffer_t *fb = display->get_framebuffer(display);
+    if (fb == NULL) {
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "test_pattern: get_framebuffer returned NULL",
+                       NULL, 0u);
+        return;
+    }
+
+    framebuffer_clear(fb, 0x00u);  // VM_INK_PRIMARY -- black
+    const hal_status_t status = display->flush(display, NULL, REFRESH_FULL);
+    const log_field_t fields[] = {log_i64("status", (int64_t)status)};
+    port_log_write(log, LOG_LEVEL_INFO, "main",
+                   "test_pattern: solid black flushed (REFRESH_FULL, whole panel)", fields, 1u);
+
+    // update_policy_init() starts with have_full_refresh = false, so the
+    // policy's first frame is due immediately and it cannot space itself
+    // from a refresh it never saw. Waiting here is what keeps that first
+    // frame outside the interval this diagnostic just consumed. The delay is
+    // the declared constant, not a shorter convenience value: the point is
+    // to honour the limit, not to approximate it.
+    const log_field_t wait_fields[] = {
+        log_u64("wait_ms", BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS),
+    };
+    port_log_write(log, LOG_LEVEL_INFO, "main",
+                   "test_pattern: waiting out the panel's minimum full-refresh interval before "
+                   "the first rendered frame",
+                   wait_fields, sizeof(wait_fields) / sizeof(wait_fields[0]));
+    clock->delay_ms(clock, BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS);
+}
+#endif  // CONFIG_HAC_EPD_TEST_PATTERN
 
 // That memory budget is what every phase from 2b onward has to fit inside --
 // see the phase-2a plan's "Deliverable" section.
@@ -104,7 +169,11 @@ void app_main(void)
 {
     static adp_log_t s_log;
     static adp_clock_t s_clock;
+#if CONFIG_HAC_DISPLAY_NULL
     static adp_display_null_t s_display;
+#else
+    static adp_display_t s_display;
+#endif
     static update_policy_t s_policy;
 
     adp_log_init(&s_log);
@@ -114,11 +183,17 @@ void app_main(void)
     const port_clock_t *clock = adp_clock_port(&s_clock);
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
-                   "phase 2a: board bring-up -- no panel driven, no sensors", NULL, 0u);
+#if CONFIG_HAC_DISPLAY_NULL
+                   "phase 2b: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), no sensors",
+#else
+                   "phase 2b: board bring-up -- EPDiy driving the panel, no sensors",
+#endif
+                   NULL, 0u);
 
     log_memory_budget(log);
     run_contract_suites(clock, log);
 
+#if CONFIG_HAC_DISPLAY_NULL
     const hal_status_t display_status =
         adp_display_null_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
     if (display_status != HAL_OK) {
@@ -127,6 +202,19 @@ void app_main(void)
         return;  // nothing else can run without a framebuffer
     }
     port_display_t *display = adp_display_null_port(&s_display);
+#else
+    const hal_status_t display_status =
+        adp_display_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
+    if (display_status != HAL_OK) {
+        const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_init failed", fields, 1u);
+        return;  // nothing else can run without a framebuffer
+    }
+    port_display_t *display = adp_display_port(&s_display);
+#if CONFIG_HAC_EPD_TEST_PATTERN
+    run_epd_test_pattern(display, clock, log);
+#endif
+#endif
 
     const update_policy_config_t cfg = update_policy_config_default();
     const update_policy_limits_t limits = update_policy_limits_from_display(display);

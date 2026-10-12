@@ -21,6 +21,21 @@
 // only after minutes of silence.
 #define EVENT_LOOP_MAX_WAIT_MS 60000u
 
+// Backoff after an iteration that wanted a redraw and did not achieve one.
+//
+// Without it the pump spins at the FreeRTOS tick rate: update_policy_commit()
+// is deliberately skipped when the flush fails, so the decision stays "due
+// now", so the next iteration retries immediately, forever. That is not
+// hypothetical -- it is what the first EPDiy flash did, several hundred
+// failing full refreshes per minute, each with its own log line, for as long
+// as the board was powered.
+//
+// Doubling from one second to the same ceiling the idle wait uses. A failure
+// that clears itself still recovers within a second; one that does not stops
+// drowning the log and the CPU.
+#define EVENT_LOOP_BACKOFF_FIRST_MS 1000u
+#define EVENT_LOOP_BACKOFF_MAX_SHIFT 6u
+
 #define EVENT_LOOP_QUEUE_DEPTH 8u
 
 // What docs/architecture.md 6.1's app_event_t will eventually be. Nothing
@@ -39,6 +54,11 @@ typedef struct {
     QueueHandle_t queue;
     air_reading_t reading;
     bool deferral_logged;
+
+    // Consecutive iterations that wanted a redraw and did not get one onto the
+    // glass -- a failed flush, or a diff that turned out empty. Drives the
+    // backoff in wait_ms_for_deadline(); reset by any successful flush.
+    uint32_t consecutive_no_progress;
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
@@ -78,13 +98,15 @@ static void log_decision(const event_loop_state_t *s, const update_decision_t *d
 // The evaluate -> render -> flush -> commit sequence of
 // apps/simulator/main.c:253-268 (redraw()), unchanged in shape: the policy is
 // only credited with the redraw once the flush actually reaches the display.
-static void redraw(event_loop_state_t *s, const update_decision_t *d)
+// Returns true only when the flush actually reached the panel, which is what
+// the caller's backoff is keyed on.
+static bool redraw(event_loop_state_t *s, const update_decision_t *d)
 {
     framebuffer_t *fb = s->deps.display->get_framebuffer(s->deps.display);
     if (fb == NULL) {
         port_log_write(s->deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG,
                        "get_framebuffer returned NULL; skipping redraw", NULL, 0u);
-        return;
+        return false;
     }
 
     view_model_t vm;
@@ -115,28 +137,63 @@ static void redraw(event_loop_state_t *s, const update_decision_t *d)
             // skipped along with the flush.
             port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG,
                            "redraw skipped: partial refresh diff was empty", NULL, 0u);
-            return;
+            return false;
         }
         area = &dirty_rect;
     }
 
-    if (s->deps.display->flush(s->deps.display, area, mode) == HAL_OK) {
-        update_policy_commit(s->deps.policy, &s->reading, d);
-        memcpy(s->previous_fb.pixels, fb->pixels, fb->pixels_size);
-        s->deferral_logged = false;
+    const hal_status_t status = s->deps.display->flush(s->deps.display, area, mode);
+    if (status != HAL_OK) {
+        const log_field_t fields[] = {
+            log_i64("status", (int64_t)status),
+            log_u64("consecutive_failures", (uint64_t)s->consecutive_no_progress + 1u),
+        };
+        port_log_write(s->deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG, "flush failed", fields,
+                       sizeof(fields) / sizeof(fields[0]));
+        return false;
     }
+
+    update_policy_commit(s->deps.policy, &s->reading, d);
+    memcpy(s->previous_fb.pixels, fb->pixels, fb->pixels_size);
+    s->deferral_logged = false;
+    return true;
 }
 
-static uint32_t wait_ms_for_deadline(uint64_t next_deadline_ms, uint64_t now_ms)
+// The backoff floor after `failures` consecutive iterations that achieved no
+// redraw: 0 while things are working, then 1 s doubling to
+// EVENT_LOOP_MAX_WAIT_MS.
+static uint32_t backoff_floor_ms(uint32_t failures)
 {
-    if (next_deadline_ms == UPDATE_POLICY_NO_DEADLINE) {
-        return EVENT_LOOP_MAX_WAIT_MS;
-    }
-    if (next_deadline_ms <= now_ms) {
+    if (failures == 0u) {
         return 0u;
     }
-    const uint64_t wait = next_deadline_ms - now_ms;
-    return (wait < EVENT_LOOP_MAX_WAIT_MS) ? (uint32_t)wait : EVENT_LOOP_MAX_WAIT_MS;
+
+    const uint32_t shift = ((failures - 1u) < EVENT_LOOP_BACKOFF_MAX_SHIFT)
+                               ? (failures - 1u)
+                               : EVENT_LOOP_BACKOFF_MAX_SHIFT;
+    const uint32_t floor_ms = EVENT_LOOP_BACKOFF_FIRST_MS << shift;
+
+    return (floor_ms < EVENT_LOOP_MAX_WAIT_MS) ? floor_ms : EVENT_LOOP_MAX_WAIT_MS;
+}
+
+static uint32_t wait_ms_for_deadline(uint64_t next_deadline_ms, uint64_t now_ms,
+                                     uint32_t no_progress)
+{
+    uint32_t wait_ms;
+
+    if (next_deadline_ms == UPDATE_POLICY_NO_DEADLINE) {
+        wait_ms = EVENT_LOOP_MAX_WAIT_MS;
+    } else if (next_deadline_ms <= now_ms) {
+        wait_ms = 0u;
+    } else {
+        const uint64_t wait = next_deadline_ms - now_ms;
+        wait_ms = (wait < EVENT_LOOP_MAX_WAIT_MS) ? (uint32_t)wait : EVENT_LOOP_MAX_WAIT_MS;
+    }
+
+    // The floor only ever delays a retry that just failed; it never defers a
+    // deadline that is genuinely in the future further than it already is.
+    const uint32_t floor_ms = backoff_floor_ms(no_progress);
+    return (wait_ms > floor_ms) ? wait_ms : floor_ms;
 }
 
 static void pump_task(void *arg)
@@ -157,7 +214,11 @@ static void pump_task(void *arg)
 
         if (decision.action != UPDATE_NONE) {
             log_decision(s, &decision, now_ms);
-            redraw(s, &decision);
+            if (redraw(s, &decision)) {
+                s->consecutive_no_progress = 0u;
+            } else if (s->consecutive_no_progress < UINT32_MAX) {
+                s->consecutive_no_progress++;
+            }
         } else if (decision.deferred_by_min_interval && !s->deferral_logged) {
             // Said once per episode, like the simulator's equivalent line
             // (apps/simulator/main.c:416-423): repeating it every tick would
@@ -180,7 +241,8 @@ static void pump_task(void *arg)
             s->deferral_logged = true;
         }
 
-        const uint32_t wait_ms = wait_ms_for_deadline(decision.next_deadline_ms, now_ms);
+        const uint32_t wait_ms =
+            wait_ms_for_deadline(decision.next_deadline_ms, now_ms, s->consecutive_no_progress);
 
         // uxTaskGetStackHighWaterMark() returns words remaining, not bytes,
         // on every ESP-IDF FreeRTOS port; logged every iteration so the
@@ -190,6 +252,7 @@ static void pump_task(void *arg)
         const log_field_t tick_fields[] = {
             log_u64("stack_high_water_words", high_water_words),
             log_u64("wait_ms", wait_ms),
+            log_u64("no_progress", s->consecutive_no_progress),
         };
         port_log_write(s->deps.log, LOG_LEVEL_DEBUG, EVENT_LOOP_TAG, "tick", tick_fields,
                        sizeof(tick_fields) / sizeof(tick_fields[0]));

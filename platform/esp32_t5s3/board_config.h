@@ -138,4 +138,48 @@
 #define BOARD_FREE_GPIO_3 48
 #define BOARD_FREE_GPIO_4 39
 
+// --- e-paper: EPDiy integration (docs/adr/0007-epaper-backend.md) ----------
+//
+// EPDiy owns the EPD pins at build time, not this file. Its board definition
+// (`epd_board_lilygo_t5_47_s3`, in the pinned managed component -- see
+// apps/firmware_esp32/components/hac_platform/idf_component.yml) carries its
+// own CFG_DATA/CFG_CLK/CFG_STR, CKV/STH/CKH and D0..D7 defines, the
+// 74HCT4094 push order, the power-on and power-off sequences, and the
+// RMT-generated CKV gate clock.
+//
+// The EPD pin constants above are kept deliberately, for two reasons that
+// are not "the code uses them":
+//
+//   * they are this project's record of the hardware, each citing the
+//     reference line it came from, which docs/hardware/board_notes.md is the
+//     source of truth for. Deleting them would move that record into a
+//     third-party component this repository does not control.
+//   * they are the cross-check. Every one of them was compared against
+//     EPDiy's board definition for this board when the backend changed, and
+//     they agree exactly -- including the silkscreen revision its header
+//     names ("Screen-4.7-S3 V2.3/V2.4"). If a future pin bump makes them
+//     disagree, the disagreement is a finding about the hardware, not a
+//     merge conflict.
+//
+// Gone with FastEPD, recorded here so a reader of the git history is not left
+// wondering where they went: BOARD_EPD_DC_DUMMY_GPIO, the BOARD_EPD_SHIFT_*
+// aliases, BOARD_EPD_PIXEL_CLOCK_HZ, BOARD_EPD_DATA_BUS_D0_TO_D7, the eight
+// BOARD_EPD_ROW_START_DELAY_*_US values, BOARD_EPD_ROW_CKV_PULSE_US,
+// BOARD_EPD_LINE_PADDING_BYTES and BOARD_EPD_VCOM_MV. Every one of them was
+// marked "taken from the working reference, not derived" or outright guessed,
+// and every one is now EPDiy's own business. That is most of the unmeasured
+// surface this board_config.h used to carry.
+
+// The display temperature handed to epd_draw_base(). A PLACEHOLDER, not a
+// measurement: EPDiy selects a waveform temperature range with it, and the
+// ED047TC1 waveform it ships declares a single range (num_temp_ranges = 1),
+// so today every value lands in the same range and the number cannot
+// misbehave. It stops being free the moment a waveform with several ranges
+// is used.
+//
+// Replaced in phase 3, which brings the BME68x and therefore a real ambient
+// temperature; EPDiy also offers epd_ambient_temperature() for boards with a
+// sensor on the panel itself, which this one does not have.
+#define BOARD_EPD_ASSUMED_TEMPERATURE_C 25
+
 #endif  // HAC_PLATFORM_ESP32_T5S3_BOARD_CONFIG_H

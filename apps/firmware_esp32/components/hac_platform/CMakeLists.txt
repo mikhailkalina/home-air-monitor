@@ -13,12 +13,15 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/adp_clock.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_log.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_display_null.c
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_display.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
     REQUIRES
         hac_core
+        epdiy
         esp_timer
         esp_psram
+        esp_hw_support
         esp_rom
         heap
         freertos

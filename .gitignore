@@ -25,7 +25,13 @@ CMakeUserPresets.json
 compile_commands.json
 
 # ---- ESP-IDF --------------------------------------------------------------
-managed_components/
+# Anchored to where the component manager actually writes, not a bare
+# `managed_components/`: that pattern matches a directory of that name at any
+# depth, which also swallowed
+# scripts/tests/fixtures/pin_literals/.../managed_components/ -- the fixture
+# that proves check_sources.sh skips fetched dependencies. An ignored fixture
+# makes that test pass vacuously, which is worse than not having it.
+/apps/*/managed_components/
 dependencies.lock
 *.bin
 *.elf
