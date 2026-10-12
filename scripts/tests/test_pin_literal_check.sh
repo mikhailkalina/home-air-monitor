@@ -58,10 +58,16 @@ done
 #   - vendor/reg_defs.h: never even reaches pin_literal_violations, because
 #     hac_find_source_files applies the same vendor/ exclusion the SPDX
 #     check uses
+#   - managed_components/.../epd_board_fixture.c: the same, for dependencies
+#     ESP-IDF's component manager fetches under apps/. It carries four
+#     separate constructs that would each be a violation in first-party
+#     code, so if the exclusion ever stops working this fires loudly rather
+#     than subtly
 FORBIDDEN=(
     "adp_allowed.c"
     "other_board/board_config.h"
     "vendor/reg_defs.h"
+    "managed_components/epdiy/src/epd_board_fixture.c"
 )
 
 for needle in "${FORBIDDEN[@]}"; do

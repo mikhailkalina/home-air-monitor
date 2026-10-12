@@ -92,3 +92,99 @@ the memcpy argument cannot be answered by a comment.
 - If the display adapter is ever built on something other than LilyGo-EPD47 /
   EPDiy, re-check this assumption before relying on the memcpy: the decision is
   only worth what the byte-for-byte compatibility is worth.
+
+## Amendment (phase 2b): the FastEPD backend does not get the memcpy
+
+The warning in the last bullet above fired. `docs/adr/0007-epaper-backend.md`
+chose FastEPD (`bitbank2/FastEPD`) as the display backend, not EPDiy, and
+FastEPD's own GRAY4 packing was checked against this decision before any
+driver code was written, per that bullet's own instruction.
+
+**It does not match.** `bb_ep_gfx.inl`'s `bbSetPixel16Clr()` — the function
+that actually backs FastEPD's `BB_MODE_4BPP` — packs **even x into the high
+nibble, odd x into the low**, which is the exact opposite of the order this
+ADR chose. The stride still matches (`native_width >> 1`, the same 480 bytes
+at width 960 this ADR relies on), and the polarity still matches (0 = black,
+15 = white in both — confirmed against `core/ui/view_model.h`'s
+`VM_INK_PRIMARY = 0u` / `VM_INK_BACKGROUND = 15u` and FastEPD.inl's own
+"0-black to 15-white" comment), but the nibble position does not, and no
+comment in a header can fix that the way this ADR's own reasoning intended.
+
+**This ADR's decision is not reversed.** The core's GRAY4 layout still
+matches the ED047TC1 hardware reference, which is what the "Decision" section
+above actually argued for — the core's byte layout has exactly one hardware
+reality behind it, and FastEPD's own internal convention (which its
+multi-pass grayscale LUT construction is free to choose independently, since
+nothing outside FastEPD reads `pCurrent` directly) is not that reality. What
+changes is the "Consequences" section's premise that a display adapter can
+always hand this buffer to the panel driver with a bare memcpy: for this one
+backend, it cannot, and paying a conversion cost is no longer optional the
+way "Option A" was in 2026-09-05's Decision above.
+
+**The cost this pays is much smaller than "Option A" would have been,
+because it no longer needs to be a full-frame walk.** Phase 2a's dirty-rect
+tracking did not exist when this ADR was first written; it does now, and
+`flush()` already receives the rectangle that actually changed —
+`platform/esp32_t5s3/adp_display.c`'s `swap_nibbles_into_fastepd()` swaps
+nibbles only inside that rectangle. A routine partial redraw is a small
+fraction of the panel (824×228 observed on hardware during phase 2a's
+bring-up run; smaller still for a single changed field in the simulator), so
+this is not "walk 253 125 bytes on every flush, forever" — it is bounded by
+the same rectangle the ghosting budget already cares about, and only a full
+or clear refresh pays the whole-buffer cost.
+
+Consequences for a future reader:
+
+- `core/ui/framebuffer.c` is unchanged. The nibble order this ADR chose is
+  still correct for the core and for any future EPDiy-family backend; it is
+  specifically FastEPD that needs a conversion, and that conversion lives
+  entirely in `platform/esp32_t5s3/adp_display.c`, on the adapter side of the
+  `port_display_t` boundary this ADR always intended conversions to live on.
+- The swap-site comment in `adp_display.c` cites this amendment and
+  `bb_ep_gfx.inl`'s exact function name and line, so a reader who finds the
+  swap and wonders why it exists does not have to re-derive the mismatch from
+  scratch.
+- If a future backend change moves off FastEPD, re-check this amendment the
+  same way this amendment re-checked the original decision: read the new
+  backend's own pixel-packing function, do not assume either convention.
+
+
+## Second amendment (phase 2b): EPDiy agrees, and the swap is gone
+
+The amendment above ends by saying that a future backend change should
+re-check it by reading the new backend's own pixel-packing function rather
+than assuming either convention. That is what happened, and the answer put
+the original decision back.
+
+`epdiy.c`'s `epd_draw_pixel()` packs:
+
+```c
+uint8_t* buf_ptr = &framebuffer[y * epd_width() / 2 + x / 2];
+if (x % 2) {
+    *buf_ptr = (*buf_ptr & 0x0F) | (color & 0xF0);   /* odd x  -> high nibble */
+} else {
+    *buf_ptr = (*buf_ptr & 0xF0) | (color >> 4);     /* even x -> low nibble  */
+}
+```
+
+Odd x in the high nibble, even x in the low, indexed at `width / 2` bytes per
+row. That is `core/ui/framebuffer.c`'s order and stride exactly — which is no
+coincidence, since this ADR chose it to match the ED047TC1 reference layout
+and EPDiy matches the same hardware.
+
+**Consequences.** `swap_nibbles_into_fastepd()` is deleted along with the
+rest of the FastEPD integration. `platform/esp32_t5s3/adp_display.c` now
+hands `framebuffer_t::pixels` to `epd_draw_base()` by pointer: no copy, no
+conversion, nothing walked per flush. The memcpy-free path this ADR's
+original decision was made for is not merely restored but improved on — there
+is no copy at all.
+
+Two things this retires:
+
+- the amendment above is now history rather than active guidance. It is kept
+  because the reasoning is still the right reasoning, and because a reader
+  who finds FastEPD in the git log should find out what it required;
+- `docs/hardware/board_notes.md`'s "Buffer layout" section, which has said
+  since phase 1a that the matching nibble order lets the adapter hand the
+  buffer straight to EPDiy, turns out to have been right all along. It needs
+  no correction — only the FastEPD detour did.

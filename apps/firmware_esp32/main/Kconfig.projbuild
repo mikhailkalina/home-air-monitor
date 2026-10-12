@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Home Air Monitor"
+
+    config HAC_DISPLAY_NULL
+        bool "Use the null display adapter (no panel driven)"
+        default n
+        help
+            Keeps apps/firmware_esp32 running the phase 2a null display
+            adapter (platform/esp32_t5s3/adp_display_null.c), which reports
+            real panel geometry and refresh limits and allocates the real
+            PSRAM framebuffer but never touches the panel -- for headless
+            firmware runs (CI, a board with no panel attached, or bring-up
+            work on the FreeRTOS pump and update_policy in isolation from
+            the display backend).
+
+            Leave this unset for a normal build: the firmware drives the
+            physical ED047TC1 panel through EPDiy
+            (platform/esp32_t5s3/adp_display.c), as phase 2b intends.
+
+    config HAC_EPD_TEST_PATTERN
+        bool "Drive a whole-panel test pattern once at startup"
+        default y
+        depends on !HAC_DISPLAY_NULL
+        help
+            Phase 2b/2c bring-up diagnostic (apps/firmware_esp32/main/main.c,
+            run_epd_test_pattern): before the event loop starts, fill the
+            framebuffer solid black and flush it as a full refresh, which this
+            backend renders as epd_clear() -- a visible whole-panel cycle to
+            white -- followed by a MODE_GC16 redraw. A panel that stays blank
+            through that is a driver or wiring problem; one that visibly cycles
+            and settles on black has been driven correctly, so a wrong image
+            afterwards is a rendering problem instead.
+
+            COSTS ONE MINUTE OF BOOT TIME. The diagnostic is a whole-panel
+            refresh, and the panel reports a minimum interval between those
+            (BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS, currently 60 s and still
+            a guess pending phase 2c). Honouring it means waiting that interval
+            out before the first rendered frame, rather than handing over to
+            core/app/update_policy.c -- which has no way to know about a
+            refresh it never issued -- and letting it add a second whole-panel
+            refresh immediately.
+
+            Set this to n once the panel is known to work: a boot then
+            performs exactly one whole-panel refresh, screen_home's own first
+            frame, and reaches it immediately.
+
+endmenu

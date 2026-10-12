@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# EPDiy is the display backend for this board (docs/adr/0007-epaper-backend.md).
+#
+# Pinned to AdaSzi's fork rather than vroland/epdiy upstream, and to a tag
+# rather than a branch. Upstream's maintainers declined to support this board:
+# its only ESP32-S3 render method streams whole frames through LCD_CAM and
+# needs the latch (LEH) and vertical start (STV) lines on real GPIOs, while
+# this board routes LEH, STV, output enable, mode and the panel power rails
+# through a 74HCT4094 shift register. The fork adds the row-by-row render
+# method -- latching every row through the board's set_ctrl() callback, with
+# each row's pixels sent over LCD_CAM in i80 mode -- behind
+# CONFIG_EPD_ESP32S3_I80_ROW_OUTPUT, which apps/firmware_esp32/
+# sdkconfig.defaults enables. It also carries src/board/
+# epd_board_lilygo_t5_47_s3.c, whose header names this board's silkscreen
+# revision ("Screen-4.7-S3 V2.3/V2.4") and whose pins match
+# platform/esp32_t5s3/board_config.h exactly.
+#
+# LGPL-3.0-or-later. See THIRD_PARTY_NOTICES.md for what that obliges.
+#
+# Pinned to the commit, not the tag. The tag is `2.1.3-t5s3.1`, but a git tag
+# can be moved by whoever owns the repository, and this one belongs to an
+# individual's fork rather than to an organisation with a release process. A
+# commit SHA cannot be moved, which is what THIRD_PARTY_NOTICES.md's "pinned to
+# an exact commit" actually requires. `dependencies.lock`, which would
+# otherwise record the resolved commit, is gitignored (CLAUDE.md, "Never
+# commit"), so this line is the only place the pin is kept.
+#
+# Bump it deliberately: the fork is a fork, so a newer commit is not a routine
+# upgrade. Re-check src/board/epd_board_lilygo_t5_47_s3.c's pins against
+# platform/esp32_t5s3/board_config.h when you do.
+dependencies:
+  epdiy:
+    git: https://github.com/AdaSzi/epdiy.git
+    version: "161de5275f615b58e4a4f614f24a10260430239c"

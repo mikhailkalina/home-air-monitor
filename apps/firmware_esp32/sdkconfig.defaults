@@ -37,3 +37,10 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # ESP_LOGD call in the tree (this project's and ESP-IDF's own), even where
 # nothing raises that tag at runtime.
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# EPDiy's ESP32-S3 row-by-row render method, required by this board: its
+# default S3 method needs LEH and STV on real GPIOs, which this board routes
+# through a 74HCT4094 shift register instead. See
+# docs/adr/0007-epaper-backend.md and the dependency pin in
+# components/hac_platform/idf_component.yml.
+CONFIG_EPD_ESP32S3_I80_ROW_OUTPUT=y

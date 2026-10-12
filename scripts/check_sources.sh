@@ -24,6 +24,15 @@ EXCLUDE=(
     -not -path './*/third_party/*'
     -not -path './third_party/*'
     -not -path '*/vendor/*'
+    # ESP-IDF's component manager fetches dependencies into
+    # managed_components/ inside the app directory, which lands under apps/
+    # and therefore inside this scan. It is third-party source this
+    # repository does not author, does not commit (see CLAUDE.md's "Never
+    # commit") and must not hold to its own SPDX or pin-literal rules --
+    # exactly like vendor/ above. Added when the display backend became a
+    # managed component (docs/adr/0007-epaper-backend.md): without it the
+    # SPDX check fires on every example EPDiy ships.
+    -not -path '*/managed_components/*'
     -not -path '*/build/*'
     -not -path '*/build-*/*'
     -not -path '*/cmake-build-*/*'
