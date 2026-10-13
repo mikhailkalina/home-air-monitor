@@ -20,6 +20,7 @@ whenever a dependency is added or removed.
 | Eclipse Mosquitto client (`libmosquitto`) | 2.x | EPL-2.0 / EDL-1.0 | `platform/host/adp_telemetry_mqtt.c` | No (system package) |
 | Unity | 2.x | MIT | `tests/` | Vendored |
 | DejaVu Sans | 2.35 | Bitstream Vera (permissive; see below) | `core/ui/fonts/font_dejavu_sans_*.generated.c` | Vendored (source TTF under `third_party/fonts/dejavu-sans/`) |
+| Pillow | any recent | MIT-CMU (HPND) | `apps/tools/image_gen/image_gen.py prepare`, `apps/tools/font_gen/generate_fonts.py` — developer tools run by hand | No — not linked into anything; see below |
 
 ## Notes on the console's linenoise and argtable3
 
@@ -185,6 +186,19 @@ satisfies that by construction. The full text is vendored at
 three fixed pixel sizes) produced from the vendored TTF by
 `apps/tools/font_gen/generate_fonts.py`; regenerate and commit the result if the
 sizes, the covered range, or the source font change.
+
+## Notes on Pillow
+
+Pillow (the Python imaging library) is used only by two scripts a developer
+runs by hand: `font_gen` to rasterize the vendored font, and `image_gen.py
+prepare` to turn a photo into a panel-ready PNG
+(`docs/adr/0012-image-pipeline.md`). Neither the firmware nor the simulator
+links it, and no build step needs it: `image_gen.py embed`, which the builds
+run, uses the Python standard library alone. Its outputs carry no Pillow
+code, so it adds no obligation to anything this repository ships.
+
+The synthetic pictures in `apps/slideshow/images/` are drawn by
+`image_gen.py demo` itself and are this project's own, under Apache-2.0.
 
 ## Notes on SDL2
 

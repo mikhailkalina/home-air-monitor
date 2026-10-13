@@ -35,6 +35,8 @@ compile_commands.json
 # The on-target test app is a second ESP-IDF project with its own fetch of
 # the same dependencies (apps/firmware_esp32/test_app/).
 /apps/*/test_app/managed_components/
+# ...and so is the slideshow test app (apps/slideshow/esp32/).
+/apps/slideshow/esp32/managed_components/
 dependencies.lock
 *.bin
 *.elf
@@ -48,6 +50,7 @@ size.json
 !tests/golden/*.png
 
 # ---- Simulator and test artifacts -----------------------------------------
+__pycache__/
 frames/
 *.png.actual
 sim_state/

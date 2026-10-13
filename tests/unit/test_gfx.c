@@ -7,10 +7,13 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "hac_test.h"
 #include "ui/framebuffer.h"
 #include "ui/gfx.h"
+#include "ui/image.h"
 
 #define FG 9u
 #define BG 0u
@@ -171,6 +174,169 @@ static void blit_composites_over_the_existing_background(void)
     HAC_CHECK_EQ_INT(framebuffer_get_pixel(&fb, 1, 0), 7);  // untouched by the glyph's clear bits
 }
 
+// --- blit_image -------------------------------------------------------
+//
+// A 5x3 GRAY4 picture -- an odd width, so every row ends in a padding nibble
+// -- placed on a 12x6 canvas at every offset from wholly off the left/top
+// edge to wholly off the right/bottom one. That covers both copy paths
+// (whole bytes at an even x, pixel by pixel at an odd one) and every kind of
+// clipping, and each placement is checked pixel for pixel against the
+// definition: picture inside the visible rectangle, canvas everywhere else.
+//
+// The picture's levels are 1..13, the canvas is 15 and the padding nibble 14,
+// so a copy that drags padding across the picture's right edge shows up as a
+// 14 where the canvas should be.
+
+#define PIC_W 5
+#define PIC_H 3
+#define PIC_STRIDE 3u  // ceil(5 / 2)
+#define PIC_PADDING 14u
+#define CANVAS_W 12
+#define CANVAS_H 6
+#define CANVAS_BYTES 36u  // 6 bytes/row * 6 rows
+#define CANVAS 15u
+#define GUARD_BYTES 4u
+#define GUARD 0xA5u
+
+static uint8_t pic_level(int32_t px, int32_t py)
+{
+    return (uint8_t)(1 + (px + PIC_W * py) % 13);
+}
+
+static void make_picture(image_t *img, uint8_t *storage)
+{
+    for (int32_t py = 0; py < PIC_H; ++py) {
+        uint8_t *row = storage + (size_t)py * PIC_STRIDE;
+        for (size_t b = 0; b < PIC_STRIDE; ++b) {
+            const int32_t even = (int32_t)b * 2;
+            const uint8_t lo = pic_level(even, py);
+            const uint8_t hi = (even + 1 < PIC_W) ? pic_level(even + 1, py) : PIC_PADDING;
+            row[b] = (uint8_t)((uint8_t)(hi << 4) | lo);  // docs/adr/0003: odd x high
+        }
+    }
+    img->pixels = storage;
+    img->width = PIC_W;
+    img->height = PIC_H;
+    img->stride = PIC_STRIDE;
+    img->format = PIXFMT_GRAY4;
+}
+
+// Blits at (x, y) and checks every canvas pixel, the guard bytes past the
+// canvas, and the dirty rect. One HAC_CHECK per kind of fault, naming the
+// placement, so a broken path reports a handful of lines rather than
+// thousands.
+static void check_blit_at(int32_t x, int32_t y)
+{
+    uint8_t pic_storage[PIC_STRIDE * PIC_H];
+    image_t img;
+    make_picture(&img, pic_storage);
+
+    uint8_t storage[CANVAS_BYTES + GUARD_BYTES];
+    memset(storage + CANVAS_BYTES, GUARD, GUARD_BYTES);
+    framebuffer_t fb;
+    framebuffer_init(&fb, storage, CANVAS_BYTES, CANVAS_W, CANVAS_H, PIXFMT_GRAY4);
+    framebuffer_clear(&fb, CANVAS);
+    framebuffer_reset_dirty(&fb);
+
+    gfx_blit_image(&fb, x, y, &img);
+
+    bool pixels_ok = true;
+    for (int32_t cy = 0; cy < CANVAS_H && pixels_ok; ++cy) {
+        for (int32_t cx = 0; cx < CANVAS_W; ++cx) {
+            const bool inside = cx >= x && cx < x + PIC_W && cy >= y && cy < y + PIC_H;
+            const uint8_t expected = inside ? pic_level(cx - x, cy - y) : CANVAS;
+            if (framebuffer_get_pixel(&fb, cx, cy) != expected) {
+                printf("  blit at (%d, %d): pixel (%d, %d) is %u, expected %u\n", (int)x, (int)y,
+                       (int)cx, (int)cy, framebuffer_get_pixel(&fb, cx, cy), expected);
+                pixels_ok = false;
+                break;
+            }
+        }
+    }
+    HAC_CHECK(pixels_ok);
+
+    bool guard_ok = true;
+    for (size_t i = 0; i < GUARD_BYTES; ++i) {
+        guard_ok = guard_ok && (storage[CANVAS_BYTES + i] == GUARD);
+    }
+    HAC_CHECK(guard_ok);
+
+    const int32_t vx0 = (x > 0) ? x : 0;
+    const int32_t vy0 = (y > 0) ? y : 0;
+    const int32_t vx1 = (x + PIC_W < CANVAS_W) ? x + PIC_W : CANVAS_W;
+    const int32_t vy1 = (y + PIC_H < CANVAS_H) ? y + PIC_H : CANVAS_H;
+    if (vx0 < vx1 && vy0 < vy1) {
+        const bool dirty_ok = fb.dirty && fb.dirty_rect.x == vx0 && fb.dirty_rect.y == vy0 &&
+                              fb.dirty_rect.w == vx1 - vx0 && fb.dirty_rect.h == vy1 - vy0;
+        if (!dirty_ok) {
+            printf("  blit at (%d, %d): dirty rect wrong\n", (int)x, (int)y);
+        }
+        HAC_CHECK(dirty_ok);
+    } else {
+        HAC_CHECK(!fb.dirty);
+    }
+}
+
+static void blit_image_places_and_clips_correctly_at_every_offset(void)
+{
+    for (int32_t y = -PIC_H - 1; y <= CANVAS_H + 1; ++y) {
+        for (int32_t x = -PIC_W - 1; x <= CANVAS_W + 1; ++x) {
+            check_blit_at(x, y);
+        }
+    }
+}
+
+// The property the GRAY4 layout exists for (docs/adr/0003): a picture the
+// size of the buffer, placed at the origin, is the buffer's bytes exactly.
+static void a_buffer_sized_picture_lands_byte_for_byte(void)
+{
+    uint8_t pic_storage[CANVAS_BYTES];
+    for (size_t i = 0; i < sizeof(pic_storage); ++i) {
+        pic_storage[i] = (uint8_t)(i * 37u + 11u);
+    }
+    const image_t img = {
+        .pixels = pic_storage,
+        .width = CANVAS_W,
+        .height = CANVAS_H,
+        .stride = CANVAS_BYTES / CANVAS_H,
+        .format = PIXFMT_GRAY4,
+    };
+
+    uint8_t storage[CANVAS_BYTES];
+    framebuffer_t fb;
+    make_fb(&fb, storage, sizeof(storage), CANVAS_W, CANVAS_H);
+
+    gfx_blit_image(&fb, 0, 0, &img);
+
+    HAC_CHECK(memcmp(storage, pic_storage, CANVAS_BYTES) == 0);
+}
+
+static void blit_image_of_another_format_or_nothing_draws_nothing(void)
+{
+    uint8_t pic_storage[PIC_STRIDE * PIC_H];
+    image_t img;
+    make_picture(&img, pic_storage);
+    img.format = PIXFMT_MONO1;
+
+    uint8_t storage[CANVAS_BYTES];
+    framebuffer_t fb;
+    make_fb(&fb, storage, sizeof(storage), CANVAS_W, CANVAS_H);
+
+    gfx_blit_image(&fb, 0, 0, &img);
+    gfx_blit_image(&fb, 0, 0, NULL);
+    img.format = PIXFMT_GRAY4;
+    img.pixels = NULL;
+    gfx_blit_image(&fb, 0, 0, &img);
+
+    HAC_CHECK(!fb.dirty);
+    for (size_t i = 0; i < CANVAS_BYTES; ++i) {
+        if (storage[i] != 0u) {
+            HAC_CHECK_EQ_INT(storage[i], 0);
+            break;
+        }
+    }
+}
+
 // --- draw_text / measure_text -----------------------------------------
 
 // A minimal font covering only 'A' (a 2x2 block) and 'B' (a 1x1 dot), so
@@ -261,6 +427,10 @@ int main(void)
 
     HAC_RUN(blit_paints_set_bits_and_leaves_clear_bits_untouched);
     HAC_RUN(blit_composites_over_the_existing_background);
+
+    HAC_RUN(blit_image_places_and_clips_correctly_at_every_offset);
+    HAC_RUN(a_buffer_sized_picture_lands_byte_for_byte);
+    HAC_RUN(blit_image_of_another_format_or_nothing_draws_nothing);
 
     HAC_RUN(draw_text_places_each_glyph_and_advances_the_cursor);
     HAC_RUN(an_unsupported_codepoint_is_skipped_without_advancing);

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Slideshow test app"
+
+    config HAC_SLIDESHOW_INTERVAL_S
+        int "Seconds from the end of one picture's refresh to the next"
+        range 1 86400
+        default 60
+        help
+            Every picture is a whole-panel REFRESH_FULL, about 3.3 s on this
+            panel. A value below the panel's minimum full-refresh interval
+            (BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS in
+            platform/esp32_t5s3/board_config.h, 60 s) is raised to it at
+            runtime, and the boot log says so: the slideshow drives the
+            glass no harder than the product may.
+
+    config HAC_SLIDESHOW_CAPTION
+        bool "Caption each picture with its number and file name"
+        default y
+        help
+            A small boxed "n/N name" in the bottom-left corner, so a photo
+            of the panel says which picture -- and which dithering -- it
+            shows. Turn it off for pictures meant to be looked at.
+
+endmenu

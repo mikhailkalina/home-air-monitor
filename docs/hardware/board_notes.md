@@ -555,6 +555,16 @@ layout settles, not before.
       off for some hours, then flash the `sdkconfig.calibration_residue`
       image and judge its first, "baseline" ramp -- one full refresh after
       the idle period -- against the phase-2c photographs.
+      **Without partial refreshes too, 2026-10-13**
+      (`docs/adr/0012-image-pipeline.md`, "Seen on the panel", "By eye"):
+      in the slideshow test app, which drives nothing but `REFRESH_FULL`
+      a minute apart, the 1-8 px checkerboards and lines of
+      `03_fine_detail` still showed as faint stripes and small squares on
+      the greys of the ramp and the dither bands three and four full
+      refreshes later, while the 60 px squares shown immediately before the
+      ramp left nothing visible. So residue is not only a partial-refresh
+      matter, and it seems to follow edges rather than area -- which bears
+      on text, and on dithered photographs.
 - [ ] **Vertical stripes in white after a full refresh.** Found 2026-10-13,
       phase 2c. In `REFRESH_FULL`, GC16 after `epd_clear()` flashes
       white-to-white pixels (15 passes dark, 15 light -- GL16 does nothing
@@ -582,7 +592,12 @@ layout settles, not before.
       simulator's full refresh is about 4 % slow for this reason alone
       (`docs/adr/0008-panel-timing.md`, "Task context"). Fix by running
       `epd_calibration_run()` on a task pinned like the event loop's, then
-      update `EPD_SIM_CLEAR_REFRESH_MS`.
+      update `EPD_SIM_CLEAR_REFRESH_MS`. **Data point 2026-10-13**: the
+      slideshow test app, flushing from `app_main` (core 0) like the
+      calibration, measured the clear at 2,456-2,458 ms on five different
+      pictures (`docs/adr/0012-image-pipeline.md`, "Seen on the panel") --
+      the calibrated figure exactly, so the context, not the content, is
+      what moves it. Still open: the product's own task is not measured.
 - [x] **A full refresh of part of the screen. Tried and rejected
       2026-10-13** (`docs/adr/0010-regional-full-refresh.md`, branch
       `experiment/regional-full-refresh`, not merged). It was fast -- 1.17 s

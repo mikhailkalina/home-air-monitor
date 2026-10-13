@@ -85,6 +85,12 @@ cd apps/firmware_esp32 && idf.py reconfigure && idf.py build
 # On-target contract tests (ADR 0009): Unity app, every linked test runs at boot
 cd apps/firmware_esp32/test_app && idf.py -T hac_platform build
 
+# Slideshow test app (ADR 0012): a picture a minute, PNGs from apps/slideshow/images/
+./build/host-debug/apps/slideshow/host/slideshow --time-scale 20
+./build/host-debug/apps/slideshow/host/slideshow --headless --frames out/
+cd apps/slideshow/esp32 && idf.py build      # -DSLIDESHOW_IMAGES_DIR=<dir> for others
+python3 apps/tools/image_gen/image_gen.py prepare photo.jpg --out-dir <dir>  # needs Pillow
+
 # Panel calibration image (ADR 0008), in its own build dir and sdkconfig
 cd apps/firmware_esp32 && idf.py -B build-calibration -D SDKCONFIG=build-calibration/sdkconfig \
     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration" build

@@ -93,6 +93,12 @@ uint8_t framebuffer_get_pixel(const framebuffer_t *fb, int32_t x, int32_t y);
 // display, so the next round of drawing starts a fresh bounding box.
 void framebuffer_reset_dirty(framebuffer_t *fb);
 
+// Grows the dirty rect to cover `area`, clipped to the buffer. For a caller
+// that writes `pixels` directly -- a whole-row copy -- rather than through
+// framebuffer_set_pixel(), which tracks this itself. An empty area, or one
+// entirely outside the buffer, changes nothing.
+void framebuffer_mark_dirty(framebuffer_t *fb, const rect_t *area);
+
 // Computes the bounding box of every byte that differs between `current` and
 // `previous` -- typically the buffer a screen was just rendered into and a
 // snapshot of what the panel was last successfully flushed with. This is

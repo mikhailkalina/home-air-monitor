@@ -96,6 +96,7 @@ home-air-monitor/
 ├── cmake/
 │   ├── sources_core.cmake          # THE source list for the core, shared by host and IDF
 │   ├── sources_drivers.cmake
+│   ├── image_gen.cmake             # PNG -> C at build time, shared by host and IDF
 │   └── warnings.cmake              # -Wall -Wextra -Werror -Wconversion ...
 │
 ├── ports/                          # ★ HEADERS ONLY. The platform contract.
@@ -125,6 +126,7 @@ home-air-monitor/
 │   │   └── app_deps.h              # dependency injection struct
 │   ├── ui/
 │   │   ├── framebuffer.h/.c        # platform-neutral buffer (4bpp gray / 1bpp)
+│   │   ├── image.h                 # read-only picture, the source of gfx_blit_image()
 │   │   ├── gfx.h/.c                # primitives: line, rect, blit, glyph
 │   │   ├── fonts/                  # generated bitmap fonts (.c)
 │   │   ├── view_model.h/.c         # air_reading_t → what actually gets drawn
@@ -202,9 +204,16 @@ home-air-monitor/
 │   │   ├── CMakeLists.txt
 │   │   └── main.c                  # composition + CLI parsing
 │   │
+│   ├── slideshow/                  # test app: a picture a minute (ADR 0012)
+│   │   ├── slideshow.h/.c          # schedule + rendering, shared by both compositions
+│   │   ├── images/                 # panel-ready PNGs (the synthetic test set)
+│   │   ├── host/main.c             # composition: simulator window or PNG frames
+│   │   └── esp32/                  # ESP-IDF project linking ../../firmware_esp32/components
+│   │
 │   └── tools/
 │       ├── scenario_gen/           # scenario file generator
-│       └── font_gen/
+│       ├── font_gen/
+│       └── image_gen/              # photo -> panel-ready PNG -> C (ADR 0012)
 │
 ├── tests/
 │   ├── unit/                       # pure functions: thresholds, JSON, parsers, view_model

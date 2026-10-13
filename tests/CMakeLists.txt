@@ -90,6 +90,71 @@ target_link_libraries(test_panel_limits_agree PRIVATE hac_platform_host hac_test
 hac_apply_warnings(test_panel_limits_agree)
 add_test(NAME test_panel_limits_agree COMMAND test_panel_limits_agree)
 
+# The slideshow test app's schedule and layout, compiled from where its two
+# compositions compile it, like duration_stats.c above.
+add_executable(test_slideshow
+    unit/test_slideshow.c
+    ${HAC_ROOT}/apps/slideshow/slideshow.c
+)
+target_include_directories(test_slideshow PRIVATE ${HAC_ROOT}/apps/slideshow)
+target_link_libraries(test_slideshow PRIVATE hac_core hac_test_support)
+hac_apply_warnings(test_slideshow)
+add_test(NAME test_slideshow COMMAND test_slideshow)
+
+# The picture pipeline end to end (docs/adr/0012-image-pipeline.md): PNG
+# fixtures embedded by apps/tools/image_gen/image_gen.py through the same
+# cmake/image_gen.cmake the slideshow uses, then blitted. Needs a Python 3
+# interpreter -- the standard library only -- and is left out without one,
+# as the slideshow is.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    include(${HAC_ROOT}/cmake/image_gen.cmake)
+    set(HAC_IMAGE_FIXTURES ${CMAKE_CURRENT_SOURCE_DIR}/unit/fixtures/image_gen)
+
+    add_executable(test_image_embed unit/test_image_embed.c)
+    target_link_libraries(test_image_embed PRIVATE hac_core hac_test_support)
+    hac_embed_images(test_image_embed
+        NAME test_images
+        PYTHON ${Python3_EXECUTABLE}
+        IMAGES
+            ${HAC_IMAGE_FIXTURES}/gray16.png
+            ${HAC_IMAGE_FIXTURES}/gray4.png
+            ${HAC_IMAGE_FIXTURES}/gray8.png
+            ${HAC_IMAGE_FIXTURES}/palette4.png
+            ${HAC_IMAGE_FIXTURES}/rgb.png
+    )
+    hac_apply_warnings(test_image_embed)
+    add_test(NAME test_image_embed COMMAND test_image_embed)
+
+    # embed must refuse what is not panel-ready rather than guess. Each case
+    # passes only on its own refusal message, so a crash -- or a refusal for
+    # the wrong reason -- fails it.
+    set(image_gen ${HAC_ROOT}/apps/tools/image_gen/image_gen.py)
+    set(reject_dir ${CMAKE_CURRENT_BINARY_DIR}/image_gen_rejects)
+    foreach(case IN ITEMS
+            "off_level|pixel [(]3, 1[)] is grey 100, not one of the sixteen levels"
+            "colour|pixel [(]2, 2[)] is a colour, not a grey"
+            "transparent|pixel [(]0, 0[)] is not fully opaque")
+        string(REPLACE "|" ";" parts "${case}")
+        list(GET parts 0 name)
+        list(GET parts 1 message)
+        add_test(NAME image_gen_rejects_${name}
+            COMMAND ${Python3_EXECUTABLE} ${image_gen} embed --name rejected
+                    --out-dir ${reject_dir} ${HAC_IMAGE_FIXTURES}/reject_${name}.png)
+        set_tests_properties(image_gen_rejects_${name} PROPERTIES
+            PASS_REGULAR_EXPRESSION "not panel-ready: ${message}")
+    endforeach()
+
+    # ...and round, when asked to, instead.
+    add_test(NAME image_gen_quantize_accepts_off_level
+        COMMAND ${Python3_EXECUTABLE} ${image_gen} embed --name quantized --quantize
+                --out-dir ${reject_dir} ${HAC_IMAGE_FIXTURES}/reject_off_level.png)
+    set_tests_properties(image_gen_quantize_accepts_off_level PROPERTIES
+        PASS_REGULAR_EXPRESSION "embedded 1 image")
+else()
+    message(WARNING "Python 3 not found: the image pipeline tests are not built.")
+endif()
+
 add_subdirectory(golden)
 add_subdirectory(contract)
 add_subdirectory(fuzz)
