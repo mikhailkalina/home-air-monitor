@@ -501,7 +501,13 @@ layout settles, not before.
       rules span almost every column. Candidate fix: draw the post-clear
       image with `MODE_GL16`, after checking that its greys from white match
       GC16's on this unit -- it changes every full refresh, so it gets its
-      own calibration run.
+      own calibration run. **Caution, 2026-10-13
+      (`docs/adr/0010-regional-full-refresh.md`):** the white-to-white flash
+      this would remove is doing real cleaning. A full refresh of only part
+      of the panel, where the empty columns missed it, left them grey and
+      kept earlier digits' outlines; a GL16 redraw would take it from every
+      white pixel. Any GL16 trial must re-run the ghosting probe, not just
+      the grey ramp.
 - [ ] **Re-measure the clear from the product's task.** The calibration ran
       on `app_main`'s task (core 0); the product refreshes from the event
       loop's task (core 1, priority 5), where the device run's log puts
@@ -512,8 +518,14 @@ layout settles, not before.
       (`docs/adr/0008-panel-timing.md`, "Task context"). Fix by running
       `epd_calibration_run()` on a task pinned like the event loop's, then
       update `EPD_SIM_CLEAR_REFRESH_MS`.
-- [ ] **A full refresh of part of the screen.** Asked 2026-10-13, not
-      pursued in phase 2c. EPDiy supports it -- `epd_clear_area()` masks
+- [x] **A full refresh of part of the screen. Tried and rejected
+      2026-10-13** (`docs/adr/0010-regional-full-refresh.md`, branch
+      `experiment/regional-full-refresh`, not merged). It was fast -- 1.17 s
+      for the CO2 headline's band against 3.3 s for the whole panel, a
+      regional clear costing 502 ms + 3.607 ms per written row -- but the
+      refreshed area left grey patches in its empty columns and showed as a
+      whiter box against the rest of the screen. The notes below are what
+      motivated the attempt. Asked 2026-10-13, not pursued in phase 2c. EPDiy supports it -- `epd_clear_area()` masks
       columns and skips rows outside the rectangle, and GC16 can follow over
       the same rectangle -- and costs by rows, so the CO2 headline's band
       would flash for well under a second instead of the whole panel for

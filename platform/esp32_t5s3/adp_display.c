@@ -172,7 +172,10 @@ static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw
 //                        a changed pixel while leaving other white columns
 //                        alone, which can leave faint vertical stripes in
 //                        white. Both are open items in board_notes.md; GL16
-//                        after the clear is the candidate for the second.
+//                        after the clear is the candidate for the second,
+//                        but the flash it would drop is also what cleans
+//                        white pixels (docs/adr/0010, which tried a full
+//                        refresh of part of the panel and lost it).
 //   REFRESH_PARTIAL   -> MODE_GL16 over `area`. Sixteen greys without the
 //                        clear pass: no flash, and only the changed pixels
 //                        are driven, so ghosting accumulates -- port_display.h's
