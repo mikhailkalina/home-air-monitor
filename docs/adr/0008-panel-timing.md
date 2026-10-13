@@ -270,7 +270,9 @@ white after a clear differ slightly, hence the stripes. In every other bar
 every pixel changed, every column was driven, and the treatment is uniform.
 The candidate fix -- draw the post-clear image with GL16, whose
 white-to-white is empty -- changes how every full refresh renders greys, so
-it is an open item to evaluate, not part of this phase.
+it is an open item to evaluate, not part of this phase. ADR 0010 later found
+that the flash it would remove is cleaning white pixels that the clear alone
+leaves grey, which makes it a riskier fix than it looks.
 
 ## The minimum full-refresh interval stays a guard
 
