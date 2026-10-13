@@ -46,6 +46,27 @@ target_compile_definitions(test_replay_source PRIVATE
     HAC_SCENARIOS_DIR="${HAC_ROOT}/scenarios"
 )
 
+# The one pure piece of the firmware's panel calibration mode, compiled from
+# where the firmware compiles it: apps/firmware_esp32/main/ is otherwise built
+# only by idf.py, so this is the only way its arithmetic gets a host test.
+add_executable(test_duration_stats
+    unit/test_duration_stats.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/duration_stats.c
+)
+target_include_directories(test_duration_stats PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_duration_stats PRIVATE hac_test_support)
+hac_apply_warnings(test_duration_stats)
+add_test(NAME test_duration_stats COMMAND test_duration_stats)
+
+# The device's panel limits against the simulator's. Only board_config.h's
+# directory is added -- it is plain data -- not anything that builds for the
+# ESP32.
+add_executable(test_panel_limits_agree unit/test_panel_limits_agree.c)
+target_include_directories(test_panel_limits_agree PRIVATE ${HAC_ROOT}/platform/esp32_t5s3)
+target_link_libraries(test_panel_limits_agree PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_panel_limits_agree)
+add_test(NAME test_panel_limits_agree COMMAND test_panel_limits_agree)
+
 add_subdirectory(golden)
 add_subdirectory(contract)
 add_subdirectory(fuzz)

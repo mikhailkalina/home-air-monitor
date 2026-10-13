@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Second overlay on top of sdkconfig.calibration: the layout-shift ghosting
+# probe on its own, with the timing suite skipped (it was measured once and
+# does not need repeating to answer this question). See
+# HAC_EPD_CALIBRATION_GHOST_PATTERN in main/Kconfig.projbuild.
+#
+#   idf.py -B build-calibration-shift -D SDKCONFIG=build-calibration-shift/sdkconfig \
+#       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration;sdkconfig.calibration_ghost_shift" build
+
+CONFIG_HAC_EPD_CALIBRATION_GHOST_SHIFT=y
+CONFIG_HAC_EPD_CALIBRATION_ITERATIONS=0

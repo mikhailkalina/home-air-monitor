@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Second overlay on top of sdkconfig.calibration: the residue test on its own
+# (run_residue_test() in main/epd_calibration.c) -- no ghosting probe, no
+# timing. Three ordinary full refreshes and three deep-clean events of two
+# extra REFRESH_CLEARs each, every one ending on a captioned grey ramp.
+#
+#   idf.py -B build-calibration-residue -D SDKCONFIG=build-calibration-residue/sdkconfig \
+#       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration;sdkconfig.calibration_residue" build
+
+CONFIG_HAC_EPD_CALIBRATION_GHOST_PARTIALS=0
+CONFIG_HAC_EPD_CALIBRATION_ITERATIONS=0
+CONFIG_HAC_EPD_CALIBRATION_RESIDUE_NORMAL_FULLS=3
+CONFIG_HAC_EPD_CALIBRATION_RESIDUE_DEEP_EVENTS=3
+CONFIG_HAC_EPD_CALIBRATION_RESIDUE_EXTRA_CLEARS=2

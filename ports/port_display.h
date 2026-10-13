@@ -28,7 +28,8 @@ extern "C" {
 #endif
 
 typedef enum {
-    REFRESH_FULL,       // full refresh with inversion; clears accumulated ghosting
+    REFRESH_FULL,       // full refresh with inversion; clears the ghosting that shows,
+                        // not necessarily every trace of drive history (ADR 0008)
     REFRESH_PARTIAL,    // fast, but ghosting accumulates and the panel degrades
     REFRESH_FAST_MONO,  // fast black-and-white mode, where the panel offers one
     REFRESH_CLEAR,      // clear / panel recovery

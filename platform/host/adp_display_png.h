@@ -25,6 +25,13 @@ typedef struct {
     uint8_t *pixels;  // the GRAY4 framebuffer the core draws into
     epd_model_t model;
 
+    // What the emulated glass shows, one GRAY4 level per pixel: not drawn
+    // anywhere, but it is what decides which rows a flush drives, and so how
+    // long it takes (epd_model_flush()). Must agree with the windowed
+    // adapter's, or headless runs and windowed runs time the same frames
+    // differently.
+    uint8_t *glass;
+
     char out_dir[512];
     uint32_t frame_index;
     bool write_frames;  // false when no output directory was given

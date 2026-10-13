@@ -49,16 +49,28 @@
 #define BOARD_EPD_WIDTH 960u
 #define BOARD_EPD_HEIGHT 540u
 
-// GUESSED -- these two are not yet measured on this board (phase 2c, with a
-// scope and a stopwatch on the panel, replaces them). They are kept equal to
-// platform/host/epd_emulation.h's EPD_SIM_MIN_FULL_REFRESH_INTERVAL_MS and
-// EPD_SIM_MAX_PARTIAL_REFRESHES_BEFORE_FULL on purpose, so update_policy
-// behaves identically on the device and in the simulator until a real
-// measurement exists. If phase 2c changes one, change the other in the same
-// commit and say so in docs/hardware/board_notes.md, or the two stop meaning
-// the same thing.
+// The two panel limits port_display reports to core/app/update_policy.c.
+// They must equal platform/host/epd_emulation.h's
+// EPD_SIM_MAX_PARTIAL_REFRESHES_BEFORE_FULL and
+// EPD_SIM_MIN_FULL_REFRESH_INTERVAL_MS, or the device and the simulator run
+// different policies; tests/unit/test_panel_limits_agree.c fails the host
+// build when they do not. The reasoning lives in epd_emulation.h and
+// docs/adr/0008-panel-timing.md, not here.
+//
+// OBSERVED (phase 2c, 2026-10-13): ten partial refreshes, one below the
+// earliest step at which ghosting probes showed anything on this panel, even
+// looked at closely.
+#define BOARD_EPD_MAX_PARTIAL_REFRESHES_BEFORE_FULL 10u
+
+// A GUARD, NOT A MEASUREMENT: a rate limit on the 3.7 s flashing refresh. No
+// stopwatch measures how often a panel "tolerates" a full refresh, the vendor
+// gives no figure, and no phase is scheduled to replace it.
 #define BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS 60000u
-#define BOARD_EPD_MAX_PARTIAL_REFRESHES_BEFORE_FULL 20u
+
+// The refresh timings themselves are not here: nothing on the device consumes
+// them. They are measured, and they live where they are used --
+// platform/host/epd_emulation.h -- with the raw figures in
+// docs/adr/0008-panel-timing.md.
 
 // --- e-paper control: 74HCT4094D shift register --------------------------
 //

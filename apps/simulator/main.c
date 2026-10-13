@@ -88,8 +88,9 @@ static void usage(const char *argv0)
            "  --duration <s>         stop after this many virtual seconds (0 = never)\n"
            "  --help\n"
            "\n"
-           "Panel: %ux%u, 16 grey levels. Every e-paper timing the simulator shows is an\n"
-           "unmeasured estimate; see platform/host/epd_emulation.h.\n",
+           "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
+           "panel (platform/host/epd_emulation.h, docs/adr/0008-panel-timing.md). The window\n"
+           "waits out each refresh divided by --time-scale: use 1 to see the real latency.\n",
            argv0, SIM_PANEL_WIDTH, SIM_PANEL_HEIGHT);
 }
 

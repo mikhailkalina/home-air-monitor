@@ -2,6 +2,7 @@
 
 #include "epd_model.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -46,40 +47,113 @@ rect_t epd_model_clip(const epd_model_t *m, const rect_t *area)
     return r;
 }
 
-// Interpolates a mode's quoted latency range by the fraction of the panel the
-// flush covers: a small update lands near the minimum, a whole-screen one near
-// the maximum. Both endpoints are unmeasured estimates (epd_emulation.h).
-static uint32_t duration_for(refresh_mode_t mode, uint32_t area_px, uint32_t panel_px)
+// Microseconds to whole milliseconds, rounding half up.
+static uint32_t us_to_ms(uint64_t us)
 {
-    uint32_t lo;
-    uint32_t hi;
-
-    switch (mode) {
-        case REFRESH_FULL:
-            lo = EPD_SIM_FULL_REFRESH_MIN_MS;
-            hi = EPD_SIM_FULL_REFRESH_MAX_MS;
-            break;
-        case REFRESH_PARTIAL:
-            lo = EPD_SIM_PARTIAL_REFRESH_MIN_MS;
-            hi = EPD_SIM_PARTIAL_REFRESH_MAX_MS;
-            break;
-        case REFRESH_FAST_MONO:
-            lo = EPD_SIM_FAST_MONO_REFRESH_MIN_MS;
-            hi = EPD_SIM_FAST_MONO_REFRESH_MAX_MS;
-            break;
-        case REFRESH_CLEAR:
-        default:
-            return EPD_SIM_CLEAR_REFRESH_MS;  // several inversions; area plays no part
-    }
-
-    if (panel_px == 0u) {
-        return lo;
-    }
-    const uint64_t span = (uint64_t)(hi - lo);
-    return lo + (uint32_t)((span * (uint64_t)area_px) / (uint64_t)panel_px);
+    return (uint32_t)((us + 500u) / 1000u);
 }
 
-void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode, epd_flush_t *out)
+// How long the panel takes for `mode` over a rectangle `area_rows` tall whose
+// passes write `written` rows, `changed` of them holding a changed pixel. The
+// difference pass covers every row of the rectangle; when nothing changed,
+// EPDiy stops there and draws nothing. A full refresh is the clear plus GC16,
+// which costs what GL16 does over the same rows (same 30 passes; 1,204.7 ms
+// measured for 540 rows against 1,206.1). Every constant is measured
+// (epd_emulation.h).
+static uint32_t duration_for(refresh_mode_t mode, uint32_t area_rows, uint32_t written,
+                             uint32_t changed)
+{
+    const uint64_t diff_us = (uint64_t)area_rows * EPD_SIM_DIFF_PER_ROW_US;
+
+    switch (mode) {
+        case REFRESH_PARTIAL:
+        case REFRESH_FULL: {
+            uint64_t us = diff_us;
+            if (changed > 0u) {
+                us += EPD_SIM_PARTIAL_BASE_US + (uint64_t)written * EPD_SIM_PARTIAL_PER_ROW_US;
+            }
+            const uint32_t ms = us_to_ms(us);
+            return (mode == REFRESH_FULL) ? EPD_SIM_CLEAR_REFRESH_MS + ms : ms;
+        }
+        case REFRESH_FAST_MONO: {
+            uint64_t us = diff_us;
+            if (changed > 0u) {
+                us += EPD_SIM_FAST_MONO_BASE_US + (uint64_t)written * EPD_SIM_FAST_MONO_PER_ROW_US;
+            }
+            return us_to_ms(us);
+        }
+        case REFRESH_CLEAR:
+        default:
+            return EPD_SIM_CLEAR_REFRESH_MS;
+    }
+}
+
+// Whether row `y` holds a pixel the drive changes, by the rule
+// epd_model_flush() documents. With no content to look at, every row of the
+// rectangle counts.
+static bool row_changes(const epd_model_t *m, bool full, const rect_t *r, uint32_t y,
+                        const framebuffer_t *next, const uint8_t *glass)
+{
+    if (y < r->y || y >= (uint32_t)r->y + r->h) {
+        return false;
+    }
+    if (next == NULL || glass == NULL) {
+        return true;
+    }
+    for (uint32_t x = r->x; x < (uint32_t)r->x + r->w; ++x) {
+        const uint8_t level = framebuffer_get_pixel(next, (int32_t)x, (int32_t)y);
+        const uint8_t was = full ? EPD_MODEL_GRAY4_WHITE : glass[(size_t)y * m->width + x];
+        if (level != was) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The rows a pass writes out in full, which is most of a refresh's time. EPDiy's row output
+// (output_i2s/render_i2s.c, i2s_output_frame()) visits every panel row on every pass. A row with a
+// changed pixel is written. Of each run of unchanged rows, the first two are written too -- as
+// no-op rows while the output pipeline drains (i2s_skip_row()'s `skipping < 2`) -- and the rest are
+// only clocked past, cheaply. A frame that ends on a written row latches one more out. Counting
+// this way, rather than counting changed rows, is what brings screen_home's full refresh, with its
+// many separate bands of text, within 1 % of the panel.
+static uint32_t written_rows(const epd_model_t *m, refresh_mode_t performed, const rect_t *area,
+                             const framebuffer_t *next, const uint8_t *glass, uint32_t *changed_out)
+{
+    *changed_out = 0u;
+    if (performed == REFRESH_CLEAR) {
+        return 0u;  // a clear is pushes, not passes; its time is a constant
+    }
+
+    const bool full = (performed == REFRESH_FULL);
+    const rect_t r = full ? epd_model_clip(m, NULL) : *area;
+
+    uint32_t written = 0u;
+    uint32_t changed = 0u;
+    uint32_t skipping = 0u;
+    for (uint32_t y = 0u; y < m->height; ++y) {
+        if (row_changes(m, full, &r, y, next, glass)) {
+            written++;
+            changed++;
+            skipping = 0u;
+        } else {
+            if (skipping < 2u) {
+                written++;
+            }
+            skipping++;
+        }
+    }
+    if (skipping == 0u) {
+        written++;
+    }
+
+    // Nothing changed: EPDiy returns before drawing anything at all.
+    *changed_out = changed;
+    return (changed == 0u) ? 0u : written;
+}
+
+void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode,
+                     const framebuffer_t *next, const uint8_t *glass, epd_flush_t *out)
 {
     memset(out, 0, sizeof(*out));
 
@@ -109,7 +183,16 @@ void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode, ep
         m->partials_since_full++;
     }
 
-    out->duration_ms = duration_for(out->performed, area_px, panel_px);
+    if (out->performed == REFRESH_FULL || out->performed == REFRESH_CLEAR) {
+        // The device drives the whole panel for both, whatever was asked for
+        // (platform/esp32_t5s3/adp_display.c).
+        out->area = epd_model_clip(m, NULL);
+        out->area_percent = 100u;
+    }
+    out->written_rows =
+        written_rows(m, out->performed, &out->area, next, glass, &out->changed_rows);
+    out->duration_ms =
+        duration_for(out->performed, out->area.h, out->written_rows, out->changed_rows);
     out->partials_since_full = m->partials_since_full;
 
     m->flush_count++;
@@ -141,11 +224,11 @@ void epd_model_log(const epd_model_t *m, const epd_flush_t *f)
         snprintf(mode, sizeof(mode), "%s", epd_refresh_mode_name(f->performed));
     }
 
-    printf("[epd] flush %-5u %-16s rect=%u,%u %ux%u (%u%%) %4u ms  partials=%u/%u  panel-time=%.1f "
-           "s\n",
+    printf("[epd] flush %-5u %-16s rect=%u,%u %ux%u (%u%%) rows=%u/%u %4u ms  partials=%u/%u  "
+           "panel-time=%.1f s\n",
            m->flush_count, mode, f->area.x, f->area.y, f->area.w, f->area.h, f->area_percent,
-           f->duration_ms, f->partials_since_full, m->max_partial_refreshes_before_full,
-           (double)m->simulated_ms_total / 1000.0);
+           f->changed_rows, f->written_rows, f->duration_ms, f->partials_since_full,
+           m->max_partial_refreshes_before_full, (double)m->simulated_ms_total / 1000.0);
 
     if (f->forced_full) {
         printf("[epd] FORCED FULL REFRESH: the partial-refresh budget of %u was exhausted, so the "

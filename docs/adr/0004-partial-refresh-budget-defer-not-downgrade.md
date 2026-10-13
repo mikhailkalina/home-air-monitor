@@ -77,3 +77,7 @@ windowed one, so CI sees it too.
   becomes rare and this decision costs almost nothing; if it measures a much
   smaller one, the decision is what keeps the panel alive. Either way the
   measurement changes one constant, not this logic.
+
+  **Update, phase 2c (ADR 0008):** the budget is now 10, set from ghosting
+  observed on the panel, and it did change one constant and no logic. The rule
+  above — err towards full refreshes when in doubt — is what chose 10 over 20.

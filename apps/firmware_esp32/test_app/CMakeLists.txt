@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The on-target test app of docs/architecture.md 9.2: a second ESP-IDF
+# project that links the firmware's own components and runs the Unity test
+# cases found in their test/ subdirectories. Which components' tests go in is
+# chosen at build time with -T (see idf_ext.py beside this file):
+#
+#   . $HOME/esp/esp-idf/export.sh
+#   cd apps/firmware_esp32/test_app
+#   idf.py -T hac_platform build
+#
+# The image runs every linked test case once at boot and prints Unity's
+# summary; there is no interactive menu, because this project flashes from a
+# different machine than it builds on (CLAUDE.md, "Environment") and the log
+# is all that comes back.
+#
+# It is configured from the firmware's own sdkconfig.defaults first and this
+# directory's second, so the adapters are tested under the firmware's tick
+# rate, console and partition table rather than under defaults of their own
+# -- the delay_ms() contract in particular is a statement about one tick
+# rate (docs/adr/0006).
+
+cmake_minimum_required(VERSION 3.16)
+
+set(SDKCONFIG_DEFAULTS
+    "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.defaults"
+    "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults"
+)
+
+# The firmware's components, not copies of them: hac_core, hac_contract,
+# hac_drivers, hac_platform and, through hac_platform's manifest, EPDiy.
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components")
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(hac_test_app)

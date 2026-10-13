@@ -4,7 +4,8 @@ Date: 2026-09-06
 
 ## Status
 
-Accepted. Superseded in part when phase 2d adds the test app below.
+Accepted. Superseded in part by ADR 0009: the test app arrived in phase 2c,
+not 2d, and the boot-time runner stays alongside it (ADR 0009 says why).
 
 ## Context
 

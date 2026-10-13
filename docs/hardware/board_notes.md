@@ -270,9 +270,19 @@ this bring-up baseline is what makes their actual cost visible.
 The e-paper panel must not be partially refreshed for an extended period —
 doing so leaves residual ghosting and causes irreversible damage. This is the
 hardware fact behind `max_partial_refreshes_before_full` in
-`ports/port_display.h`; phase 2c calibrates the actual threshold.
+`ports/port_display.h`. **Set from observation in phase 2c: 10**
+(`docs/adr/0008-panel-timing.md`, "Ghosting, and the budget").
 
 ## Ghosting observed in the simulator — a calibration starting point
+
+**Superseded by the panel, 2026-10-13 (phase 2c).** What the glass actually
+does is in `docs/adr/0008-panel-timing.md`, and it is not what this section's
+simulator showed: nothing at all is visible from 50 cm through 40 partial
+refreshes; close up, the artifact is light outlines of an earlier digit
+*inside* the current dark one (undriven dark pixels drifting lighter), not
+dark residue behind it, appearing after 11-25 partial refreshes in the worst
+realistic pattern. The section below is kept as the record of what was
+expected and why the probe watched the headline.
 
 **Observed 2026-09-06, phase 1c**, running `co2_spike_meeting.csv` at
 `--time-scale 60` in the windowed simulator, with the unmeasured emulation
@@ -343,7 +353,11 @@ layout settles, not before.
       across a sleep cycle, those comparisons produce garbage and the first
       wake would misjudge every threshold. The `port_clock` contract suite
       has no assertion covering this today; phase 5 should add one.
-- [ ] The `idf.py -T` test app of `docs/architecture.md` §9.2. Phase 2a runs
+- [x] The `idf.py -T` test app of `docs/architecture.md` §9.2. **Resolved
+      2026-10-13, phase 2c** (`docs/adr/0009-on-target-test-app.md`):
+      `apps/firmware_esp32/test_app/`, `idf.py -T hac_platform build`; the
+      `port_clock` and `port_log` contract lines on the device diff identical
+      to the host's. Phase 2a runs
       the `port_clock` / `port_log` contract suites once at device boot
       instead (see `docs/adr/0005-contract-suites-run-at-boot.md`), because
       there was no test-app scaffold and no `port_i2c` yet to justify
@@ -369,9 +383,22 @@ layout settles, not before.
       highlevel front, back and difference buffers -- costs **1,037,092
       bytes** of PSRAM. Internal RAM after init: 232,019 bytes free. These
       are the figures to re-measure in phases 3 and 4.
-- [ ] Measured refresh durations for each `refresh_mode_t`, and the real
+- [x] Measured refresh durations for each `refresh_mode_t`, and the real
       partial-refresh count at which ghosting becomes visible in the CO₂
-      headline region. These replace the estimates in
+      headline region. **Resolved 2026-10-13, phase 2c** -- see
+      `docs/adr/0008-panel-timing.md` for the table, the conditions (this
+      unit, 21 C) and the fits. In short: clear 2,456 ms; full 3,325 ms
+      (`screen_home`) to 3,661 ms (solid content); partial and fast mono
+      cost by rows, never by area -- a difference pass over the
+      rectangle's rows plus a per-pass cost for the rows EPDiy writes
+      (changed rows, plus two per run of unchanged ones); every case
+      repeatable to 0.1 %, and the model within about 1 % of the product's
+      own refreshes. Ghosting:
+      nothing visible from 50 cm through 40 partial refreshes; close up,
+      light outlines of earlier digits after 11-25 in the worst realistic
+      pattern; budget set to 10. `epd_emulation.h` and `board_config.h` were
+      updated together, and `tests/unit/test_panel_limits_agree.c` now keeps
+      them so. The history below is how the figures were reached. These replace the estimates in
       `platform/host/epd_emulation.h` and the matching guesses in
       `platform/esp32_t5s3/board_config.h` — phase 2c must update both files
       together, or the device and the simulator stop agreeing on what
@@ -414,8 +441,14 @@ layout settles, not before.
       remain in `board_config.h` as this project's record of the hardware and
       as the cross-check against EPDiy's board definition, which they match
       exactly.
-- [ ] Whether EPDiy's `epdiy_ED047TC1` waveform produces correct grayscale on
-      *this* unit. **Narrowed 2026-10-12, not closed.** The concern used to be
+- [x] Whether EPDiy's `epdiy_ED047TC1` waveform produces correct grayscale on
+      *this* unit. **Resolved by eye 2026-10-13, phase 2c**: on the
+      calibration run's 16-level ramp every neighbouring pair is
+      distinguishable except **levels 0 and 1**, which look identical; 14
+      and 15 are distinct. Fifteen usable greys, monotonic. Nothing in
+      `core/ui/view_model.h` uses level 1, and the simulator now renders 1 as
+      0 (`EPD_SIM_DARKEST_MERGED_LEVEL`). Not a photometric measurement --
+      "identical" means to the eye, in room light. **Narrowed 2026-10-12, not closed.** The concern used to be
       that FastEPD's `u8FivePointTwoMatrix` was characterised for a different
       panel entirely; EPDiy instead ships a waveform named for this panel's
       driver IC, with five modes (`MODE_DU`, `MODE_GC16`, `MODE_GL16`, and the
@@ -439,6 +472,62 @@ layout settles, not before.
       only to avoid FastEPD's broken 4bpp column mask and is gone. The dirty
       rect now reaches the panel as the core computed it, so phase 2c watches
       the CO2 headline region only, as it originally planned.
+- [ ] **Residue that survives full refreshes, in greys only -- and how fast
+      it fades.** Found 2026-10-13, phase 2c
+      (`docs/adr/0008-panel-timing.md`, "Residue that survives a full
+      refresh"). Forty partial refreshes that flipped the CO2 headline
+      between three and four digits left the "ppm" unit legible on mid-dark
+      greys through ten full refreshes and six extra clears; extra clears
+      made it fainter, not gone. A second identical run (30 whole-panel
+      drives, ~20 minutes, in all) left it visible only from a few
+      centimetres: **not permanent**. It is invisible at black and at white
+      -- it shows only when a grey is drawn over it -- so `screen_home`'s
+      black-on-white hides it, and grey inks drawn over the headline's rows
+      would not. `REFRESH_FULL` was left as is. Open: whether time or drives
+      erased it, and so whether one full refresh per ten partial ones keeps
+      pace in steady use. Next, with the images that exist: run the
+      `sdkconfig.calibration_ghost_shift` image to the end, power the board
+      off for some hours, then flash the `sdkconfig.calibration_residue`
+      image and judge its first, "baseline" ramp -- one full refresh after
+      the idle period -- against the phase-2c photographs.
+- [ ] **Vertical stripes in white after a full refresh.** Found 2026-10-13,
+      phase 2c. In `REFRESH_FULL`, GC16 after `epd_clear()` flashes
+      white-to-white pixels (15 passes dark, 15 light -- GL16 does nothing
+      for them), but only in columns that contain a changed pixel, because
+      EPDiy's column mask is global. White areas therefore come out in two
+      slightly different whites, split along content columns: on the grey
+      ramp, stripes at the edges of the "15" label running the full height
+      of its bar. Cosmetic, and nearly invisible on `screen_home`, whose
+      rules span almost every column. Candidate fix: draw the post-clear
+      image with `MODE_GL16`, after checking that its greys from white match
+      GC16's on this unit -- it changes every full refresh, so it gets its
+      own calibration run.
+- [ ] **Re-measure the clear from the product's task.** The calibration ran
+      on `app_main`'s task (core 0); the product refreshes from the event
+      loop's task (core 1, priority 5), where the device run's log puts
+      `epd_clear()` at about 2,322 ms against the calibrated 2,456 ms. EPDiy
+      runs the clear's push loop in the calling task, so its context shows;
+      partial refreshes, rendered on EPDiy's own tasks, do not differ. The
+      simulator's full refresh is about 4 % slow for this reason alone
+      (`docs/adr/0008-panel-timing.md`, "Task context"). Fix by running
+      `epd_calibration_run()` on a task pinned like the event loop's, then
+      update `EPD_SIM_CLEAR_REFRESH_MS`.
+- [ ] **A full refresh of part of the screen.** Asked 2026-10-13, not
+      pursued in phase 2c. EPDiy supports it -- `epd_clear_area()` masks
+      columns and skips rows outside the rectangle, and GC16 can follow over
+      the same rectangle -- and costs by rows, so the CO2 headline's band
+      would flash for well under a second instead of the whole panel for
+      3.3 s. Two things stand in the way, neither of them the driver: (1)
+      `update_policy` keeps one partial-refresh count for the whole panel,
+      and a regional full refresh would reset it while the rest of the
+      screen keeps accumulating, so the budget would need to become
+      per-region -- a core change and an ADR; (2) the rectangle's edge may
+      show, by the same mechanism as the white-on-white column stripes
+      above. A GC16 pass alone, without the clear, does **not** do the job:
+      in this waveform GC16's black-to-black transition is empty (only
+      white-to-white flashes), so the undriven dark pixels that make the
+      outline ghosting are left as they are. A calibration case timing and
+      photographing a headline-band clear would settle (2) cheaply.
 - [ ] **Panel power: why the first-light build rendered at all.** The build
       that first put an image on this panel (ELF SHA256 `320dfba08...`)
       called `epd_hl_update_area()` with no `epd_poweron()` anywhere in its

@@ -20,8 +20,8 @@ menu "Home Air Monitor"
 
     config HAC_EPD_TEST_PATTERN
         bool "Drive a whole-panel test pattern once at startup"
-        default y
-        depends on !HAC_DISPLAY_NULL
+        default n
+        depends on !HAC_DISPLAY_NULL && !HAC_EPD_CALIBRATION
         help
             Phase 2b/2c bring-up diagnostic (apps/firmware_esp32/main/main.c,
             run_epd_test_pattern): before the event loop starts, fill the
@@ -34,15 +34,126 @@ menu "Home Air Monitor"
 
             COSTS ONE MINUTE OF BOOT TIME. The diagnostic is a whole-panel
             refresh, and the panel reports a minimum interval between those
-            (BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS, currently 60 s and still
-            a guess pending phase 2c). Honouring it means waiting that interval
+            (BOARD_EPD_MIN_FULL_REFRESH_INTERVAL_MS, 60 s -- a guard, not a
+            measurement; see board_config.h). Honouring it means waiting that interval
             out before the first rendered frame, rather than handing over to
             core/app/update_policy.c -- which has no way to know about a
             refresh it never issued -- and letting it add a second whole-panel
             refresh immediately.
 
-            Set this to n once the panel is known to work: a boot then
-            performs exactly one whole-panel refresh, screen_home's own first
-            frame, and reaches it immediately.
+            Off by default since phase 2c, whose calibration run drove this
+            panel through every refresh mode: the question it answers is
+            settled for this unit. Turn it on to bring up a second one. With
+            it off, a boot performs exactly one whole-panel refresh,
+            screen_home's own first frame, and reaches it immediately.
+
+    config HAC_EPD_CALIBRATION
+        bool "Panel calibration mode: time every refresh mode, probe ghosting"
+        default n
+        depends on !HAC_DISPLAY_NULL
+        help
+            Phase 2c (apps/firmware_esp32/main/epd_calibration.c). Replaces
+            the normal firmware: no event loop runs. Instead the board
+
+              1. runs a ghosting probe -- one full refresh of screen_home,
+                 then HAC_EPD_CALIBRATION_GHOST_PARTIALS partial refreshes of
+                 it with the CO2 headline stepping like the bring-up
+                 sawtooth, each numbered on the panel, then a full refresh.
+                 Someone has to watch the panel for this part;
+              2. times every refresh_mode_t through port_display->flush()
+                 with esp_timer -- REFRESH_CLEAR, REFRESH_FULL (solid black
+                 and screen_home), REFRESH_PARTIAL and REFRESH_FAST_MONO over
+                 rectangles of several widths and heights -- and logs min,
+                 max and mean per case;
+              3. leaves a 16-level grey ramp on the panel.
+
+            Whole-panel drives are spaced by the panel's reported minimum
+            full-refresh interval and the timing batches stay inside its
+            partial-refresh budget, so a full run takes roughly 20 minutes
+            at the defaults. The ghosting probe deliberately exceeds the
+            budget -- finding the real one is its purpose -- and is bounded
+            by its own count below.
+
+            Kept rather than deleted after phase 2c because e-paper timing
+            depends on temperature and on the individual panel: a second
+            unit, or this one in a cold room, is re-measured by building
+            with sdkconfig.calibration (see that file). Leave this n for
+            every normal build.
+
+    if HAC_EPD_CALIBRATION
+
+        config HAC_EPD_CALIBRATION_ITERATIONS
+            int "Iterations per timing case (0 skips the timing)"
+            range 0 20
+            default 5
+            help
+                Each iteration yields one sample per whole-panel case and two
+                per partial or fast-mono case (there and back). Each
+                iteration costs three of the panel's minimum full-refresh
+                intervals. 0 runs the ghosting probe and the grey ramps only
+                (sdkconfig.calibration_ghost_shift does).
+
+        choice HAC_EPD_CALIBRATION_GHOST_PATTERN
+            prompt "Ghosting probe pattern"
+            default HAC_EPD_CALIBRATION_GHOST_SAWTOOTH
+            help
+                What the CO2 headline does between probe steps. See
+                epd_calibration.c for why there are two.
+
+            config HAC_EPD_CALIBRATION_GHOST_SAWTOOTH
+                bool "Sawtooth: CO2 walks as the bring-up data does"
+
+            config HAC_EPD_CALIBRATION_GHOST_SHIFT
+                bool "Shift: CO2 alternates between 3 and 4 digits every step"
+
+        endchoice
+
+        config HAC_EPD_CALIBRATION_GHOST_PARTIALS
+            int "Partial refreshes in the ghosting probe (0 skips it)"
+            range 0 100
+            default 40
+            help
+                An upper bound, not a target: the probe always ends with a
+                full refresh, which is what clears the residue. Twice the
+                partial-refresh budget the panel reported before phase 2c
+                measured it. Resetting the board at any point also ends the
+                probe -- the next boot's first frame is a full refresh.
+
+        config HAC_EPD_CALIBRATION_GHOST_PAUSE_MS
+            int "Pause between ghosting-probe partial refreshes (ms)"
+            range 0 60000
+            default 6000
+            help
+                Time for the observer to look at the panel after each step.
+                Real use spaces partial refreshes by tens of seconds; if
+                residue relaxes between drives, a shorter pause here
+                overstates ghosting, which errs towards a smaller budget --
+                the safe direction. The probe does not separate the two.
+
+        config HAC_EPD_CALIBRATION_RESIDUE_NORMAL_FULLS
+            int "Residue test: ordinary full refreshes, each shown on a ramp"
+            range 0 10
+            default 0
+            help
+                Whether residue left by partial refreshes fades under the
+                full refreshes the product already does. 0 skips this half.
+                See run_residue_test() in epd_calibration.c.
+
+        config HAC_EPD_CALIBRATION_RESIDUE_DEEP_EVENTS
+            int "Residue test: deep-clean events, each shown on a ramp"
+            range 0 10
+            default 0
+            help
+                Each event runs HAC_EPD_CALIBRATION_RESIDUE_EXTRA_CLEARS
+                REFRESH_CLEARs back to back and then the ramp's own full
+                refresh: what a REFRESH_FULL with more clear cycles would do.
+                0 skips this half.
+
+        config HAC_EPD_CALIBRATION_RESIDUE_EXTRA_CLEARS
+            int "Residue test: extra REFRESH_CLEARs per deep event"
+            range 0 10
+            default 2
+
+    endif
 
 endmenu

@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Overlay for the panel calibration image (phase 2c; see main/Kconfig.projbuild,
+# HAC_EPD_CALIBRATION). Layered on top of sdkconfig.defaults into a build
+# directory and sdkconfig of its own, so it never touches the sdkconfig a
+# normal build uses -- which, after menuconfig, may hold credentials:
+#
+#   idf.py -B build-calibration -D SDKCONFIG=build-calibration/sdkconfig \
+#       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration" build
+#
+# Then confirm the mode actually reached the image (CLAUDE.md: a Kconfig
+# symbol that never reached sdkconfig compiles out silently):
+#
+#   grep CONFIG_HAC_EPD_CALIBRATION build-calibration/sdkconfig
+#   strings build-calibration/home_air_monitor.bin | grep "panel calibration"
+
+CONFIG_HAC_EPD_CALIBRATION=y
+
+# The calibration run executes on app_main's stack, and its deepest call chain
+# overflowed the default 3584 bytes on the first flush. See
+# CAL_MIN_MAIN_TASK_STACK_BYTES in main/epd_calibration.c for the measured
+# frames; that file refuses to compile a calibration image without this.
+#
+# Defaults only fill symbols an sdkconfig does not already hold: an existing
+# build-calibration/sdkconfig from before this line keeps 3584. Delete it and
+# rebuild, then grep CONFIG_ESP_MAIN_TASK_STACK_SIZE out of it.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
