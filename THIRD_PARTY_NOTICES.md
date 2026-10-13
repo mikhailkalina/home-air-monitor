@@ -7,6 +7,8 @@ whenever a dependency is added or removed.
 | Component | Version | License | Used in | Distributed in this repo |
 |---|---|---|---|---|
 | ESP-IDF | 5.x | Apache-2.0 | `apps/firmware_esp32`, `platform/esp32_t5s3` | No (external toolchain) |
+| linenoise (inside ESP-IDF's `console` component) | ESP-IDF 5.5's copy | BSD-2-Clause | `apps/firmware_esp32/main/console.c` (the REPL's line editor) | No — part of ESP-IDF; see below |
+| argtable3 (inside ESP-IDF's `console` component) | 3.2.2 | BSD-3-Clause, plus the BSD/Tcl-style notices of code it bundles | `apps/firmware_esp32/main/console.c` (command parsing, `help`) | No — part of ESP-IDF; see below |
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
@@ -18,6 +20,22 @@ whenever a dependency is added or removed.
 | Eclipse Mosquitto client (`libmosquitto`) | 2.x | EPL-2.0 / EDL-1.0 | `platform/host/adp_telemetry_mqtt.c` | No (system package) |
 | Unity | 2.x | MIT | `tests/` | Vendored |
 | DejaVu Sans | 2.35 | Bitstream Vera (permissive; see below) | `core/ui/fonts/font_dejavu_sans_*.generated.c` | Vendored (source TTF under `third_party/fonts/dejavu-sans/`) |
+
+## Notes on the console's linenoise and argtable3
+
+Phase 2d's serial console (`docs/adr/0011-i2c-bus-adapter.md`) uses ESP-IDF's
+`esp_console` REPL, which links two third-party libraries ESP-IDF ships inside
+its `console` component: **linenoise** (Salvatore Sanfilippo and Pieter
+Noordhuis, BSD-2-Clause) and **argtable3** (Stewart Heitmann, BSD-3-Clause;
+its `LICENSE` also carries the notices of the NetBSD getopt, Tcl regex, C hash
+table and Better String code it bundles, all permissive). Both were checked in
+`~/esp/esp-idf/components/console/` and both are confirmed linked into
+`home_air_monitor.bin` by its map file.
+
+Nothing is vendored here and the source obligations are ESP-IDF's. What they
+add is a **binary** one: a firmware image given to someone else must carry
+these copyright notices and disclaimers, as the ESP-IDF image already must for
+the rest of ESP-IDF's third-party code. No copyleft term is involved.
 
 ## Notes on the EPDiy display backend, and its LGPL-3.0 obligations
 

@@ -15,6 +15,7 @@ idf_component_register(
     SRCS
         ${HAC_ROOT}/tests/contract/esp32/test_port_clock_contract.c
         ${HAC_ROOT}/tests/contract/esp32/test_port_log_contract.c
+        ${HAC_ROOT}/tests/contract/esp32/test_port_i2c_contract.c
     PRIV_REQUIRES unity hac_platform hac_contract
 )
 

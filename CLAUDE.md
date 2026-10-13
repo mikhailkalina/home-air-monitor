@@ -202,9 +202,20 @@ panel from the same core code the simulator runs, with partial refreshes of the 
 Measured: full refresh 3.2–3.7 s (of which `epd_clear()` ~2.4 s), partial ~0.4 s, EPDiy
 ~1 MB of PSRAM.
 
-Next: phase 2c — panel calibration (refresh timings into `platform/host/epd_emulation.h`,
-the ghosting threshold, the waveform's greys on this unit, and whether the panel's
-high-voltage rails are really off between refreshes). See the open items in
+Phase 2c complete and confirmed on hardware: refresh timings measured into
+`platform/host/epd_emulation.h`, partial-refresh budget set to 10 from observed ghosting,
+15 usable greys (ADR 0008); the on-target test app (ADR 0009); a regional full refresh
+tried and rejected (ADR 0010). Still open from it: residue in the greys, column stripes in
+white, and whether the panel's high-voltage rails are really off between refreshes.
+
+Phase 2d complete and confirmed on hardware: `adp_i2c.c` drives the shared I²C bus through
+ESP-IDF's `i2c_master` behind `port_i2c` (ADR 0011). The boot scan finds the RTC at `0x51`
+and the touch controller at `0x5D`, where a GT911 answers — not the `0x5A` recorded before.
+The `port_i2c` contract passes in the test app, including a forced hang that `recover()`
+clears and a stalled SCL. Serial console on USB-Serial-JTAG: `i2c_scan`, `i2c_recover`.
+
+Next: phase 3 — sensors (SCD41, BME68x drivers over `port_i2c`, wrapped as
+`sensor_source_t`, with fake-i2c device models on the host). See the open items in
 `docs/hardware/board_notes.md`.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases

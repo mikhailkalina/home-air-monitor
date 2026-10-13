@@ -4,16 +4,21 @@
 // adapters here). Phase 2a brought the board up with no panel driven and no
 // sensors attached; phase 2b (docs/adr/0007-epaper-backend.md) adds the real
 // display -- EPDiy driving the ED047TC1 through its row-by-row i80 engine,
-// behind platform/esp32_t5s3/adp_display.c. No I2C, no sensors yet.
+// behind platform/esp32_t5s3/adp_display.c. Phase 2d
+// (docs/adr/0011-i2c-bus-adapter.md) brings up the shared I2C bus behind
+// platform/esp32_t5s3/adp_i2c.c, scans it once at boot and offers the
+// i2c_scan / i2c_recover console commands. No sensors yet -- phase 3.
 //
-// What runs: adp_log and adp_clock, the real display adapter (or the null
-// one, CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), the
-// port_clock and port_log contract suites run once against the real
-// adapters (docs/adr/0005), optionally the whole-panel bring-up diagnostic
+// What runs: adp_log and adp_clock, the port_clock and port_log contract
+// suites run once against the real adapters (docs/adr/0005), adp_i2c and the
+// boot-time bus scan, the real display adapter (or the null one,
+// CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), optionally the
+// whole-panel bring-up diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
 // run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
-// driving update_policy against bringup_reading.c's synthetic data.
+// driving update_policy against bringup_reading.c's synthetic data, and last
+// the serial console (see start_console() for why last).
 //
 // CONFIG_HAC_EPD_CALIBRATION (phase 2c, off by default) replaces the pump
 // with epd_calibration.c's measurement run: the same adapters, no event loop.
@@ -25,6 +30,7 @@
 #include "adp_clock.h"
 #include "adp_display.h"
 #include "adp_display_null.h"
+#include "adp_i2c.h"
 #include "adp_log.h"
 #include "board_config.h"
 
@@ -38,6 +44,7 @@
 #include "port_log_contract.h"
 
 #include "bringup_reading.h"
+#include "console.h"
 #include "epd_calibration.h"
 #include "event_loop.h"
 
@@ -170,6 +177,44 @@ static void run_contract_suites(const port_clock_t *clock, const port_log_t *log
                    sizeof(tally_fields) / sizeof(tally_fields[0]));
 }
 
+// Phase 2d's deliverable: the bus comes up and the boot log shows what
+// answers on it beside what board_config.h expects. A bus that fails to come
+// up is logged and the rest of the firmware runs regardless -- nothing before
+// phase 3 depends on it, and the console's i2c_recover is the way to retry
+// it.
+//
+// The port_i2c contract suite is deliberately NOT run here, unlike port_clock
+// and port_log above: it hangs and stalls the shared bus on purpose, which
+// has no place in an ordinary boot. It runs in the test app (ADR 0011).
+static void bring_up_i2c(adp_i2c_t *i2c, const port_log_t *log)
+{
+    const hal_status_t status = adp_i2c_init(i2c, log);
+    if (status != HAL_OK) {
+        const log_field_t fields[] = {log_i64("status", (int64_t)status)};
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_i2c_init failed", fields, 1u);
+    }
+    console_print_i2c_scan(i2c);
+}
+
+// The console is started last, once the event loop is running. Creating the
+// REPL runs linenoise's terminal probe in the CALLER's task
+// (esp_console_setup_prompt(), components/console/esp_console_common.c): it
+// asks the terminal for a status report and polls for the answer 50 times
+// with usleep(10 ms), which at this firmware's 10 ms tick sleeps ~20 ms a
+// time. Against a terminal that never answers -- YAT, which this project's
+// logs come from -- that is a second of app_main blocked. Measured
+// 2026-10-13 when it still ran before the display: the first frame came a
+// second late (docs/adr/0011-i2c-bus-adapter.md). Here it blocks nothing
+// else; the event loop is already drawing on its own task.
+//
+// The early returns above -- a display that fails to initialise, and the
+// calibration mode -- leave the console off; their logs still carry the boot
+// scan.
+static void start_console(adp_i2c_t *i2c, const port_log_t *log)
+{
+    (void)console_start(i2c, log);
+}
+
 void app_main(void)
 {
     static adp_log_t s_log;
@@ -179,6 +224,7 @@ void app_main(void)
 #else
     static adp_display_t s_display;
 #endif
+    static adp_i2c_t s_i2c;
     static update_policy_t s_policy;
 
     adp_log_init(&s_log);
@@ -189,16 +235,18 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 2b: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), no sensors",
+                   "phase 2d: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), I2C bus, "
+                   "no sensors",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop",
 #else
-                   "phase 2b: board bring-up -- EPDiy driving the panel, no sensors",
+                   "phase 2d: board bring-up -- EPDiy driving the panel, I2C bus, no sensors",
 #endif
                    NULL, 0u);
 
     log_memory_budget(log);
     run_contract_suites(clock, log);
+    bring_up_i2c(&s_i2c, log);
 
 #if CONFIG_HAC_DISPLAY_NULL
     const hal_status_t display_status =
@@ -263,4 +311,5 @@ void app_main(void)
         .max_reading_age_ms = BRINGUP_MAX_READING_AGE_MS,
     };
     event_loop_start(&deps, BRINGUP_TASK_STACK_BYTES, BRINGUP_TASK_PRIORITY, BRINGUP_TASK_CORE);
+    start_console(&s_i2c, log);
 }

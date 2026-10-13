@@ -13,8 +13,12 @@ idf_component_register(
         # call it.
         epd_calibration.c
         duration_stats.c
+        # Pure over port_i2c, and tested on the host from this location
+        # (tests/unit/test_i2c_scan.c) as duration_stats.c is.
+        i2c_scan.c
+        console.c
     INCLUDE_DIRS .
-    REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer
+    REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console
 )
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)

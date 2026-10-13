@@ -35,3 +35,12 @@ target_link_libraries(test_port_log_contract PRIVATE
     hac_contract_bodies hac_platform_host hac_test_support)
 hac_apply_warnings(test_port_log_contract)
 add_test(NAME test_port_log_contract COMMAND test_port_log_contract)
+
+# port_i2c: the shared body against the register-level fake bus, plus the
+# deliberately broken wrappers that prove the body catches what it claims to.
+# The same body runs on the device in the test app (ADR 0011), never at boot.
+add_executable(test_port_i2c_contract test_port_i2c_contract.c)
+target_link_libraries(test_port_i2c_contract PRIVATE
+    hac_contract_bodies hac_platform_host hac_test_support)
+hac_apply_warnings(test_port_i2c_contract)
+add_test(NAME test_port_i2c_contract COMMAND test_port_i2c_contract)
