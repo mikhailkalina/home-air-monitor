@@ -417,6 +417,8 @@ struct port_i2c_s {
 
 Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against a register-level device model). The second mode catches driver bugs without hardware.
 
+The sketch above is the shape; the precise promises — what a zero-length transfer does, how `to_ms` is honoured, which error points at the device and which at the bus — are written in `ports/port_i2c.h` and checked by `tests/contract/port_i2c_contract.c` against both implementations (ADR 0011).
+
 ### 5.5 Display
 
 ```c

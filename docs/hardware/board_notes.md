@@ -43,7 +43,7 @@ ever purchased, re-check the silkscreen before assuming it matches.
 | Gray levels | 16 (4 bpp, matches `PIXFMT_GRAY4`) |
 | RTC | PCF8563, on I²C |
 | Battery | onboard capacity/charge detection — chip model not yet confirmed, check schematic or reference firmware |
-| Touch | present on this unit (H716 variant) — controller model not yet confirmed; GT911 is assumed in the architecture doc but must be verified against the schematic or reference firmware before writing `adp_input.c` |
+| Touch | present on this unit (H716 variant) — answers at I²C `0x5D`, as a GT911 does with INT low at reset (phase 2d bus scan, 2026-10-13); the part itself is not yet read back — see open items |
 
 ## Display orientation
 
@@ -110,7 +110,7 @@ two never disagree. Carried forward as named constants in
 | EPD data bus `D0..D7` | 8, 1, 2, 3, 4, 5, 6, 7 | `src/ed047tc1.h:60-67` |
 | I2C `SDA` / `SCL` (shared: RTC + touch + our sensors) | 18 / 17 | `src/utilities.h:39-40` |
 | Touch IRQ | 47 | `src/utilities.h:41` |
-| Touch I2C address | `0x5A` | `src/touch.h:10` |
+| Touch I2C address | **`0x5D`** (GT911; `0x14` is its other latch address) | observed by the phase-2d bus scan; `examples/touch/touch.ino:109,113` |
 | Button | 21 | `src/utilities.h:30` |
 | Battery ADC | 14 | `src/utilities.h:32` |
 | SD `MISO`/`MOSI`/`SCLK`/`CS` (free if no card fitted) | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
@@ -122,12 +122,16 @@ assumption made elsewhere in this repository:
 - **`CFG_STR` is GPIO0**, the boot-mode strapping pin. Driving it is safe
   once the system has finished booting, but it is a reason to be deliberate
   in phase 2b about exactly when the EPD control code first touches it.
-- **The touch controller is not a GT911**, which `docs/architecture.md` §6.2
-  and `docs/requirements.md` §6.2 both assume. `src/touch.h:10` sets
-  `TOUCH_SLAVE_ADDRESS 0x5A`, and `src/touch.cpp` reads it through a
-  `0xD0`/`0xD1` register protocol returning 5 bytes per touch point. A GT911
-  answers at `0x5D` or `0x14` with a completely different register map. The
-  address is now settled; the actual part number is not (see open items).
+- **~~The touch controller is not a GT911~~ -- corrected 2026-10-13 (phase
+  2d): it answers where a GT911 does.** This finding first read: "which
+  `docs/architecture.md` §6.2 and `docs/requirements.md` §6.2 both assume.
+  `src/touch.h:10` sets `TOUCH_SLAVE_ADDRESS 0x5A`, and `src/touch.cpp`
+  reads it through a `0xD0`/`0xD1` register protocol". That header is real,
+  but nothing in the reference repository at this commit uses it; the
+  vendor's S3 examples drive a GT911 at `0x5D` or `0x14`, and the phase-2d
+  bus scan found a device at `0x5D` and nothing at `0x5A`. The architecture
+  and requirements documents' GT911 assumption was right after all. See
+  "Touch controller" in the open items for what is and is not established.
 - **There is no battery gauge IC on this board.** `BOARD_BATTERY_ADC_GPIO`
   (14) is a plain resistor divider read directly by the ADC
   (`examples/demo/demo.ino:331`:
@@ -327,12 +331,61 @@ layout settles, not before.
       (phase 2a) — there is no gauge IC. Battery is a plain resistor divider
       on `BOARD_BATTERY_ADC_GPIO`, valid only while EPD power is on; see "Pin
       assignments" above.
-- [x] Touch I²C address. Resolved 2026-09-06 (phase 2a): `0x5A`, and the
-      controller is confirmed **not** a GT911 — see "Pin assignments" above.
-- [ ] Touch controller part number. The address and register protocol
-      (`0xD0`/`0xD1`, 5 bytes per point) are known and documented above; which
-      physical part answers to them is still unidentified. Check the
-      schematic, or the chip marking on the board itself.
+- [x] **Touch controller: `0x5A`, or a GT911?** **Resolved 2026-10-13
+      (phase 2d) on the board: `0x5D`.** The boot scan
+      (`I2C_SCAN_RESULT answered=2 missing=1 unexpected=0 scan=complete`,
+      image ELF SHA256 `cd89f6e27...`) found the RTC at `0x51` and a device at
+      `0x5D`, and nothing at `0x5A` or `0x14` -- a GT911 that latched INT low
+      as it left reset. `BOARD_TOUCH_I2C_ADDRESS` is now `0x5D`;
+      `BOARD_TOUCH_ALT_I2C_ADDRESS` keeps `0x14`, which this unit has not
+      shown but which the latch could in principle produce at another
+      power-up, and which the vendor probes too. The history below is how
+      the question arose.
+
+      Reopened 2026-10-13 (phase 2d); it was marked resolved on 2026-09-06
+      as "`0x5A`, confirmed **not** a GT911". That came from `src/touch.h:10` in `Xinyuan-LilyGO/LilyGo-EPD47`
+      (branch `esp32s3`, commit `391b0e2`) -- but nothing in that repository
+      at that commit includes `src/touch.h` or uses its `TouchClass`. The
+      vendor's own S3 examples drive a **GT911** through SensorLib instead
+      (`examples/touch/touch.ino:31` and `examples/demo/demo.ino:32` include
+      `TouchDrvGT911.hpp`), and find it by probing `0x14` and `0x5D`
+      (`touch.ino:109,113`; `demo.ino:239,243`, inside the
+      `CONFIG_IDF_TARGET_ESP32S3` block at `:208`): a GT911 latches `0x5D` if
+      its INT line is low as it leaves reset and `0x14` if high, and on this
+      board its reset is a hardware pull-up, so the vendor scans for both.
+      `touch.ino` probes before `epd_poweron()`, so the touch is reachable
+      with the panel unpowered. The phase-2d boot scan (`I2C_SCAN` lines)
+      reports `0x5A` as required and both GT911 addresses as candidates;
+      correct `BOARD_TOUCH_I2C_ADDRESS` and the "Pin assignments" finding
+      above from what it shows. If no touch address answers at all, cut the
+      board's power completely and scan again before concluding anything: the
+      vendor examples drive INT high first "assuming that the previous touch
+      was in sleep state", and a GT911 a previous firmware put to sleep stays
+      asleep across a reset of the ESP32 alone.
+- [ ] Touch controller part number. Narrowed 2026-10-13 (phase 2d): it
+      answers at a GT911 address, and the vendor's S3 examples drive a GT911,
+      so it is very probably one -- but an address-only probe cannot name a
+      part. Reading the GT911's product ID (16-bit register `0x8140`, four
+      bytes, `"911"` and a NUL) closes it; that is the touch driver's first
+      transaction anyway, so it belongs to whichever phase writes
+      `adp_input.c`. Also open: whether the address latch is stable across
+      power-ups. One unit, one power-up seen so far.
+- [x] **Phase 2d on the board.** **Confirmed 2026-10-13.** The boot scan:
+      the bus came up with both lines idle-high, the scan completed, the RTC
+      answered at `0x51` and the touch controller at `0x5D` (the item above),
+      and `app_main` returned normally on its 3,584-byte stack. The test app
+      (ELF SHA256 `5f61e780d...`), run twice: `3 Tests 0 Failures`, every
+      `contract port_i2c adp_i2c` check PASS. The forced hang was real (the
+      RTC acknowledged and held SDA low) and `recover()` freed it in two
+      clocks; a stalled SCL ended on the 100 ms software deadline after about
+      110-120 ms, never on the S3's hardware SCL timeout. Details, and a
+      transfer on the hung bus that the driver's own clear-bus rescued, in
+      `docs/adr/0011-i2c-bus-adapter.md`, "Consequences".
+- [ ] Whether the I2C bus has external pull-ups. `adp_i2c.c` enables the
+      S3's internal ones (~45 kOhm) either way. Without external ones, rise
+      times at 100 kHz are marginal on a bus with several devices and a
+      cable to the sensors -- relevant in phase 3, when the sensors are
+      wired. The schematic answers it; an idle-line reading cannot.
 - [ ] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
       timestamps, or is only used for scheduling.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings
@@ -382,7 +435,19 @@ layout settles, not before.
       `app_main()`, so EPDiy's init -- its 64 K LUT, line queues, and the
       highlevel front, back and difference buffers -- costs **1,037,092
       bytes** of PSRAM. Internal RAM after init: 232,019 bytes free. These
-      are the figures to re-measure in phases 3 and 4.
+      are the figures to re-measure in phases 3 and 4. **Re-measured
+      2026-10-13, phase 2d** (I2C bus and serial console added): internal RAM
+      free at the top of `app_main()` 366,451 (was 375,259), after EPD init
+      **218,039** (was 232,019); PSRAM after EPD init 7,347,640 (was
+      7,349,100). So the I2C driver, the `esp_console` REPL (its 4 KB task
+      stack, the USB-Serial-JTAG driver, linenoise) and this project's
+      adapter and scan cost about **14 KB of internal RAM**, some 9 KB of it
+      static. Not itemised further. **Mind the measuring point**: those
+      figures came from builds that started the console before the display.
+      It now starts last (ADR 0011), so the same log line reads 224,467
+      (2026-10-13, ELF `c56d499ce...`) -- the console's ~6.4 KB of runtime
+      allocations now land after it. The total is unchanged; compare phase 3
+      and 4 against 224,467 at that line.
 - [x] Measured refresh durations for each `refresh_mode_t`, and the real
       partial-refresh count at which ghosting becomes visible in the CO₂
       headline region. **Resolved 2026-10-13, phase 2c** -- see

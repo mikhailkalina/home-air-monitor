@@ -109,16 +109,56 @@
 #define BOARD_I2C_SDA_GPIO 18
 #define BOARD_I2C_SCL_GPIO 17
 
+// A CHOICE, not a measurement: standard mode, 100 kHz. It is what the
+// vendor's S3 examples run the bus at -- examples/demo/demo.ino:219 calls
+// Wire.begin() and nothing anywhere calls setClock(), so Arduino's default
+// applies -- and every device on the bus or planned for phase 3 supports it.
+// Raising it is a phase-3 decision, once the sensors and their wiring are on
+// the bus and can be checked at the higher rate.
+#define BOARD_I2C_SCL_HZ 100000u
+
+// How long one address-only probe of a bus scan may take. A probe is ~0.1 ms
+// of bus time at 100 kHz; 20 ms is two 10 ms scheduler ticks of margin, so a
+// scan of the 112 usable addresses costs well under a second even on a bus
+// where nothing answers.
+#define BOARD_I2C_PROBE_TIMEOUT_MS 20u
+
+// --- RTC ----------------------------------------------------------------------
+// PCF8563, address 0x51 (NXP PCF8563 datasheet: slave address A2h write /
+// A3h read). The vendor's S3 demo probes exactly this address
+// (examples/demo/demo.ino:223, inside the CONFIG_IDF_TARGET_ESP32S3 block at
+// :208). It is the one device on the bus whose address is not in doubt, so
+// it is also the on-target port_i2c contract's known-present slave -- the
+// boot-time scan shows whether it answers before that contract relies on it.
+#define BOARD_RTC_I2C_ADDRESS 0x51u
+
+// An address nothing on this board answers to, for the on-target port_i2c
+// contract's "absent device" checks. 0x08 is the SMBus host address, which no
+// slave on this board -- nor any sensor phase 3 plans -- uses.
+#define BOARD_I2C_ABSENT_TEST_ADDRESS 0x08u
+
 // --- touch panel ------------------------------------------------------------
-// IRQ: src/utilities.h:41. Address: src/touch.h:10 (TOUCH_SLAVE_ADDRESS).
+// IRQ: src/utilities.h:41.
 //
-// NOT a GT911: docs/architecture.md 6.2 and docs/requirements.md 6.2 both
-// assume GT911, which answers at 0x5D/0x14 with a different register map.
-// The reference driver (src/touch.cpp) uses a 0xD0/0xD1 register protocol at
-// this address instead. The address is settled; the actual part number is
-// still an open item in docs/hardware/board_notes.md.
+// Address OBSERVED 2026-10-13 (phase 2d boot scan, docs/hardware/board_notes.md
+// "Touch controller"): a device answers at 0x5D and nothing at 0x5A or 0x14.
+// That is a GT911 that latched INT low as it left reset -- the controller the
+// vendor's own S3 examples drive (examples/touch/touch.ino:31 and
+// examples/demo/demo.ino:32 include TouchDrvGT911.hpp). It replaces the 0x5A
+// this file used to carry, which came from src/touch.h:10 -- a header nothing
+// in the reference repository uses. An address-only probe cannot name the
+// part; reading the GT911's product ID (register 0x8140, "911") can, and is
+// left to whichever phase writes the touch driver.
+//
+// A GT911 takes 0x5D or 0x14 from its INT line's level as its reset rises,
+// and on this board reset is a hardware pull-up, so the latch happens at
+// power-up and the vendor probes both (touch.ino:109,113; demo.ino:239,243).
+// Only 0x5D has been seen on this unit. The other stays named so the bus scan
+// keeps reporting it, and so the touch driver can fall back to it as the
+// vendor does.
 #define BOARD_TOUCH_IRQ_GPIO 47
-#define BOARD_TOUCH_I2C_ADDRESS 0x5Au
+#define BOARD_TOUCH_I2C_ADDRESS 0x5Du      // GT911, INT low at reset
+#define BOARD_TOUCH_ALT_I2C_ADDRESS 0x14u  // GT911, INT high at reset
 
 // --- button, battery -------------------------------------------------------
 // src/utilities.h:30,32 (CONFIG_IDF_TARGET_ESP32S3 block).

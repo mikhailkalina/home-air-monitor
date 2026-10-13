@@ -58,6 +58,29 @@ target_link_libraries(test_duration_stats PRIVATE hac_test_support)
 hac_apply_warnings(test_duration_stats)
 add_test(NAME test_duration_stats COMMAND test_duration_stats)
 
+# The firmware's I2C bus scan, against the host's fake bus.
+add_executable(test_i2c_scan
+    unit/test_i2c_scan.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/i2c_scan.c
+)
+target_include_directories(test_i2c_scan PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_i2c_scan PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_i2c_scan)
+add_test(NAME test_i2c_scan COMMAND test_i2c_scan)
+
+# The pure half of the ESP32 I2C adapter -- deadline-to-driver-wait
+# arithmetic and failure classification -- compiled from where the firmware
+# compiles it, like duration_stats.c above. adp_i2c.c itself needs ESP-IDF
+# and is exercised on the device by the port_i2c contract.
+add_executable(test_adp_i2c_pure
+    unit/test_adp_i2c_pure.c
+    ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c_pure.c
+)
+target_include_directories(test_adp_i2c_pure PRIVATE ${HAC_ROOT}/platform/esp32_t5s3)
+target_link_libraries(test_adp_i2c_pure PRIVATE hac_test_support)
+hac_apply_warnings(test_adp_i2c_pure)
+add_test(NAME test_adp_i2c_pure COMMAND test_adp_i2c_pure)
+
 # The device's panel limits against the simulator's. Only board_config.h's
 # directory is added -- it is plain data -- not anything that builds for the
 # ESP32.
