@@ -12,6 +12,9 @@
 //
 // The pictures are apps/slideshow/images/ unless the build was configured
 // with -DSLIDESHOW_IMAGES_DIR=<dir> (apps/slideshow/slideshow_images.cmake).
+//
+// The photo frame (apps/photo_frame/host/) is this same file built with its
+// own pictures and SLIDESHOW_DEFAULT_CAPTION=0: a photo is for looking at.
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -46,6 +49,12 @@
 // White around a picture smaller than the panel, as the product's screens use.
 #define SLIDESHOW_BACKGROUND 15u
 
+// Whether pictures are captioned "n/N name" unless --caption/--no-caption
+// says otherwise. Set per executable by its CMakeLists.txt.
+#ifndef SLIDESHOW_DEFAULT_CAPTION
+#define SLIDESHOW_DEFAULT_CAPTION 1
+#endif
+
 // Windowed: how long one loop iteration waits before looking again.
 #define SLIDESHOW_TICK_MS 20u
 
@@ -72,11 +81,13 @@ static void usage(const char *argv0)
            "  --duration <s>     stop after this many virtual seconds (headless default:\n"
            "                     one picture each)\n"
            "  --zoom <f>         window scale, 1 = one panel pixel per screen pixel\n"
-           "  --no-caption       leave out the \"n/N name\" box\n"
+           "  --caption          box each picture's \"n/N name\" in a corner%s\n"
+           "  --no-caption       leave it out%s\n"
            "  --help\n"
            "\n"
            "%u picture(s) embedded at build time.\n",
-           argv0, SLIDESHOW_DEFAULT_INTERVAL_S, SLIDESHOW_IMAGES_COUNT);
+           argv0, SLIDESHOW_DEFAULT_INTERVAL_S, SLIDESHOW_DEFAULT_CAPTION ? " (default)" : "",
+           SLIDESHOW_DEFAULT_CAPTION ? "" : " (default)", SLIDESHOW_IMAGES_COUNT);
 }
 
 static bool parse_args(int argc, char **argv, args_t *out)
@@ -84,7 +95,7 @@ static bool parse_args(int argc, char **argv, args_t *out)
     memset(out, 0, sizeof(*out));
     out->time_scale = 1.0;
     out->zoom = 1.0f;
-    out->caption = true;
+    out->caption = (SLIDESHOW_DEFAULT_CAPTION != 0);
     out->interval_s = SLIDESHOW_DEFAULT_INTERVAL_S;
 
     for (int i = 1; i < argc; ++i) {
@@ -126,6 +137,8 @@ static bool parse_args(int argc, char **argv, args_t *out)
             }
         } else if (strcmp(arg, "--headless") == 0) {
             out->headless = true;
+        } else if (strcmp(arg, "--caption") == 0) {
+            out->caption = true;
         } else if (strcmp(arg, "--no-caption") == 0) {
             out->caption = false;
         } else {

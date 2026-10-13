@@ -91,6 +91,10 @@ cd apps/firmware_esp32/test_app && idf.py -T hac_platform build
 cd apps/slideshow/esp32 && idf.py build      # -DSLIDESHOW_IMAGES_DIR=<dir> for others
 python3 apps/tools/image_gen/image_gen.py prepare photo.jpg --out-dir <dir>  # needs Pillow
 
+# Photo frame: the same app with the gitignored apps/photo_frame/images/ -- private, never commit
+./build/host-debug/apps/photo_frame/host/photo_frame --time-scale 20
+cd apps/photo_frame/esp32 && idf.py build
+
 # Panel calibration image (ADR 0008), in its own build dir and sdkconfig
 cd apps/firmware_esp32 && idf.py -B build-calibration -D SDKCONFIG=build-calibration/sdkconfig \
     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration" build

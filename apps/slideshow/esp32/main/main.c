@@ -6,6 +6,9 @@
 // embedded at build time is shown in turn, one REFRESH_FULL each, roughly a
 // minute apart (main/Kconfig.projbuild).
 //
+// The photo frame (apps/photo_frame/esp32/) builds this same file with its
+// own pictures and the caption off.
+//
 // The loop runs on app_main's task, as the calibration image's does: nothing
 // else shares the board, so there is no event loop to hand it to. That task's
 // stack has to hold EPDiy's flush -- see the check below.
@@ -134,7 +137,7 @@ void app_main(void)
         log_u64("interval_ms", slideshow_interval_ms(&s_show)),
         log_bool("caption", SLIDESHOW_CAPTION),
     };
-    port_log_write(log, LOG_LEVEL_INFO, SLIDESHOW_TAG, "slideshow test app started", start_fields,
+    port_log_write(log, LOG_LEVEL_INFO, SLIDESHOW_TAG, "slideshow started", start_fields,
                    sizeof(start_fields) / sizeof(start_fields[0]));
 
     for (;;) {

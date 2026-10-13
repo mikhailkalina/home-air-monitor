@@ -10,6 +10,11 @@ sdkconfig.ci
 *.pem
 *.key
 
+# ---- Private pictures: never commit ---------------------------------------
+# The photo frame's photographs (apps/photo_frame/) are family photos: they
+# belong on the device, not in a public repository's permanent history.
+/apps/photo_frame/images/
+
 # ---- Third-party binaries under restrictive licenses ----------------------
 # BSEC/BSEC2 is downloaded from Bosch after accepting their license agreement.
 third_party/bsec/
@@ -35,8 +40,9 @@ compile_commands.json
 # The on-target test app is a second ESP-IDF project with its own fetch of
 # the same dependencies (apps/firmware_esp32/test_app/).
 /apps/*/test_app/managed_components/
-# ...and so is the slideshow test app (apps/slideshow/esp32/).
+# ...and so are the slideshow and the photo frame (apps/*/esp32/).
 /apps/slideshow/esp32/managed_components/
+/apps/photo_frame/esp32/managed_components/
 dependencies.lock
 *.bin
 *.elf

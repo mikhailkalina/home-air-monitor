@@ -386,6 +386,37 @@ def read_png_grey(path):
 
 # --- prepare -----------------------------------------------------------------
 
+def parse_focus(text):
+    match = re.fullmatch(r"([0-9.]+),([0-9.]+)", text)
+    if not match:
+        raise argparse.ArgumentTypeError(f"expected X,Y fractions such as 0.5,0.4, got {text!r}")
+    x, y = float(match.group(1)), float(match.group(2))
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        raise argparse.ArgumentTypeError(f"focus fractions must lie in 0..1, got {text}")
+    return x, y
+
+
+def rotate_focus(focus, degrees):
+    """Where a point given as fractions of the upright picture lands, as
+    fractions of the picture turned `degrees` clockwise."""
+    x, y = focus
+    return {0: (x, y), 90: (1 - y, x), 180: (1 - x, 1 - y), 270: (y, 1 - x)}[degrees]
+
+
+def cover_box(width, height, target_w, target_h, focus):
+    """The crop (left, top, right, bottom) of the largest target-shaped window
+    inside a width x height picture, centred on `focus` (fractions of width
+    and height) as nearly as the picture's edges allow."""
+    ratio = target_w / target_h
+    if width / height > ratio:
+        crop_w, crop_h = height * ratio, float(height)
+    else:
+        crop_w, crop_h = float(width), width / ratio
+    left = min(max(focus[0] * width - crop_w / 2, 0.0), width - crop_w)
+    top = min(max(focus[1] * height - crop_h / 2, 0.0), height - crop_h)
+    return (left, top, left + crop_w, top + crop_h)
+
+
 def cmd_prepare(args):
     try:
         from PIL import Image, ImageFilter, ImageOps
@@ -417,7 +448,9 @@ def cmd_prepare(args):
             image = image.rotate(-args.rotate, expand=True)  # clockwise
 
         if args.fit == "cover":
-            image = ImageOps.fit(image, (target_w, target_h), Image.Resampling.LANCZOS)
+            box = cover_box(image.width, image.height, target_w, target_h,
+                            rotate_focus(args.focus, args.rotate))
+            image = image.resize((target_w, target_h), Image.Resampling.LANCZOS, box=box)
         elif args.fit == "contain":
             image = ImageOps.contain(image, (target_w, target_h), Image.Resampling.LANCZOS)
         else:
@@ -438,8 +471,10 @@ def cmd_prepare(args):
         canvas.paste(image, ((target_w - image.width) // 2, (target_h - image.height) // 2))
 
         panel = quantize(list(canvas.tobytes()), target_w, target_h, levels)
-        note = (f"prepare {source.name} fit={args.fit} dither={args.dither} "
-                f"gamma={args.gamma} autocontrast={args.autocontrast} sharpen={args.sharpen}")
+        note = (f"prepare {source.name} size={target_w}x{target_h} fit={args.fit} "
+                f"focus={args.focus[0]:g},{args.focus[1]:g} rotate={args.rotate} "
+                f"dither={args.dither} levels={args.levels} gamma={args.gamma} "
+                f"autocontrast={args.autocontrast} sharpen={args.sharpen}")
         write_png_gray4(out_path, panel, target_w, target_h, note)
         print(f"wrote {out_path} ({target_w}x{target_h}, {args.dither})")
 
@@ -747,7 +782,14 @@ def main():
                               "bars of --background around it; stretch: ignore the aspect "
                               "ratio (default: %(default)s)")
     prepare.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0,
-                         help="clockwise, after EXIF orientation (default: %(default)s)")
+                         help="clockwise, after EXIF orientation. For a panel standing "
+                              "portrait: 270 when the device is turned clockwise, 90 when "
+                              "anticlockwise -- with --size left at the panel's 960x540 "
+                              "(default: %(default)s)")
+    prepare.add_argument("--focus", type=parse_focus, default=(0.5, 0.5), metavar="X,Y",
+                         help="for --fit cover: the point to keep in view, as fractions of "
+                              "the upright picture's width and height, 0,0 top left "
+                              "(default: 0.5,0.5, the centre)")
     prepare.add_argument("--dither", choices=tuple(DITHERS), default="floyd-steinberg")
     prepare.add_argument("--levels", choices=("distinct", "all"), default="distinct",
                          help="distinct: leave out level 1, which this panel shows as 0 "

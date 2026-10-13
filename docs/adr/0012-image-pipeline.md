@@ -223,3 +223,49 @@ Judged by the user, looking at the panel, 2026-10-13:
   panel immediately before the ramp, did not show through at all. Residue
   appears to follow edges, not area. It joins `board_notes.md`'s open item
   on residue, which so far had only seen it after partial refreshes.
+
+## The photo frame
+
+2026-10-13. The pipeline's first real pictures: twelve family photographs,
+all portrait 3:4 (3072 x 4080, Pixel), shown by a second app,
+`apps/photo_frame/`.
+
+- **No code of its own.** `apps/photo_frame/host/` and `esp32/` compile the
+  slideshow's compositions (`apps/slideshow/host/main.c`,
+  `apps/slideshow/esp32/main/main.c` with its `Kconfig.projbuild`) against
+  their own pictures, with the caption off -- `SLIDESHOW_DEFAULT_CAPTION=0`
+  on the host, `CONFIG_HAC_SLIDESHOW_CAPTION` unset on the board. A separate
+  ESP-IDF project rather than a build variant of the slideshow's, so it has
+  its own build directory, `sdkconfig` and image, and `idf.py build` in its
+  directory is the whole recipe. `apps/slideshow/slideshow_images.cmake`
+  became the shared "which PNGs" helper for both.
+- **The pictures stay out of git.** They live in `apps/photo_frame/images/`,
+  which `.gitignore` excludes, or wherever `PHOTO_FRAME_IMAGES_DIR` points.
+  With none there -- a fresh clone, CI -- the host build skips the frame
+  with a status line and the ESP-IDF project refuses to build. Their pixels
+  do reach the build directories and the image, which are gitignored too;
+  nothing of them is pushed.
+- **Portrait, by turning the device.** A 3:4 portrait cropped to the
+  landscape 16:9 panel keeps 42 % of its height, which takes heads or feet
+  off full-length shots; fitted whole, it leaves 58 % of the panel empty.
+  Stood on its side, the panel is 540 x 960, and the photograph fills it
+  with 12.5 % trimmed from each side. The rotation is made by `prepare
+  --rotate 270`, so the panel-ready PNG is what the glass gets, sideways,
+  and the firmware needs no rotated drawing. 270 puts the photograph's top
+  at the panel's left edge: the device is turned a quarter turn clockwise.
+  Turned the other way, the pictures are upside down -- stand it on its
+  other side, or re-prepare with `--rotate 90`.
+- **Crops that keep the subject.** `prepare --focus X,Y` centres a `cover`
+  crop on a point of the upright photograph as nearly as its edges allow.
+  Eleven of the twelve are centred; on one the child is at the right, and
+  `--focus 0.7,0.5` keeps all of her.
+- **Settings:** `--rotate 270 --fit cover --dither floyd-steinberg
+  --sharpen 80`, autocontrast 0.5 %, gamma 1, level 1 left out. Each PNG's
+  `tEXt` chunk records the settings it was made with.
+- **Budget:** 12 x 259,200 bytes; the image is 3.39 MB, 81 % of the 4 MB app
+  slot. About three more full-panel photographs fit before the pictures need
+  option D or E.
+- **To watch for:** a dithered photograph is fine pattern everywhere, which
+  is exactly what the demo set found to leave residue through full
+  refreshes ("By eye" above). Each photograph may show faintly in the greys
+  of the next ones.

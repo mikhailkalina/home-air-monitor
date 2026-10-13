@@ -210,6 +210,11 @@ home-air-monitor/
 │   │   ├── host/main.c             # composition: simulator window or PNG frames
 │   │   └── esp32/                  # ESP-IDF project linking ../../firmware_esp32/components
 │   │
+│   ├── photo_frame/                # the slideshow with private photographs (ADR 0012)
+│   │   ├── images/                 # gitignored: the photographs never enter the repository
+│   │   ├── host/CMakeLists.txt     # slideshow's main.c, these pictures, no caption
+│   │   └── esp32/                  # ESP-IDF project, slideshow's main component
+│   │
 │   └── tools/
 │       ├── scenario_gen/           # scenario file generator
 │       ├── font_gen/

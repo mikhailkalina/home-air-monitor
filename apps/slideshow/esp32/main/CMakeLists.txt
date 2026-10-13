@@ -16,8 +16,20 @@ idf_component_register(
 # idf_component_register(), which returns early while ESP-IDF only collects
 # requirements, so this runs in the real build alone.
 include(${HAC_ROOT}/apps/slideshow/slideshow_images.cmake)
+
+# idf.py -DSLIDESHOW_IMAGES_DIR=$HOME/pictures build
+set(SLIDESHOW_IMAGES_DIR "" CACHE STRING
+    "Directory of panel-ready PNGs for the slideshow; empty = apps/slideshow/images")
+
+slideshow_images_in(slideshow_images "${SLIDESHOW_IMAGES_DIR}" apps/slideshow/images)
+if(NOT slideshow_images)
+    message(FATAL_ERROR
+        "slideshow: no *.png to show. Make some with apps/tools/image_gen/image_gen.py "
+        "prepare (or demo), or point SLIDESHOW_IMAGES_DIR at a directory that has them.")
+endif()
+
 idf_build_get_property(python PYTHON)
-slideshow_add_images(${COMPONENT_LIB} ${python})
+slideshow_embed_images(${COMPONENT_LIB} ${python} ${slideshow_images})
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)
 hac_apply_warnings_idf(${COMPONENT_LIB})

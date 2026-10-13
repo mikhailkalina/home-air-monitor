@@ -42,6 +42,7 @@ endif()
 add_subdirectory(platform/host)
 add_subdirectory(apps/simulator)
 add_subdirectory(apps/slideshow/host)
+add_subdirectory(apps/photo_frame/host)
 
 enable_testing()
 add_subdirectory(tests)
