@@ -14,6 +14,9 @@
 // full-refresh interval before the first rendered frame -- see
 // run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
 // driving update_policy against bringup_reading.c's synthetic data.
+//
+// CONFIG_HAC_EPD_CALIBRATION (phase 2c, off by default) replaces the pump
+// with epd_calibration.c's measurement run: the same adapters, no event loop.
 
 #include <stdint.h>
 
@@ -35,6 +38,7 @@
 #include "port_log_contract.h"
 
 #include "bringup_reading.h"
+#include "epd_calibration.h"
 #include "event_loop.h"
 
 // Arithmetic behind this figure: ~2 KB IDF/vsnprintf baseline + ~400 B
@@ -70,8 +74,9 @@ static void contract_report(void *ctx_v, const char *check, bool ok)
 // the panel respond to a drive sequence at all" from "is screen_home's rendering correct": a panel
 // that stays blank through this is a driver or wiring problem, while one that
 // goes black has been driven correctly and any later wrong image is a
-// rendering problem instead. Remove, or set the Kconfig option to n, once
-// phase 2c has confirmed the panel responds correctly to real content.
+// rendering problem instead. Off by default since phase 2c's calibration run
+// drove this panel through every refresh mode; kept for bringing up another
+// unit.
 //
 // Deliberately REFRESH_FULL rather than REFRESH_CLEAR, which is what this
 // used while FastEPD was the backend. Under EPDiy, REFRESH_CLEAR is
@@ -185,6 +190,8 @@ void app_main(void)
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
                    "phase 2b: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), no sensors",
+#elif CONFIG_HAC_EPD_CALIBRATION
+                   "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop",
 #else
                    "phase 2b: board bring-up -- EPDiy driving the panel, no sensors",
 #endif
@@ -213,6 +220,23 @@ void app_main(void)
     port_display_t *display = adp_display_port(&s_display);
 #if CONFIG_HAC_EPD_TEST_PATTERN
     run_epd_test_pattern(display, clock, log);
+#endif
+#if CONFIG_HAC_EPD_CALIBRATION
+    const epd_calibration_config_t calibration = {
+        .iterations = (uint32_t)CONFIG_HAC_EPD_CALIBRATION_ITERATIONS,
+#if CONFIG_HAC_EPD_CALIBRATION_GHOST_SHIFT
+        .ghost_pattern = EPD_CAL_GHOST_SHIFT,
+#else
+        .ghost_pattern = EPD_CAL_GHOST_SAWTOOTH,
+#endif
+        .ghost_partials = (uint32_t)CONFIG_HAC_EPD_CALIBRATION_GHOST_PARTIALS,
+        .ghost_pause_ms = (uint32_t)CONFIG_HAC_EPD_CALIBRATION_GHOST_PAUSE_MS,
+        .residue_normal_fulls = (uint32_t)CONFIG_HAC_EPD_CALIBRATION_RESIDUE_NORMAL_FULLS,
+        .residue_deep_events = (uint32_t)CONFIG_HAC_EPD_CALIBRATION_RESIDUE_DEEP_EVENTS,
+        .residue_extra_clears = (uint32_t)CONFIG_HAC_EPD_CALIBRATION_RESIDUE_EXTRA_CLEARS,
+    };
+    epd_calibration_run(display, clock, log, &calibration);
+    return;  // the calibration run replaces the event loop; the panel keeps its last image
 #endif
 #endif
 

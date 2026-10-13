@@ -81,6 +81,13 @@ cd apps/firmware_esp32 && idf.py build
 
 # After adding or changing a Kconfig symbol — `idf.py build` alone is not enough
 cd apps/firmware_esp32 && idf.py reconfigure && idf.py build
+
+# On-target contract tests (ADR 0009): Unity app, every linked test runs at boot
+cd apps/firmware_esp32/test_app && idf.py -T hac_platform build
+
+# Panel calibration image (ADR 0008), in its own build dir and sdkconfig
+cd apps/firmware_esp32 && idf.py -B build-calibration -D SDKCONFIG=build-calibration/sdkconfig \
+    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration" build
 ```
 
 A new symbol in `main/Kconfig.projbuild` does **not** reach `sdkconfig` from a plain
@@ -91,6 +98,10 @@ the feature is simply not in the image. Observed when `CONFIG_HAC_EPD_TEST_PATTE
 was added in phase 2b. `idf.py reconfigure` first, then verify by grepping the symbol
 out of `sdkconfig` (and, for anything that must be in the image, out of
 `strings build/home_air_monitor.bin`) rather than assuming the flag took effect.
+The same trap applies to `sdkconfig.defaults` and overlays: defaults only fill symbols an
+existing `sdkconfig` does not already hold, so a value added to an overlay never reaches a
+build directory configured before it. Observed in phase 2c with
+`CONFIG_ESP_MAIN_TASK_STACK_SIZE`; delete that build's `sdkconfig` and grep again.
 
 ## Never commit
 

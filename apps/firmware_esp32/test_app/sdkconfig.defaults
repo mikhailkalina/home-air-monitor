@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Layered on top of ../sdkconfig.defaults (see CMakeLists.txt). Only what has
+# to differ for the test app belongs here.
+
+# The firmware's partition table, resolved from this project's directory.
+# Same offsets, same NVS partition: a future port_storage contract run here
+# exercises the partition the firmware will actually use, and the flash
+# command differs from the firmware's only in the image it writes.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"
+
+# A failing assertion prints where it failed; this app's output is read from
+# a pasted log, with no debugger attached.
+CONFIG_UNITY_ENABLE_BACKTRACE_ON_FAIL=y

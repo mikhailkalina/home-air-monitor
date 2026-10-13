@@ -10,8 +10,9 @@
 // and the same forced full refreshes as running with a window -- otherwise
 // "it passed in CI" would mean nothing about the panel.
 //
-// Every constant it uses comes from epd_emulation.h, and every one of those is
-// an unmeasured estimate; see that file.
+// Every constant it uses comes from epd_emulation.h, measured on the panel in
+// phase 2c; see that file for what each one is and how far it is from the
+// glass.
 
 #ifndef HAC_PLATFORM_HOST_EPD_MODEL_H
 #define HAC_PLATFORM_HOST_EPD_MODEL_H
@@ -20,10 +21,14 @@
 #include <stdint.h>
 
 #include "port_display.h"
+#include "ui/framebuffer.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// GRAY4 white: what the panel shows after a clear, and at power-up.
+#define EPD_MODEL_GRAY4_WHITE 0x0Fu
 
 typedef struct {
     uint16_t width;
@@ -41,6 +46,8 @@ typedef struct {
     refresh_mode_t requested;
     refresh_mode_t performed;  // differs from `requested` when forced_full
     bool forced_full;
+    uint32_t changed_rows;  // rows holding a pixel the refresh changes
+    uint32_t written_rows;  // rows each pass writes out (epd_model.c, written_rows())
     uint32_t duration_ms;
     uint32_t area_percent;         // of the whole panel, rounded
     uint32_t partials_since_full;  // after this flush
@@ -58,7 +65,20 @@ rect_t epd_model_clip(const epd_model_t *m, const rect_t *area);
 // Accounts for one flush and reports what the panel actually did. Performs no
 // drawing and no waiting: the caller applies out->duration_ms itself, because
 // how long to really sleep depends on the simulator's time scale.
-void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode, epd_flush_t *out);
+//
+// The duration depends on the rows each pass writes, counted the way EPDiy
+// walks them (epd_model.c, written_rows()): it changes the rows of `area` in
+// which some pixel of `next` differs from `glass` for a partial or fast-mono
+// refresh, and the rows of `next` that are not entirely white for a full one,
+// since the clear leaves EPDiy's model white and GC16 drives only what differs
+// from it. A full refresh and a clear always cover the whole panel, as on the
+// device, whatever `area` says.
+// `next` is the framebuffer being flushed and `glass` what the panel shows now,
+// one GRAY4 level per pixel, row-major, width x height. Either one NULL counts
+// every row of the area -- the worst case, which is also what a rectangle whose
+// every row changed costs.
+void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode,
+                     const framebuffer_t *next, const uint8_t *glass, epd_flush_t *out);
 
 // One line per flush on stdout, plus a second, explicit line whenever the
 // panel had to force a full refresh. This is the artifact a bad refresh

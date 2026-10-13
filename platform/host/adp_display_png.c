@@ -13,6 +13,8 @@
 
 #include "adp_display_png.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,13 +41,28 @@ static framebuffer_t *png_get_framebuffer(port_display_t *port)
     return &self_of(port)->fb;
 }
 
+// Moves the flushed region onto the glass the way the panel does: a full
+// refresh redraws everything, a clear leaves white, a partial copies the area.
+static void transfer(adp_display_png_t *d, const epd_flush_t *f)
+{
+    for (uint32_t y = f->area.y; y < (uint32_t)f->area.y + f->area.h; ++y) {
+        for (uint32_t x = f->area.x; x < (uint32_t)f->area.x + f->area.w; ++x) {
+            const size_t i = (size_t)y * d->fb.width + x;
+            d->glass[i] = (f->performed == REFRESH_CLEAR)
+                              ? (uint8_t)EPD_MODEL_GRAY4_WHITE
+                              : framebuffer_get_pixel(&d->fb, (int32_t)x, (int32_t)y);
+        }
+    }
+}
+
 static hal_status_t png_flush(port_display_t *port, const rect_t *area, refresh_mode_t mode)
 {
     adp_display_png_t *d = self_of(port);
 
     epd_flush_t flush;
-    epd_model_flush(&d->model, area, mode, &flush);
+    epd_model_flush(&d->model, area, mode, &d->fb, d->glass, &flush);
     epd_model_log(&d->model, &flush);
+    transfer(d, &flush);
 
     framebuffer_reset_dirty(&d->fb);
 
@@ -82,10 +99,12 @@ hal_status_t adp_display_png_init(adp_display_png_t *d, uint16_t width, uint16_t
     const size_t fb_size = framebuffer_required_size(width, height, PIXFMT_GRAY4);
 
     d->pixels = calloc(1u, fb_size);
-    if (d->pixels == NULL) {
+    d->glass = malloc((size_t)width * (size_t)height);
+    if (d->pixels == NULL || d->glass == NULL) {
         adp_display_png_deinit(d);
         return HAL_ERR_NO_MEM;
     }
+    memset(d->glass, EPD_MODEL_GRAY4_WHITE, (size_t)width * (size_t)height);
 
     framebuffer_init(&d->fb, d->pixels, fb_size, width, height, PIXFMT_GRAY4);
     epd_model_init(&d->model, width, height, EPD_SIM_MAX_PARTIAL_REFRESHES_BEFORE_FULL);
@@ -137,4 +156,6 @@ void adp_display_png_deinit(adp_display_png_t *d)
 {
     free(d->pixels);
     d->pixels = NULL;
+    free(d->glass);
+    d->glass = NULL;
 }

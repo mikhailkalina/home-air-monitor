@@ -32,6 +32,9 @@ compile_commands.json
 # that proves check_sources.sh skips fetched dependencies. An ignored fixture
 # makes that test pass vacuously, which is worse than not having it.
 /apps/*/managed_components/
+# The on-target test app is a second ESP-IDF project with its own fetch of
+# the same dependencies (apps/firmware_esp32/test_app/).
+/apps/*/test_app/managed_components/
 dependencies.lock
 *.bin
 *.elf

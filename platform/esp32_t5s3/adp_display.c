@@ -164,7 +164,15 @@ static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw
 //                        port describes. This is also what synchronises
 //                        EPDiy's model with the glass on the first frame:
 //                        epd_hl_init() assumes white, which a bistable panel
-//                        has no obligation to be at boot.
+//                        has no obligation to be at boot. Two limits measured
+//                        in phase 2c (docs/adr/0008-panel-timing.md): the
+//                        clear does not remove residue from grey response,
+//                        only from what black and white show; and GC16
+//                        flashes white-to-white pixels in any column holding
+//                        a changed pixel while leaving other white columns
+//                        alone, which can leave faint vertical stripes in
+//                        white. Both are open items in board_notes.md; GL16
+//                        after the clear is the candidate for the second.
 //   REFRESH_PARTIAL   -> MODE_GL16 over `area`. Sixteen greys without the
 //                        clear pass: no flash, and only the changed pixels
 //                        are driven, so ghosting accumulates -- port_display.h's
@@ -182,12 +190,22 @@ static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw
 //                        main/event_loop.c's previous-frame copy still holds
 //                        the old image, so a partial would see no difference
 //                        and leave the glass white.
-//   REFRESH_FAST_MONO -> HAL_ERR_UNSUPPORTED. The waveform does offer
-//                        MODE_DU, so this is reachable should a 1 bpp fast
-//                        path ever be wanted -- but nothing requests it and
-//                        this adapter runs GRAY4 throughout, so wiring it now
-//                        would add a path with no caller and no way to
-//                        exercise it.
+//   REFRESH_FAST_MONO -> MODE_DU over `area`. Five passes against GL16's
+//                        thirty, which is the whole point of the mode -- and
+//                        the price is that DU only knows two destinations.
+//                        Its lookup table (epdiy_ED047TC1.h, mode type 1)
+//                        drives a pixel towards black when the target is 0x0
+//                        and towards white when it is 0xF, and drives nothing
+//                        at all for targets 0x1-0xE. Through the highlevel
+//                        API that makes grey content worse than wrong: the
+//                        glass keeps its old value while EPDiy's model
+//                        records the new grey, so a later partial believes
+//                        those pixels are already there. A caller asking for
+//                        REFRESH_FAST_MONO must therefore have drawn only
+//                        0x0 and 0xF inside `area`. Nothing in the product
+//                        asks for it (update_action_t has no such action);
+//                        apps/firmware_esp32/main/epd_calibration.c does, to
+//                        time it, and draws black and white only.
 //
 // POWER. Every path brackets its panel drive with epd_poweron() and
 // epd_poweroff() itself. EPDiy's highlevel layer does NOT: highlevel.c
@@ -225,7 +243,8 @@ static hal_status_t adp_flush(port_display_t *port, const rect_t *area, refresh_
             epd_poweroff();
             return status;
 
-        case REFRESH_PARTIAL: {
+        case REFRESH_PARTIAL:
+        case REFRESH_FAST_MONO: {
             const EpdRect partial = {
                 .x = (int)resolved.x,
                 .y = (int)resolved.y,
@@ -233,7 +252,7 @@ static hal_status_t adp_flush(port_display_t *port, const rect_t *area, refresh_
                 .height = (int)resolved.h,
             };
             epd_poweron();
-            status = update_and_log(d, MODE_GL16, partial);
+            status = update_and_log(d, (mode == REFRESH_PARTIAL) ? MODE_GL16 : MODE_DU, partial);
             epd_poweroff();
             return status;
         }
@@ -246,7 +265,6 @@ static hal_status_t adp_flush(port_display_t *port, const rect_t *area, refresh_
             port_log_write(d->log, LOG_LEVEL_INFO, "adp_display", "clear done", NULL, 0u);
             return HAL_OK;
 
-        case REFRESH_FAST_MONO:
         default:
             return HAL_ERR_UNSUPPORTED;
     }

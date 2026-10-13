@@ -2,14 +2,14 @@
 //
 // The windowed display adapter: the panel at 1:1 (or scaled by --zoom) in 16
 // greys, with the parts of e-paper behaviour that a still image cannot show --
-// refresh latency you wait through, the inversion flash of a full refresh,
-// ghosting accumulating across partial refreshes, and an outline around the
-// rectangle each flush actually touched.
+// refresh latency you wait through, the black-and-white flashing of a full
+// refresh's clear, ghosting accumulating across partial refreshes, and an
+// outline around the rectangle each flush actually touched.
 //
 // The flush accounting, the forced full refresh and the log lines are shared
 // with the headless adapter through epd_model.h; only the picture is new here.
-// All timing and ghosting figures are unmeasured estimates from
-// epd_emulation.h.
+// Every timing and ghosting figure comes from epd_emulation.h, measured or
+// observed on the panel in phase 2c.
 //
 // Built only when SIM_GUI is ON and SDL2 was found. Nothing in core/ knows
 // this file exists, and nothing in it knows what a reading is.

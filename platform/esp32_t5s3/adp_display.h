@@ -29,8 +29,9 @@
 // adp_display.c's comment at s_hl explains what fails without it.
 //
 // The panel geometry and refresh limits reported here are the same BOARD_EPD_*
-// constants core/app/update_policy.c has always read through the port, still
-// GUESSED pending phase 2c.
+// constants core/app/update_policy.c has always read through the port; phase
+// 2c set the partial-refresh budget from observation
+// (docs/adr/0008-panel-timing.md).
 
 #ifndef HAC_PLATFORM_ESP32_T5S3_ADP_DISPLAY_H
 #define HAC_PLATFORM_ESP32_T5S3_ADP_DISPLAY_H
