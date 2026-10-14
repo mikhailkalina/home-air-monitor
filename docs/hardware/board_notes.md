@@ -512,7 +512,8 @@ layout settles, not before.
       distinguishable except **levels 0 and 1**, which look identical; 14
       and 15 are distinct. Fifteen usable greys, monotonic. Nothing in
       `core/ui/view_model.h` uses level 1, and the simulator now renders 1 as
-      0 (`EPD_SIM_DARKEST_MERGED_LEVEL`). Not a photometric measurement --
+      0 (`EPD_SIM_DARKEST_MERGED_LEVEL`; since 2026-10-14 through the
+      measured lightness table instead, ADR 0013). Not a photometric measurement --
       "identical" means to the eye, in room light. **Narrowed 2026-10-12, not closed.** The concern used to be
       that FastEPD's `u8FivePointTwoMatrix` was characterised for a different
       panel entirely; EPDiy instead ships a waveform named for this panel's
@@ -565,6 +566,59 @@ layout settles, not before.
       ramp left nothing visible. So residue is not only a partial-refresh
       matter, and it seems to follow edges rather than area -- which bears
       on text, and on dithered photographs.
+      **Seen again 2026-10-14, the other way round**: the level-match chart,
+      fine patterns everywhere, flashed straight after a run of dithered
+      photographs, showed local lighter and darker patches across its
+      mixes on its first refresh. Three reboots (three full refreshes of
+      the same chart) improved it markedly; ten changed nothing further
+      that the eye could see. Fine patterns show residue as readily as
+      greys do.
+- [ ] **How light each grey level really is.** **Table in place
+      2026-10-14** (`docs/adr/0013-grey-level-lightness.md`): levels 1-10 as
+      measured below, 11-14 estimated; the simulator and `image_gen.py
+      prepare` both use it, and photographs dithered towards it at their
+      own tones were judged best on the panel. Open: measuring 11-14, and
+      the chart's own bias.
+      Found 2026-10-14 with the
+      photo frame (`docs/adr/0012-image-pipeline.md`, "The photo frame"):
+      its photographs look overexposed on the panel, though their files are
+      not bright -- mean level 6.7 of 15, about 4 % of pixels on levels 14
+      and 15, most of them on 2-10 -- and the simulator shows them as
+      intended. Both the simulator (`displayed_level()` in
+      `platform/host/adp_display_sdl.c`) and `image_gen.py prepare`
+      (`LEVEL_VALUE`) assume level L looks like 8-bit grey L x 17; the
+      panel evidently shows the middle levels much lighter than that. If
+      its levels were even in reflectance rather than in sRGB value, level
+      7 would reflect about 47 % against the 18 % assumed, which is the
+      size of effect seen. The dark end disagrees with any single curve:
+      levels 0 and 1 look identical (the waveform item above), and the
+      demo sphere's shadow merges into its black background. So a measured
+      table is needed, not a gamma: the relative lightness of each of the
+      sixteen levels, judged against dithered black-and-white mixes (which
+      blend at viewing distance) or read from a RAW photograph of the ramp.
+      It replaces `LEVEL_VALUE` and the simulator's `* 17` together.
+      **Measured by eye 2026-10-14** with `06_level_match` (the slideshow's
+      demo set, shown alone and static, in room light, from viewing
+      distance). The column where each level's patch vanished, converted
+      from the chart's labels to the white fraction the 8 x 8 Bayer pattern
+      really has (k/64): level 1: 0 %; 2: 4.7 %; 3: 15.6 %; 4: 27.3 %
+      ("25-30"); 5: 34.4 %; 6: 43.0 % ("40-45"); 7: 50.0 %; 8: 54.7 %; 9:
+      59.4 %; 10: 65.6 %. Levels 4-10 lie within 3 points of L/15 -- the
+      panel is close to **even in reflectance** over the middle, so level 7
+      reflects about half way between its black and its white, where the
+      L x 17 assumption put it at 18 %. That is the photo frame's
+      overexposure, explained. The dark end is compressed (1 = 0, 2 = 4.7 %,
+      against 6.7 and 13.3 for even steps). **Levels 11-13 could not be
+      matched**: in the 70-95 % columns the mixes looked darker than they
+      should, even darker towards the right, so no cell matched; level 14
+      was matched only by the solid white of the 100 % column. The likely
+      cause is the method, not the levels: on e-paper the boundary between
+      a black and a white pixel renders grey, so a fine black-and-white mix
+      is pulled towards mid-grey, and sparse black dots on white look darker
+      than their share. The chart's mixes are trustworthy only where they
+      are dense in both colours. To close the light end: a mix of level 10
+      and 15 instead of 0 and 15 (lower-contrast boundaries), or a RAW
+      photograph of the solid ramp, which has no fine pattern at all.
 - [ ] **Vertical stripes in white after a full refresh.** Found 2026-10-13,
       phase 2c. In `REFRESH_FULL`, GC16 after `epd_clear()` flashes
       white-to-white pixels (15 passes dark, 15 light -- GL16 does nothing

@@ -94,11 +94,13 @@ sixteen-grey palette).
   the default) or `atkinson`. Level 1 is left out of the palette by default,
   since dithering towards a grey the panel does not show wastes error. Run
   by hand; the output is the thing to look at before flashing anything.
-- **`demo`** (standard library): five synthetic test pictures -- the
+- **`demo`** (standard library): six synthetic test pictures -- the
   sixteen-level ramp, the four dithering methods side by side, fine
-  patterns and a Siemens star, a shaded sphere, a checkerboard. Made here,
-  so they carry this project's license. Committed in `apps/slideshow/images/`
-  (65 KB together); regenerate them if the script changes.
+  patterns and a Siemens star, a shaded sphere, a checkerboard, and (added
+  2026-10-14) a level-match chart for calibrating the greys by eye. Made
+  here, so they carry this project's license. Committed in
+  `apps/slideshow/images/` (74 KB together); regenerate them if the script
+  changes.
 - **`embed`** (standard library): panel-ready PNGs -> `<name>.generated.c/.h`,
   `image_t`s in the framebuffer's own nibble order, plus `<name>_all[]` and
   `<name>_names[]` in file-name order. **Strict**: a grey that is not a
@@ -137,7 +139,8 @@ or a dither.
   distinct steps -- but measured no reflectance. A photometric reading of the
   calibration ramp would replace `LEVEL_VALUE`; no branch has it planned.
   Until then `--gamma` is the knob, and the dithered sphere and gradients of
-  the demo set are what to judge it by on the glass.
+  the demo set are what to judge it by on the glass. **Superseded
+  2026-10-14** by a measured table, `docs/adr/0013-grey-level-lightness.md`.
 - **Tested.** `tests/unit/test_image_embed.c` embeds the same 7 x 3 picture
   from five encodings -- 4-, 8- and 16-bit grey, a palette written in reverse
   order, neutral RGB; all but one written by Pillow, so the decoder is
@@ -260,11 +263,32 @@ all portrait 3:4 (3072 x 4080, Pixel), shown by a second app,
   Eleven of the twelve are centred; on one the child is at the right, and
   `--focus 0.7,0.5` keeps all of her.
 - **Settings:** `--rotate 270 --fit cover --dither floyd-steinberg
-  --sharpen 80`, autocontrast 0.5 %, gamma 1, level 1 left out. Each PNG's
-  `tEXt` chunk records the settings it was made with.
+  --sharpen 80`, autocontrast 0.5 %, gamma 1, level 1 left out -- the same
+  options before and after the levels were calibrated, though since
+  2026-10-14 they mean dithering in light (ADR 0013). Each PNG's `tEXt`
+  chunk records the settings it was made with, the lightness table
+  included.
 - **Budget:** 12 x 259,200 bytes; the image is 3.39 MB, 81 % of the 4 MB app
   slot. About three more full-panel photographs fit before the pictures need
   option D or E.
+- **Seen on the panel, 2026-10-14: the photographs look overexposed**, while
+  the simulator shows them as intended and their files are mid-dark (mean
+  level 6.7 of 15). The tone curve this ADR calls an estimate is the
+  likely cause: the panel shows its middle levels much lighter than
+  `LEVEL_VALUE` assumes, and the simulator, assuming the same, cannot show
+  the difference. `board_notes.md`, "How light each grey level really is";
+  measured and fixed in `docs/adr/0013-grey-level-lightness.md`.
+  A first comparison on the panel -- three photographs, each prepared at
+  gamma 1.0, 0.7 and 0.5 (`prepare --gamma`, below 1 darkens) -- put the
+  best look at about 0.75, judged by eye. A second round,
+  0.65/0.75/0.85, found 0.85 clearly still overexposed; a third,
+  0.7/0.6/0.5, found 0.7 too light and 0.5 too dark; a fourth,
+  0.55/0.6/0.65, settled on **0.6**, the same for all three photographs.
+  The frame's photographs were prepared at 0.6 until the levels were
+  calibrated: a gamma is one number standing in for a sixteen-entry table.
+  **Since 2026-10-14 they are prepared in light towards the measured table
+  at gamma 1.0**, judged on the panel over the old 0.6 and over the new
+  pipeline at 0.6 and 1.15 (`docs/adr/0013-grey-level-lightness.md`).
 - **To watch for:** a dithered photograph is fine pattern everywhere, which
   is exactly what the demo set found to leave residue through full
   refreshes ("By eye" above). Each photograph may show faintly in the greys

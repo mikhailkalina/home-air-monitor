@@ -2,7 +2,9 @@
 
 #include "epd_model.h"
 
+#include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -197,6 +199,20 @@ void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode,
 
     m->flush_count++;
     m->simulated_ms_total += out->duration_ms;
+}
+
+uint8_t epd_level_display_grey(uint8_t level)
+{
+    static const uint16_t k_lightness_permille[16] = EPD_SIM_LEVEL_LIGHTNESS_PERMILLE;
+    const uint8_t index = (level < 16u) ? level : 15u;
+    const float light = (float)k_lightness_permille[index] / 1000.0f;
+
+    // sRGB's own transfer function: what makes a screen's grey look as light
+    // as the panel's.
+    const float encoded =
+        (light <= 0.0031308f) ? 12.92f * light : 1.055f * powf(light, 1.0f / 2.4f) - 0.055f;
+    const float grey = encoded * 255.0f + 0.5f;
+    return (uint8_t)((grey >= 255.0f) ? 255.0f : grey);
 }
 
 const char *epd_refresh_mode_name(refresh_mode_t mode)

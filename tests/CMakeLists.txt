@@ -145,6 +145,21 @@ if(Python3_Interpreter_FOUND)
             PASS_REGULAR_EXPRESSION "not panel-ready: ${message}")
     endforeach()
 
+    # prepare reads how light each level is from platform/host/epd_emulation.h,
+    # the simulator's own table (docs/adr/0013-grey-level-lightness.md); this
+    # proves it still finds and accepts it.
+    add_test(NAME image_gen_reads_the_level_table
+        COMMAND ${Python3_EXECUTABLE} ${image_gen} levels)
+    set_tests_properties(image_gen_reads_the_level_table PROPERTIES
+        PASS_REGULAR_EXPRESSION "level 15: lightness 1[.]000")
+
+    # The committed demo pictures are what the generator makes now. A change
+    # to the dithering or a test pattern that is not regenerated fails here
+    # instead of leaving the repository's pictures quietly out of step.
+    add_test(NAME image_gen_demo_pictures_are_current
+        COMMAND ${Python3_EXECUTABLE} ${image_gen} demo --verify
+                --out-dir ${HAC_ROOT}/apps/slideshow/images)
+
     # ...and round, when asked to, instead.
     add_test(NAME image_gen_quantize_accepts_off_level
         COMMAND ${Python3_EXECUTABLE} ${image_gen} embed --name quantized --quantize

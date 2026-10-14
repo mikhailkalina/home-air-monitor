@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "epd_emulation.h"
+#include "epd_model.h"
 #include "png_write.h"
 
 #if defined(_WIN32)
@@ -75,7 +76,7 @@ static hal_status_t png_flush(port_display_t *port, const rect_t *area, refresh_
     char path[600];
     snprintf(path, sizeof(path), "%s/frame_%04u.png", d->out_dir, d->frame_index);
 
-    if (!png_write_framebuffer_gray8(&d->fb, path)) {
+    if (!png_write_framebuffer_gray8(&d->fb, path, d->level_grey)) {
         fprintf(stderr, "[epd] failed to write %s\n", path);
         return HAL_ERR_IO;
     }
@@ -105,6 +106,9 @@ hal_status_t adp_display_png_init(adp_display_png_t *d, uint16_t width, uint16_t
         return HAL_ERR_NO_MEM;
     }
     memset(d->glass, EPD_MODEL_GRAY4_WHITE, (size_t)width * (size_t)height);
+    for (uint8_t level = 0u; level < 16u; ++level) {
+        d->level_grey[level] = epd_level_display_grey(level);
+    }
 
     framebuffer_init(&d->fb, d->pixels, fb_size, width, height, PIXFMT_GRAY4);
     epd_model_init(&d->model, width, height, EPD_SIM_MAX_PARTIAL_REFRESHES_BEFORE_FULL);

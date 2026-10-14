@@ -92,6 +92,13 @@ void epd_model_log_summary(const epd_model_t *m);
 
 const char *epd_refresh_mode_name(refresh_mode_t mode);
 
+// The 8-bit sRGB grey a GRAY4 level looks like on the glass: its measured
+// lightness (EPD_SIM_LEVEL_LIGHTNESS_PERMILLE, epd_emulation.h) encoded for a
+// screen, with the panel's black shown as the screen's black and its white as
+// the screen's white. The panel's own contrast -- its black is a dark grey --
+// is not modelled. A level above 15 counts as 15.
+uint8_t epd_level_display_grey(uint8_t level);
+
 #ifdef __cplusplus
 }
 #endif

@@ -26,12 +26,17 @@
 bool png_write_gray8(const char *path, const uint8_t *pixels, uint32_t width, uint32_t height);
 
 // Unpacks `fb` to 8-bit greyscale and writes it as a PNG to `path`: GRAY4
-// expands each 4-bit level to 8-bit grey (level * 17, so 0 maps to 0 and 15
-// to 255), MONO1 becomes black and white. This is the one place that
-// unpacking happens -- every caller that turns a framebuffer_t into a PNG
-// (a golden reference, a golden mismatch dump, a headless frame) goes through
-// it, so a packing bug shows up in the PNG instead of being hidden by a
-// second, independent decoder.
-bool png_write_framebuffer_gray8(const framebuffer_t *fb, const char *path);
+// expands each 4-bit level through `level_grey` (16 entries), or, when that
+// is NULL, to level * 17, so 0 maps to 0 and 15 to 255; MONO1 becomes black
+// and white. This is the one place that unpacking happens -- every caller
+// that turns a framebuffer_t into a PNG (a golden reference, a golden mismatch
+// dump, a headless frame) goes through it, so a packing bug shows up in the
+// PNG instead of being hidden by a second, independent decoder.
+//
+// The golden PNGs pass NULL: they document the framebuffer's levels. The
+// headless frames pass the panel's measured greys
+// (epd_level_display_grey()): they show what the glass would.
+bool png_write_framebuffer_gray8(const framebuffer_t *fb, const char *path,
+                                 const uint8_t *level_grey);
 
 #endif  // HAC_PLATFORM_HOST_PNG_WRITE_H

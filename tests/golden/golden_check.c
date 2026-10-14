@@ -19,7 +19,7 @@ static bool write_companion_png(const framebuffer_t *fb, const char *dir, const 
     char path[512];
     snprintf(path, sizeof(path), "%s/%s.png", dir, name);
 
-    if (!png_write_framebuffer_gray8(fb, path)) {
+    if (!png_write_framebuffer_gray8(fb, path, NULL)) {
         fprintf(stderr, "failed to write %s\n", path);
         return false;
     }
@@ -32,7 +32,7 @@ static void dump_mismatch_png(const framebuffer_t *fb, const char *dump_dir, con
     char path[512];
     snprintf(path, sizeof(path), "%s/%s.png", dump_dir, label);
 
-    if (png_write_framebuffer_gray8(fb, path)) {
+    if (png_write_framebuffer_gray8(fb, path, NULL)) {
         fprintf(stderr, "  wrote %s\n", path);
     }
 }

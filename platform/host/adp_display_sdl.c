@@ -45,6 +45,10 @@ struct adp_display_sdl_s {
     // has pushed out yet, and the window must keep showing the old one.
     uint8_t *glass;
 
+    // epd_level_display_grey() for every level, worked out once: the window
+    // is repainted every frame.
+    uint8_t level_grey[16];
+
     // Per pixel, the partial refreshes since it was last driven (counting only
     // those whose rectangle covered it), saturating. A dark pixel left
     // undriven long enough shows lighter than freshly driven ones -- the
@@ -68,18 +72,16 @@ static bool rect_contains(const rect_t *r, uint16_t x, uint16_t y)
            (uint32_t)y < (uint32_t)r->y + r->h;
 }
 
-// What one glass pixel looks like, in 8-bit grey: its GRAY4 level as this
-// unit shows it (levels it cannot tell apart are merged), lightened if it is a
-// dark pixel that partial refreshes have left undriven for long enough.
+// What one glass pixel looks like, in 8-bit grey: its GRAY4 level as light as
+// this unit shows it (epd_emulation.h's measured table -- which is also what
+// shows level 1 as black), lightened if it is a dark pixel that partial
+// refreshes have left undriven for long enough.
 static int32_t displayed_level(const adp_display_sdl_t *d, size_t i)
 {
-    uint8_t gray4 = d->glass[i];
-    if (gray4 <= EPD_SIM_DARKEST_MERGED_LEVEL) {
-        gray4 = 0u;
-    }
+    const uint8_t gray4 = d->glass[i];
 
-    int32_t level = (int32_t)gray4 * 17;  // 0-15 -> 0-255
-    if (d->glass[i] < EPD_SIM_GHOST_DARK_BELOW && d->undriven[i] >= EPD_SIM_GHOST_VISIBLE_AFTER) {
+    int32_t level = (int32_t)d->level_grey[gray4 & 0x0Fu];
+    if (gray4 < EPD_SIM_GHOST_DARK_BELOW && d->undriven[i] >= EPD_SIM_GHOST_VISIBLE_AFTER) {
         level += (int32_t)EPD_SIM_GHOST_LIGHTEN;
     }
     return (level > 255) ? 255 : level;
@@ -289,6 +291,10 @@ adp_display_sdl_t *adp_display_sdl_create(uint16_t width, uint16_t height, float
 
     // A panel that has never been refreshed is white, like paper.
     memset(d->glass, EPD_MODEL_GRAY4_WHITE, px_count);
+
+    for (uint8_t level = 0u; level < 16u; ++level) {
+        d->level_grey[level] = epd_level_display_grey(level);
+    }
 
     framebuffer_init(&d->fb, d->pixels, fb_size, width, height, PIXFMT_GRAY4);
     framebuffer_clear(&d->fb, 0x0Fu);

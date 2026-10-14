@@ -333,6 +333,55 @@ static void a_panel_with_no_partial_mode_refreshes_fully_every_time(void)
     HAC_CHECK(f.forced_full);
 }
 
+// --- how light each level looks ---------------------------------------
+//
+// The window and the headless frames show a level as light as the glass does
+// (EPD_SIM_LEVEL_LIGHTNESS_PERMILLE). The table must run from black to white
+// without ever turning back, or a lighter level would show darker; and the
+// screen grey must be the sRGB encoding of the measured light, which the
+// level-7 check pins at a value worked out by hand (0.5 -> 187.5 -> 188).
+
+static void the_lightness_table_runs_from_black_to_white_and_never_falls(void)
+{
+    static const uint16_t lightness[16] = EPD_SIM_LEVEL_LIGHTNESS_PERMILLE;
+
+    HAC_CHECK_EQ_INT(lightness[0], 0);
+    HAC_CHECK_EQ_INT(lightness[15], 1000);
+    for (size_t level = 1u; level < 16u; ++level) {
+        HAC_CHECK(lightness[level] >= lightness[level - 1u]);
+    }
+}
+
+static void a_level_shows_as_the_screen_grey_of_its_measured_light(void)
+{
+    static const uint16_t lightness[16] = EPD_SIM_LEVEL_LIGHTNESS_PERMILLE;
+
+    HAC_CHECK_EQ_INT(epd_level_display_grey(0u), 0);
+    HAC_CHECK_EQ_INT(epd_level_display_grey(15u), 255);
+    HAC_CHECK_EQ_INT(epd_level_display_grey(16u), 255);  // out of range counts as 15
+    if (lightness[7] == 500u) {
+        HAC_CHECK_EQ_INT(epd_level_display_grey(7u), 188);
+    }
+    for (uint8_t level = 1u; level < 16u; ++level) {
+        HAC_CHECK(epd_level_display_grey(level) >= epd_level_display_grey((uint8_t)(level - 1u)));
+    }
+}
+
+// Phase 2c saw levels 0 and 1 as one; the table says so, and the window must
+// not show a difference the glass does not.
+static void levels_the_panel_shows_alike_look_alike(void)
+{
+    static const uint16_t lightness[16] = EPD_SIM_LEVEL_LIGHTNESS_PERMILLE;
+
+    for (uint8_t level = 1u; level < 16u; ++level) {
+        if (lightness[level] == lightness[level - 1u]) {
+            HAC_CHECK_EQ_INT(epd_level_display_grey(level),
+                             epd_level_display_grey((uint8_t)(level - 1u)));
+        }
+    }
+    HAC_CHECK_EQ_INT(lightness[1], lightness[0]);
+}
+
 int main(void)
 {
     HAC_RUN(a_null_area_means_the_whole_panel);
@@ -346,5 +395,9 @@ int main(void)
     HAC_RUN(partial_refreshes_are_counted_and_a_full_one_resets_the_count);
     HAC_RUN(the_panel_forces_a_full_refresh_when_the_budget_is_spent);
     HAC_RUN(a_panel_with_no_partial_mode_refreshes_fully_every_time);
+
+    HAC_RUN(the_lightness_table_runs_from_black_to_white_and_never_falls);
+    HAC_RUN(a_level_shows_as_the_screen_grey_of_its_measured_light);
+    HAC_RUN(levels_the_panel_shows_alike_look_alike);
     return hac_test_summary();
 }

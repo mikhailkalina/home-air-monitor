@@ -32,6 +32,10 @@ typedef struct {
     // differently.
     uint8_t *glass;
 
+    // epd_level_display_grey() for every level: the frames show each level as
+    // light as the glass does, as the window does.
+    uint8_t level_grey[16];
+
     char out_dir[512];
     uint32_t frame_index;
     bool write_frames;  // false when no output directory was given

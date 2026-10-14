@@ -8,12 +8,15 @@
 #   demo     synthetic panel-ready PNGs        standard library only
 #   embed    panel-ready PNG(s) -> C source    standard library only; the
 #                                               build runs this one
+#   levels   how light each level is on the glass, as `prepare` assumes
 #
 # A panel-ready PNG is a 4-bit greyscale PNG in which every pixel already is
 # one of the panel's levels. It is exactly what the glass will be driven
 # with, it opens in any viewer, and GitHub shows it in a review. Everything
 # lossy -- scaling, cropping, tone, dithering -- happens in `prepare`, once,
-# where the result can be looked at. `embed` only repacks, losslessly, and
+# where the result can be looked at -- dithering in light, towards how light
+# each level measured on the glass (docs/adr/0013-grey-level-lightness.md).
+# `embed` only repacks, losslessly, and
 # refuses any image that is not already panel-ready, so a build never makes a
 # picture decision of its own.
 #
@@ -30,6 +33,7 @@
 
 import argparse
 import pathlib
+import random
 import re
 import struct
 import sys
@@ -44,23 +48,20 @@ PANEL_SIZE = (960, 540)
 
 LEVEL_COUNT = 16
 
-# On this unit, level 1 cannot be told from level 0 by eye
-# (docs/hardware/board_notes.md, the waveform greys item, phase 2c;
-# EPD_SIM_DARKEST_MERGED_LEVEL in platform/host/epd_emulation.h). Dithering
-# towards it would spend error on a grey the panel does not show, so
-# `--levels distinct`, the default, leaves it out.
-DARKEST_MERGED_LEVEL = 1
-
-# ESTIMATE, not a measurement: level L is assumed to look like 8-bit grey
-# L * 17, evenly spaced from black to white. Phase 2c judged the ramp by eye
-# (monotonic, fifteen distinguishable steps) but measured no reflectance. A
-# photometric reading of the calibration ramp would replace this table, and
-# with it the tone every dithered picture gets; no branch has it planned yet
-# (docs/adr/0012-image-pipeline.md, "Consequences"). Until then, --gamma is
-# the knob.
-LEVEL_VALUE = [level * 17 for level in range(LEVEL_COUNT)]
+# How a panel level is written into a panel-ready PNG: level L as 8-bit grey
+# L * 17, so the file opens as an ordinary greyscale image. An encoding only;
+# how light a level looks on the glass is panel_lightness()'s business.
+LEVEL_CODE = [level * 17 for level in range(LEVEL_COUNT)]
 
 GENERATOR = "apps/tools/image_gen/image_gen.py"
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+# The simulator's table of how light each level is on the glass, read from
+# where it is defined so the two can never disagree
+# (docs/adr/0013-grey-level-lightness.md). That header says which levels are
+# measured and which are estimates.
+LIGHTNESS_HEADER = ROOT / "platform" / "host" / "epd_emulation.h"
 
 
 def parse_size(text):
@@ -73,48 +74,93 @@ def parse_size(text):
     return width, height
 
 
-def palette_levels(mode):
-    """The levels a picture may be dithered to, darkest first."""
+def panel_lightness():
+    """How light each level is on the glass: 0.0 at the panel's black, 1.0 at
+    its white, linear in light -- so a mix of two levels is as light as the
+    average of theirs."""
+    text = LIGHTNESS_HEADER.read_text()
+    match = re.search(r"#define\s+EPD_SIM_LEVEL_LIGHTNESS_PERMILLE\b([^}]*)\}", text)
+    if not match:
+        sys.exit(f"{LIGHTNESS_HEADER}: EPD_SIM_LEVEL_LIGHTNESS_PERMILLE not found")
+    body = match.group(1).replace("\\", " ").replace("{", " ")
+    permille = [int(v) for v in body.split(",") if v.strip()]
+    if (len(permille) != LEVEL_COUNT or permille[0] != 0 or permille[-1] != 1000
+            or permille != sorted(permille)):
+        sys.exit(f"{LIGHTNESS_HEADER}: EPD_SIM_LEVEL_LIGHTNESS_PERMILLE must be "
+                 f"{LEVEL_COUNT} values rising from 0 to 1000, got {permille}")
+    return [value / 1000 for value in permille]
+
+
+def palette_levels(mode, lightness):
+    """The levels a picture may be dithered to, darkest first. `distinct`
+    leaves out any level that looks the same as a darker one -- level 1 on
+    this unit -- since dithering towards it would spend error on a grey the
+    panel does not show."""
     if mode == "all":
         return list(range(LEVEL_COUNT))
-    return [level for level in range(LEVEL_COUNT) if level != DARKEST_MERGED_LEVEL]
+    levels = []
+    for level in range(LEVEL_COUNT):
+        if not levels or lightness[level] > lightness[levels[-1]]:
+            levels.append(level)
+    return levels
+
+
+def srgb_to_light(code):
+    """8-bit sRGB grey to light, 0.0-1.0."""
+    v = code / 255
+    return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def light_to_srgb(light):
+    """Light, 0.0-1.0, to sRGB grey on a 0.0-1.0 scale."""
+    return light * 12.92 if light <= 0.0031308 else 1.055 * light ** (1 / 2.4) - 0.055
+
+
+# The demo's test pictures dither towards the nominal greys, L * 17 with level
+# 1 left out, not towards the measured ones: they test the levels and the
+# dithering themselves, and docs/adr/0012-image-pipeline.md's observations were
+# made on them. Photographs go through `prepare`, which uses the measured table.
+DEMO_LEVELS = [0] + list(range(2, LEVEL_COUNT))
+DEMO_TARGETS = [LEVEL_CODE[level] for level in DEMO_LEVELS]
 
 
 # --- quantizing and dithering -------------------------------------------------
 #
-# Pure Python over a flat, row-major list of 8-bit grey values (floats are
-# fine), returning a bytearray of panel levels. Slow by image-processing
-# standards -- a second or two per panel-sized picture -- and dependency-free,
-# which is what lets `demo` run without Pillow and keeps every method in one
-# place where they can be compared.
+# Pure Python over a flat, row-major list of grey values on a 0-255 scale
+# (floats welcome), returning a bytearray of panel levels. `levels` lists the
+# levels allowed, darkest first, and `targets` their greys on the values' own
+# scale: 8-bit grey for the demo's test pictures, light for the photographs
+# `prepare` makes. The error carried to the neighbours keeps its fraction:
+# rounded away, it would lose the faint shadows of a picture dithered in light,
+# where the whole step from level 0 to level 2 is 12 of the 255.
+#
+# Slow by image-processing standards -- a second or two per panel-sized
+# picture -- and dependency-free, which is what lets `demo` run without Pillow
+# and keeps every method in one place where they can be compared.
 
-def _nearest_table(levels):
-    """For every 8-bit value, the index into `levels` of the nearest level."""
-    table = []
-    for value in range(256):
-        best = min(range(len(levels)), key=lambda i: abs(LEVEL_VALUE[levels[i]] - value))
-        table.append(best)
-    return table
-
-
-def _clamp_round(value):
+def _clamp(value):
     if value <= 0.0:
-        return 0
+        return 0.0
     if value >= 255.0:
-        return 255
-    return int(value + 0.5)
+        return 255.0
+    return value
 
 
-def quantize_nearest(values, width, height, levels):
-    nearest = _nearest_table(levels)
-    return bytearray(levels[nearest[_clamp_round(v)]] for v in values)
+def _nearest_table(targets):
+    """For every whole value 0-255, the index of the nearest target."""
+    return [min(range(len(targets)), key=lambda i: abs(targets[i] - value))
+            for value in range(256)]
 
 
-def quantize_floyd_steinberg(values, width, height, levels):
+def quantize_nearest(values, width, height, levels, targets):
+    nearest = _nearest_table(targets)
+    return bytearray(levels[nearest[int(_clamp(v) + 0.5)]] for v in values)
+
+
+def quantize_floyd_steinberg(values, width, height, levels, targets):
     # Serpentine: alternate rows run right to left, which breaks up the
     # diagonal "worms" a one-way scan leaves in smooth gradients.
-    nearest = _nearest_table(levels)
-    targets = [LEVEL_VALUE[level] for level in levels]
+    nearest = _nearest_table(targets)
     buf = [float(v) for v in values]
     out = bytearray(width * height)
     for y in range(height):
@@ -126,10 +172,10 @@ def quantize_floyd_steinberg(values, width, height, levels):
         has_below = y + 1 < height
         for x in xs:
             i = row + x
-            clamped = _clamp_round(buf[i])
-            index = nearest[clamped]
+            value = _clamp(buf[i])
+            index = nearest[int(value + 0.5)]
             out[i] = levels[index]
-            err = clamped - targets[index]
+            err = value - targets[index]
             if err == 0:
                 continue
             ahead = x + step
@@ -145,12 +191,11 @@ def quantize_floyd_steinberg(values, width, height, levels):
     return out
 
 
-def quantize_atkinson(values, width, height, levels):
+def quantize_atkinson(values, width, height, levels, targets):
     # Spreads only 6/8 of the error, to six neighbours. Crisper and more
     # contrasty than Floyd-Steinberg; loses detail in the deepest shadows and
     # brightest highlights, where the dropped quarter accumulates.
-    nearest = _nearest_table(levels)
-    targets = [LEVEL_VALUE[level] for level in levels]
+    nearest = _nearest_table(targets)
     buf = [float(v) for v in values]
     out = bytearray(width * height)
     neighbours = ((1, 0), (2, 0), (-1, 1), (0, 1), (1, 1), (0, 2))
@@ -158,10 +203,10 @@ def quantize_atkinson(values, width, height, levels):
         row = y * width
         for x in range(width):
             i = row + x
-            clamped = _clamp_round(buf[i])
-            index = nearest[clamped]
+            value = _clamp(buf[i])
+            index = nearest[int(value + 0.5)]
             out[i] = levels[index]
-            share = (clamped - targets[index]) / 8
+            share = (value - targets[index]) / 8
             if share == 0:
                 continue
             for dx, dy in neighbours:
@@ -183,27 +228,28 @@ def _bayer(order):
     return matrix
 
 
-def quantize_bayer(values, width, height, levels):
+def quantize_bayer(values, width, height, levels, targets):
     # Ordered 8x8: a fixed threshold pattern instead of carried error. A
     # regular cross-hatch rather than noise, no error creeping across edges,
     # and it compresses far better -- at the cost of a visible texture.
     bayer = _bayer(8)
     cells = len(bayer) * len(bayer)
-    targets = [LEVEL_VALUE[level] for level in levels]
-    # For every 8-bit value: the levels either side of it and how far between
-    # them it lies, so an uneven palette (level 1 left out) dithers correctly.
-    bracket = []
-    for value in range(256):
-        lo = max(i for i in range(len(levels)) if targets[i] <= value)
-        hi = min(i for i in range(len(levels)) if targets[i] >= value)
-        span = targets[hi] - targets[lo]
-        bracket.append((lo, hi, 0.0 if span == 0 else (value - targets[lo]) / span))
+    last = len(targets) - 1
+    # For every whole value, the highest target at or below it; the value's
+    # own fraction then says how far towards the next target it lies, so an
+    # uneven palette dithers correctly.
+    floor_index = [max(i for i in range(len(targets)) if targets[i] <= value)
+                   for value in range(256)]
     out = bytearray(width * height)
     for y in range(height):
         thresholds = [(bayer[y % 8][x % 8] + 0.5) / cells for x in range(8)]
         row = y * width
         for x in range(width):
-            lo, hi, t = bracket[_clamp_round(values[row + x])]
+            value = _clamp(values[row + x])
+            lo = floor_index[int(value)]
+            hi = min(lo + 1, last)
+            span = targets[hi] - targets[lo]
+            t = 0.0 if span <= 0 else (value - targets[lo]) / span
             out[row + x] = levels[hi if t > thresholds[x % 8] else lo]
     return out
 
@@ -245,7 +291,12 @@ def _filter_row(kind, row, prev):
 
 
 def write_png_gray4(path, levels, width, height, note):
-    """Writes `levels` (one panel level per pixel, row-major) as a 4-bit
+    """Writes encode_png_gray4()'s bytes to `path`."""
+    pathlib.Path(path).write_bytes(encode_png_gray4(levels, width, height, note))
+
+
+def encode_png_gray4(levels, width, height, note):
+    """Encodes `levels` (one panel level per pixel, row-major) as a 4-bit
     greyscale PNG. PNG packs the leftmost pixel of each pair into the HIGH
     nibble -- the opposite of the framebuffer's order (docs/adr/0003) --
     which embed() undoes."""
@@ -274,7 +325,7 @@ def write_png_gray4(path, levels, width, height, note):
     png += _chunk(b"tEXt", b"Software\x00" + f"{GENERATOR} {note}".encode("latin-1"))
     png += _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
     png += _chunk(b"IEND", b"")
-    pathlib.Path(path).write_bytes(bytes(png))
+    return bytes(png)
 
 
 class NotPanelReady(Exception):
@@ -425,10 +476,19 @@ def cmd_prepare(args):
 
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    levels = palette_levels(args.levels)
     target_w, target_h = args.size
-    background = LEVEL_VALUE[args.background]
     quantize = DITHERS[args.dither]
+
+    # The picture is dithered in light, towards how light each level really
+    # is on the glass (docs/adr/0013-grey-level-lightness.md): its 8-bit greys
+    # are decoded as sRGB, and the panel's black and white stand for the
+    # picture's.
+    lightness = panel_lightness()
+    levels = palette_levels(args.levels, lightness)
+    targets = [255 * lightness[level] for level in levels]
+    to_light = [255 * srgb_to_light(code) for code in range(256)]
+    background_light = 255 * lightness[args.background]
+    background = round(255 * light_to_srgb(lightness[args.background]))
 
     for source in args.inputs:
         source = pathlib.Path(source)
@@ -468,13 +528,34 @@ def cmd_prepare(args):
                                                          threshold=0))
 
         canvas = Image.new("L", (target_w, target_h), background)
-        canvas.paste(image, ((target_w - image.width) // 2, (target_h - image.height) // 2))
+        left, top = (target_w - image.width) // 2, (target_h - image.height) // 2
+        canvas.paste(image, (left, top))
 
-        panel = quantize(list(canvas.tobytes()), target_w, target_h, levels)
+        if args.noise > 0:
+            # Triangular noise, seeded from the file name so a re-run makes the
+            # same picture: error diffusion draws thin contours where a smooth
+            # tone crosses a level, and a little noise blurs the crossings
+            # (docs/adr/0013-grey-level-lightness.md).
+            rng = random.Random(zlib.crc32(source.name.encode()))
+            light = [255 * srgb_to_light(min(255.0, max(0.0, code + args.noise
+                                                          * (rng.random() - rng.random()))))
+                     for code in canvas.tobytes()]
+        else:
+            light = [to_light[code] for code in canvas.tobytes()]
+        # The bars around a `contain` fit are exactly the background level,
+        # not whatever its nearest sRGB grey dithers to.
+        for y in range(target_h):
+            inside_rows = top <= y < top + image.height
+            for x in range(target_w):
+                if not (inside_rows and left <= x < left + image.width):
+                    light[y * target_w + x] = background_light
+
+        panel = quantize(light, target_w, target_h, levels, targets)
         note = (f"prepare {source.name} size={target_w}x{target_h} fit={args.fit} "
                 f"focus={args.focus[0]:g},{args.focus[1]:g} rotate={args.rotate} "
                 f"dither={args.dither} levels={args.levels} gamma={args.gamma} "
-                f"autocontrast={args.autocontrast} sharpen={args.sharpen}")
+                f"autocontrast={args.autocontrast} sharpen={args.sharpen} noise={args.noise} "
+                f"lightness={'/'.join(str(round(1000 * v)) for v in lightness)}")
         write_png_gray4(out_path, panel, target_w, target_h, note)
         print(f"wrote {out_path} ({target_w}x{target_h}, {args.dither})")
 
@@ -509,7 +590,7 @@ def demo_grey_ramp(width, height):
     return levels
 
 
-def demo_dither_methods(width, height, levels):
+def demo_dither_methods(width, height):
     """The same black-to-white gradient four times, top to bottom: none,
     bayer, floyd-steinberg, atkinson, each framed in black so its white end
     shows against the page. The left margin carries one to four black
@@ -521,7 +602,7 @@ def demo_dither_methods(width, height, levels):
     for band, method in enumerate(("none", "bayer", "floyd-steinberg", "atkinson")):
         top = gap + band * (band_h + gap)
         ramp = [255 * x / (gradient_w - 1) for x in range(gradient_w)] * band_h
-        quantized = DITHERS[method](ramp, gradient_w, band_h, levels)
+        quantized = DITHERS[method](ramp, gradient_w, band_h, DEMO_LEVELS, DEMO_TARGETS)
         for y in range(band_h):
             row = (top + y) * width + margin
             out[row:row + gradient_w] = quantized[y * gradient_w:(y + 1) * gradient_w]
@@ -578,10 +659,9 @@ def demo_fine_detail(width, height):
     return out
 
 
-def demo_shaded_sphere(width, height, levels):
-    """A Lambert-shaded sphere on black, Floyd-Steinberg dithered: the
-    dithering on a curved, photograph-like tone, and a mostly dark frame for
-    what a dark picture leaves behind on the next one."""
+def sphere_shading(width, height):
+    """The demo sphere's 8-bit greys before dithering: Lambert shading lit
+    from the top left, on black."""
     import math
 
     values = _canvas(width, height, 0.0)
@@ -599,7 +679,15 @@ def demo_shaded_sphere(width, height, levels):
             nz = math.sqrt(1.0 - nn)
             lambert = max(0.0, nx * light[0] + ny * light[1] + nz * light[2])
             values[y * width + x] = 255.0 * (0.06 + 0.94 * lambert)
-    return quantize_floyd_steinberg(values, width, height, levels)
+    return values
+
+
+def demo_shaded_sphere(width, height):
+    """A Lambert-shaded sphere on black, Floyd-Steinberg dithered: the
+    dithering on a curved, photograph-like tone, and a mostly dark frame for
+    what a dark picture leaves behind on the next one."""
+    return quantize_floyd_steinberg(sphere_shading(width, height), width, height,
+                                    DEMO_LEVELS, DEMO_TARGETS)
 
 
 def demo_checkerboard(width, height):
@@ -612,22 +700,133 @@ def demo_checkerboard(width, height):
     return out
 
 
+# Digits for the level-match chart, 5 x 7, drawn without a font file so that
+# `demo` stays standard library only.
+_DIGITS = {
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+}
+_DIGIT_SCALE = 2
+_DIGIT_ADVANCE = 6 * _DIGIT_SCALE
+
+
+def _draw_digits(out, width, x, y, text, level):
+    for ch in text:
+        for gy, row in enumerate(_DIGITS[ch]):
+            for gx, bit in enumerate(row):
+                if bit == "1":
+                    for dy in range(_DIGIT_SCALE):
+                        base = (y + gy * _DIGIT_SCALE + dy) * width + x + gx * _DIGIT_SCALE
+                        out[base:base + _DIGIT_SCALE] = bytes([level]) * _DIGIT_SCALE
+        x += _DIGIT_ADVANCE
+
+
+def demo_level_match(width, height):
+    """How light each grey level is on the glass, judged by eye
+    (docs/hardware/board_notes.md, "How light each grey level really is").
+
+    One row per level, 1 to 14. Across each row, 21 cells dithered from
+    levels 0 and 15 -- 0 % white on the left to 100 % on the right, in
+    steps of 5 %, the percentages printed above -- each with a solid patch
+    of the row's level in its middle. A fine black-and-white mix blends to
+    one grey at viewing distance, and light adds linearly, so a mix of
+    fraction f is as light as the panel's black plus f of the way to its
+    white. Where a patch disappears into its cell, that f is how light the
+    level is. Levels 0 and 15 are the mix's own ends and need no row.
+
+    The mixes are ordered 8 x 8 Bayer patterns anchored to the panel's own
+    pixels. Fine black-and-white patterns may darken or lighten a little
+    on e-paper, where neighbouring pixels pull on each other, so the table
+    this yields is checked against the photographs, not trusted blindly."""
+    white, black = LEVEL_COUNT - 1, 0
+    out = bytearray([white]) * (width * height)
+    columns = list(range(0, 101, 5))
+    rows = list(range(1, LEVEL_COUNT - 1))
+    left, top = 34, 24
+    gap = 4
+    cell_w = (width - left - 4) // len(columns)
+    pitch = (height - top - 4) // len(rows)
+    cell_h = pitch - gap
+    patch_w, patch_h = cell_w * 9 // 20, cell_h // 2
+    bayer = _bayer(8)
+
+    for col, percent in enumerate(columns):
+        text = str(percent)
+        x = left + col * cell_w + (cell_w - len(text) * _DIGIT_ADVANCE + _DIGIT_SCALE) // 2
+        _draw_digits(out, width, x, 4, text, black)
+
+    for row, level in enumerate(rows):
+        y0 = top + row * pitch
+        _draw_digits(out, width, 4, y0 + (cell_h - 7 * _DIGIT_SCALE) // 2,
+                     f"{level:2d}".replace(" ", ""), black)
+        for col, percent in enumerate(columns):
+            x0 = left + col * cell_w
+            threshold = percent * 64 / 100
+            for y in range(y0, y0 + cell_h):
+                base = y * width
+                cells = bayer[y % 8]
+                for x in range(x0, x0 + cell_w):
+                    out[base + x] = white if cells[x % 8] + 0.5 <= threshold else black
+            px, py = x0 + (cell_w - patch_w) // 2, y0 + (cell_h - patch_h) // 2
+            for y in range(py, py + patch_h):
+                out[y * width + px:y * width + px + patch_w] = bytes([level]) * patch_w
+    return out
+
+
 def cmd_demo(args):
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     width, height = args.size
-    levels = palette_levels("distinct")
     pictures = (
         ("01_grey_ramp", lambda: demo_grey_ramp(width, height)),
-        ("02_dither_methods", lambda: demo_dither_methods(width, height, levels)),
+        ("02_dither_methods", lambda: demo_dither_methods(width, height)),
         ("03_fine_detail", lambda: demo_fine_detail(width, height)),
-        ("04_shaded_sphere", lambda: demo_shaded_sphere(width, height, levels)),
+        ("04_shaded_sphere", lambda: demo_shaded_sphere(width, height)),
         ("05_checkerboard", lambda: demo_checkerboard(width, height)),
+        ("06_level_match", lambda: demo_level_match(width, height)),
     )
+    stale = []
     for name, make in pictures:
         path = out_dir / f"{name}.png"
-        write_png_gray4(path, make(), width, height, f"demo {name}")
-        print(f"wrote {path} ({path.stat().st_size} bytes)")
+        levels = make()
+        if args.verify:
+            # Pixels, not bytes: the compressed stream depends on the zlib
+            # version, so byte equality would fail on a machine whose zlib
+            # differs even when every pixel is the same.
+            try:
+                w, h, values = read_png_grey(path)
+                same = (w, h) == (width, height) and levels == bytearray(v // 17 for v in values)
+            except (OSError, NotPanelReady, zlib.error, struct.error):
+                same = False
+            if not same:
+                stale.append(path.name)
+            continue
+        png = encode_png_gray4(levels, width, height, f"demo {name}")
+        path.write_bytes(png)
+        print(f"wrote {path} ({len(png)} bytes)")
+    if args.verify:
+        if stale:
+            sys.exit(f"demo pictures out of date in {out_dir}: {', '.join(stale)}. "
+                     f"Regenerate them: {GENERATOR} demo --out-dir {out_dir}")
+        print(f"demo pictures in {out_dir} are current")
+
+
+# --- levels ------------------------------------------------------------------
+
+def cmd_levels(args):
+    lightness = panel_lightness()
+    print(f"how light each level is on the glass, from {LIGHTNESS_HEADER.relative_to(ROOT)}:")
+    for level, light in enumerate(lightness):
+        print(f"level {level:2}: lightness {light:.3f}, looks like 8-bit grey "
+              f"{round(255 * light_to_srgb(light)):3} (written to PNGs as {LEVEL_CODE[level]:3})")
 
 
 # --- embed -------------------------------------------------------------------
@@ -792,10 +991,18 @@ def main():
                               "(default: 0.5,0.5, the centre)")
     prepare.add_argument("--dither", choices=tuple(DITHERS), default="floyd-steinberg")
     prepare.add_argument("--levels", choices=("distinct", "all"), default="distinct",
-                         help="distinct: leave out level 1, which this panel shows as 0 "
-                              "(default: %(default)s)")
+                         help="distinct: leave out any level that looks the same as a darker "
+                              "one, level 1 on this panel (default: %(default)s)")
     prepare.add_argument("--gamma", type=float, default=1.0,
-                         help="above 1 lightens the midtones, below 1 darkens them")
+                         help="applied to the picture's greys before they become light: "
+                              "above 1 lightens the midtones, below 1 darkens them; 1 keeps "
+                              "the photograph's own tones (default: %(default)s)")
+    prepare.add_argument("--noise", type=float, default=0.0, metavar="GREYS",
+                         help="triangular noise of up to this many 8-bit greys, added before "
+                              "dithering: it breaks up the thin contours error diffusion draws "
+                              "where a smooth tone crosses a level -- 8 took them off the demo "
+                              "sphere on the panel -- at the cost of a fine grain "
+                              "(default: off)")
     prepare.add_argument("--autocontrast", type=float, default=0.5,
                          help="percent of the darkest and lightest pixels to clip while "
                               "stretching the histogram; 0 switches it off "
@@ -813,7 +1020,13 @@ def main():
     demo = sub.add_parser("demo", help="synthetic test pictures (standard library only)")
     demo.add_argument("--out-dir", required=True)
     demo.add_argument("--size", type=parse_size, default=PANEL_SIZE)
+    demo.add_argument("--verify", action="store_true",
+                      help="compare with the pictures already in --out-dir instead of "
+                           "writing them; fail if any differs")
     demo.set_defaults(run=cmd_demo)
+
+    levels = sub.add_parser("levels", help="print how light each level is on the glass")
+    levels.set_defaults(run=cmd_levels)
 
     embed = sub.add_parser("embed", help="panel-ready PNGs -> C (standard library only)")
     embed.add_argument("inputs", nargs="*")
