@@ -295,6 +295,11 @@ task is an open item.
 
 ## What the simulator still gets wrong, by how much
 
+(2026-10-14: the window used to show a full refresh as the clear's flashing
+and then the finished picture under its highlight. The panel goes black
+before the picture appears -- GC16's dark passes -- and the window now plays
+that too, timed as the dark share of the draw: `EPD_SIM_GC16_DARK_PASSES`.)
+
 - Full refresh in the product: about +4 %, all of it the clear's task context.
 - Partial refreshes: within about 1 % of the panel, product frames included.
 - Ghost outlines: appear at exactly 11 undriven partial refreshes and never

@@ -92,6 +92,19 @@
 #define EPD_SIM_CLEAR_DARK_PUSHES 10u
 #define EPD_SIM_CLEAR_WHITE_PUSHES 12u  // 10 towards white + 2 neutral
 
+// What the glass shows while GC16 draws the image after the clear, and so what
+// the window shows then. GC16 takes each pixel it drives towards black for the
+// first half of its passes and to its own level in the second -- 15 and 15 for
+// white to white (docs/hardware/board_notes.md, "Vertical stripes in white
+// after a full refresh"). After the clear it drives a pixel only where its row
+// holds a non-white pixel of the new frame (the rows it writes) and so does its
+// column (EPDiy's one, global column mask). Seen on the panel 2026-10-14:
+// after the clear's flashing the screen goes black, then the picture appears.
+// From the source and that observation; only the total is timed, and the
+// window gives the dark passes their share of the draw.
+#define EPD_SIM_GC16_PASSES 30u
+#define EPD_SIM_GC16_DARK_PASSES 15u
+
 // --- panel constraints reported up to the core -----------------------------
 //
 // These two reach core/app/update_policy.c through port_display, and are the

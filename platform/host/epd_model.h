@@ -92,6 +92,29 @@ void epd_model_log_summary(const epd_model_t *m);
 
 const char *epd_refresh_mode_name(refresh_mode_t mode);
 
+// A full refresh's duration split into what the glass shows in turn: the
+// clear's flashing (clear_ms), EPDiy's difference pass, during which nothing
+// changes (diff_ms), GC16's dark passes, when every pixel it drives goes black
+// (dark_ms), and its light passes, when the picture appears (light_ms). The
+// four add up to flush->duration_ms. A clear is all clear_ms; any other
+// refresh is all light_ms.
+typedef struct {
+    uint32_t clear_ms;
+    uint32_t diff_ms;
+    uint32_t dark_ms;
+    uint32_t light_ms;
+} epd_full_phases_t;
+
+epd_full_phases_t epd_model_full_phases(const epd_flush_t *flush);
+
+// The pixels GC16 drives after a clear, as masks over `area` of `next`: rows[y]
+// is 1 where row y holds a non-white pixel, cols[x] where column x does. A
+// pixel is driven -- and goes black in the dark passes -- where both are 1.
+// `rows` has `next->height` entries and `cols` `next->width`; entries outside
+// `area` are set to 0.
+void epd_model_gc16_masks(const framebuffer_t *next, const rect_t *area, uint8_t *rows,
+                          uint8_t *cols);
+
 // The 8-bit sRGB grey a GRAY4 level looks like on the glass: its measured
 // lightness (EPD_SIM_LEVEL_LIGHTNESS_PERMILLE, epd_emulation.h) encoded for a
 // screen, with the panel's black shown as the screen's black and its white as

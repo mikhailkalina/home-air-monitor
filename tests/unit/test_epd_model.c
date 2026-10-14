@@ -333,6 +333,83 @@ static void a_panel_with_no_partial_mode_refreshes_fully_every_time(void)
     HAC_CHECK(f.forced_full);
 }
 
+// --- what a full refresh shows, in turn -------------------------------
+//
+// The window plays a full refresh as the panel does: the clear's flashing,
+// the difference pass, GC16's dark half, then the picture. The phases must
+// add up to the refresh's own duration, so playing them takes exactly as long
+// as the panel; and the dark half must be the waveform's share of the draw.
+
+static void a_full_refresh_splits_into_phases_that_add_up(void)
+{
+    epd_model_t m;
+    epd_flush_t f;
+    epd_model_init(&m, PANEL_W, PANEL_H, TEST_BUDGET);
+    framebuffer_t fb = white_frame();
+    framebuffer_clear(&fb, 0u);  // solid black: every row written
+
+    epd_model_flush(&m, NULL, REFRESH_FULL, &fb, s_glass, &f);
+    const epd_full_phases_t p = epd_model_full_phases(&f);
+
+    HAC_CHECK_EQ_U64((uint64_t)p.clear_ms + p.diff_ms + p.dark_ms + p.light_ms, f.duration_ms);
+    HAC_CHECK_EQ_U64(p.clear_ms, EPD_SIM_CLEAR_REFRESH_MS);
+    HAC_CHECK_EQ_U64(p.diff_ms, 106u);  // 540 rows x 196 us, as EPDiy logs it
+    const uint32_t draw = p.dark_ms + p.light_ms;
+    HAC_CHECK_EQ_U64(p.dark_ms, draw * EPD_SIM_GC16_DARK_PASSES / EPD_SIM_GC16_PASSES);
+    HAC_CHECK(p.dark_ms > 0u && p.light_ms > 0u);
+}
+
+static void other_refreshes_have_no_dark_phase(void)
+{
+    epd_model_t m;
+    epd_flush_t f;
+    epd_model_init(&m, PANEL_W, PANEL_H, TEST_BUDGET);
+
+    epd_model_flush(&m, NULL, REFRESH_CLEAR, NULL, NULL, &f);
+    epd_full_phases_t p = epd_model_full_phases(&f);
+    HAC_CHECK_EQ_U64(p.clear_ms, f.duration_ms);
+    HAC_CHECK_EQ_U64((uint64_t)p.diff_ms + p.dark_ms + p.light_ms, 0u);
+
+    const rect_t band = make_rect(0u, 0u, PANEL_W, 60u);
+    epd_model_flush(&m, &band, REFRESH_PARTIAL, NULL, NULL, &f);
+    p = epd_model_full_phases(&f);
+    HAC_CHECK_EQ_U64(p.light_ms, f.duration_ms);
+    HAC_CHECK_EQ_U64((uint64_t)p.clear_ms + p.diff_ms + p.dark_ms, 0u);
+}
+
+// GC16 after a clear drives the rows that hold a non-white pixel, and through
+// EPDiy's global column mask, the columns that do: a pixel goes dark where
+// both hold, white rows and white columns stay white.
+static void gc16_drives_the_rows_and_columns_that_hold_ink(void)
+{
+    framebuffer_t fb = white_frame();
+    framebuffer_set_pixel(&fb, 2, 1, 7u);
+    framebuffer_set_pixel(&fb, 500, 300, 0u);
+
+    static uint8_t rows[PANEL_H];
+    static uint8_t cols[PANEL_W];
+    const rect_t all = make_rect(0u, 0u, PANEL_W, PANEL_H);
+    epd_model_gc16_masks(&fb, &all, rows, cols);
+
+    size_t marked_rows = 0u;
+    size_t marked_cols = 0u;
+    for (size_t y = 0u; y < PANEL_H; ++y) {
+        marked_rows += rows[y];
+    }
+    for (size_t x = 0u; x < PANEL_W; ++x) {
+        marked_cols += cols[x];
+    }
+    HAC_CHECK_EQ_U64(marked_rows, 2u);
+    HAC_CHECK_EQ_U64(marked_cols, 2u);
+    HAC_CHECK(rows[1] && rows[300] && cols[2] && cols[500]);
+
+    // Outside the area nothing is marked, even ink.
+    const rect_t left = make_rect(0u, 0u, 100u, PANEL_H);
+    epd_model_gc16_masks(&fb, &left, rows, cols);
+    HAC_CHECK(rows[1] && cols[2]);
+    HAC_CHECK(!rows[300] && !cols[500]);
+}
+
 // --- how light each level looks ---------------------------------------
 //
 // The window and the headless frames show a level as light as the glass does
@@ -395,6 +472,10 @@ int main(void)
     HAC_RUN(partial_refreshes_are_counted_and_a_full_one_resets_the_count);
     HAC_RUN(the_panel_forces_a_full_refresh_when_the_budget_is_spent);
     HAC_RUN(a_panel_with_no_partial_mode_refreshes_fully_every_time);
+
+    HAC_RUN(a_full_refresh_splits_into_phases_that_add_up);
+    HAC_RUN(other_refreshes_have_no_dark_phase);
+    HAC_RUN(gc16_drives_the_rows_and_columns_that_hold_ink);
 
     HAC_RUN(the_lightness_table_runs_from_black_to_white_and_never_falls);
     HAC_RUN(a_level_shows_as_the_screen_grey_of_its_measured_light);
