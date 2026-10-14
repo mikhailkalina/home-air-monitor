@@ -55,6 +55,12 @@
 #define SLIDESHOW_CAPTION false
 #endif
 
+#if CONFIG_HAC_SLIDESHOW_OVERRIDE_PANEL_MINIMUM
+#define SLIDESHOW_OVERRIDE_PANEL_MINIMUM true
+#else
+#define SLIDESHOW_OVERRIDE_PANEL_MINIMUM false
+#endif
+
 // White around a picture smaller than the panel, as the product's screens use.
 #define SLIDESHOW_BACKGROUND 15u
 
@@ -127,8 +133,24 @@ void app_main(void)
         .background = SLIDESHOW_BACKGROUND,
         .caption = SLIDESHOW_CAPTION,
     };
+    // The panel's minimum full-refresh interval is a guard, not a measured
+    // limit (docs/adr/0008-panel-timing.md), and a comparison run may ask to
+    // pass under it (main/Kconfig.projbuild,
+    // HAC_SLIDESHOW_OVERRIDE_PANEL_MINIMUM). Said at WARN, so a log never
+    // hides that this image drives the panel faster than the product does.
+    const uint32_t panel_min_ms =
+        SLIDESHOW_OVERRIDE_PANEL_MINIMUM ? 0u : display->min_full_refresh_interval_ms;
+    if (SLIDESHOW_OVERRIDE_PANEL_MINIMUM) {
+        const log_field_t fields[] = {
+            log_u64("panel_min_full_refresh_interval_ms", display->min_full_refresh_interval_ms),
+            log_u64("interval_ms", cfg.interval_ms),
+        };
+        port_log_write(log, LOG_LEVEL_WARN, SLIDESHOW_TAG,
+                       "panel minimum full-refresh interval overridden", fields,
+                       sizeof(fields) / sizeof(fields[0]));
+    }
     slideshow_init(&s_show, slideshow_images_all, slideshow_images_names, SLIDESHOW_IMAGES_COUNT,
-                   &cfg, display->min_full_refresh_interval_ms);
+                   &cfg, panel_min_ms);
 
     const log_field_t start_fields[] = {
         log_u64("pictures", SLIDESHOW_IMAGES_COUNT),
@@ -136,6 +158,7 @@ void app_main(void)
         log_u64("interval_asked_ms", cfg.interval_ms),
         log_u64("interval_ms", slideshow_interval_ms(&s_show)),
         log_bool("caption", SLIDESHOW_CAPTION),
+        log_bool("panel_minimum_overridden", SLIDESHOW_OVERRIDE_PANEL_MINIMUM),
     };
     port_log_write(log, LOG_LEVEL_INFO, SLIDESHOW_TAG, "slideshow started", start_fields,
                    sizeof(start_fields) / sizeof(start_fields[0]));
