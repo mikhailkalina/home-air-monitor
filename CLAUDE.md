@@ -224,6 +224,11 @@ and the touch controller at `0x5D`, where a GT911 answers — not the `0x5A` rec
 The `port_i2c` contract passes in the test app, including a forced hang that `recover()`
 clears and a stalled SCL. Serial console on USB-Serial-JTAG: `i2c_scan`, `i2c_recover`.
 
+Side work between 2d and 3, branch `slideshow-test-app` (ADR 0012, 0013): an image
+pipeline (`image_gen.py`), `gfx_blit_image()`, a slideshow test app and a photo frame, and
+the panel's grey levels measured into one table the simulator and `prepare` share. Next is
+still phase 3.
+
 Next: phase 3 — sensors (SCD41, BME68x drivers over `port_i2c`, wrapped as
 `sensor_source_t`, with fake-i2c device models on the host). See the open items in
 `docs/hardware/board_notes.md`.
