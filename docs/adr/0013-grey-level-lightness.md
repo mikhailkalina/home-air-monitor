@@ -106,6 +106,14 @@ proves it still parses.
   preferred.
 - **Full-precision error changed `02_dither_methods` and `04_shaded_sphere`
   slightly**; they are regenerated.
+- **The product's grey inks are lighter on the glass than they were chosen
+  to be.** `core/ui/view_model.h` picked its levels under L x 17:
+  `VM_INK_SECONDARY` is level 4, meant as a dark grey (6 % of white in that
+  model) and 27 % on the panel; `VM_INK_STALE` (6) is 43 %, `VM_INK_WARMUP`
+  (9) 59 %, `VM_INK_UNAVAILABLE` (11) about 72 %. That has been so on the
+  panel since phase 2b; the simulator now shows it. The inks want choosing
+  again against the window, which no longer flatters them -- a product
+  decision for the UI's own phase, not this one.
 - **Still estimates:** levels 11-14; the chart's own bias from fine
   black-and-white mixes, which may reach into levels 1-10 too; the panel's
   contrast, which the window does not show. All of it was measured on one
