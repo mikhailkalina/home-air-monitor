@@ -619,6 +619,28 @@ layout settles, not before.
       are dense in both colours. To close the light end: a mix of level 10
       and 15 instead of 0 and 15 (lower-contrast boundaries), or a RAW
       photograph of the solid ramp, which has no fine pattern at all.
+      **RAW attempt 2026-10-14: inconclusive.** Two pairs of Pixel DNGs
+      (linear: identity linearisation curve) of a solid-level chart -- four
+      rows of the sixteen levels, alternating direction, inside a black frame;
+      not kept, for the reason in (1) -- each with a shot of the all-white
+      panel for a flat field. Three things defeated it.
+      (1) Light falls off by 40-50 % from the panel's centre to its edges in
+      the raw data, and the chart's mirrored layout cannot cancel a
+      symmetric fall-off: a level's four places share one horizontal
+      distance from the centre, so the fall-off is indistinguishable from
+      the level itself. (2) Dividing by the white shot, registered to the
+      chart by the case around the panel, left the same level 10-17 points
+      apart across its four places and the white bars +-7 %. Likely why: an
+      all-white frame is the clear's white -- GC16 writes no row of it --
+      while the chart's whites go through GC16's white-to-white flash, the
+      "two slightly different whites" item below; and camera flare grows
+      with the brighter shot. (3) Averaged anyway, it puts level 7 at 72 %,
+      far above both the chart (50) and the photographs judged on the panel,
+      which would look overexposed at 72. Not adopted. What would work: every
+      grey patch measured against black and white patches beside it in the
+      same shot (local normalisation, no flat field, no second shot), with
+      the levels spread so each one sits at several distances from the
+      centre.
 - [ ] **Vertical stripes in white after a full refresh.** Found 2026-10-13,
       phase 2c. In `REFRESH_FULL`, GC16 after `epd_clear()` flashes
       white-to-white pixels (15 passes dark, 15 light -- GL16 does nothing
