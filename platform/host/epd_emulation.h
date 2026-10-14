@@ -181,8 +181,12 @@
 // evenly between level 10 and white, as levels 4-10 are. A measurement free of
 // that effect replaces them: a RAW photograph of the solid ramp, or a chart
 // mixing levels 10 and 15. No branch has it planned yet.
+// Kept out of clang-format: versions disagree on how to lay out a braced list
+// in a macro, and CI's must pass as well as the local one.
+// clang-format off
 #define EPD_SIM_LEVEL_LIGHTNESS_PERMILLE \
     {0, 0, 47, 156, 273, 344, 430, 500, 547, 594, 656, 725, 794, 862, 931, 1000}
+// clang-format on
 
 // --- presentation ----------------------------------------------------------
 
