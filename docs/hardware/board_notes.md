@@ -42,7 +42,7 @@ ever purchased, re-check the silkscreen before assuming it matches.
 | Resolution | **960 × 540 px, landscape** in firmware terms — see “Display orientation” below. The vendor listing quotes 540 × 960, which is the glass orientation, not the one the driver presents |
 | Gray levels | 16 (4 bpp, matches `PIXFMT_GRAY4`) |
 | RTC | PCF8563, on I²C |
-| Battery | onboard capacity/charge detection — chip model not yet confirmed, check schematic or reference firmware |
+| Battery | charger HX6610S (`U9`, schematic v2.4), with a red "charging" and a green "full" LED of its own; no gauge IC -- the level is a plain divider on GPIO14 (see "Pin assignments" and "Power rails and connectors" below) |
 | Touch | present on this unit (H716 variant) — answers at I²C `0x5D`, as a GT911 does with INT low at reset (phase 2d bus scan, 2026-10-13); the part itself is not yet read back — see open items |
 
 ## Display orientation
@@ -141,13 +141,167 @@ assumption made elsewhere in this repository:
   battery voltage, POWER_EN must be turned on"). GPIO14 is an ADC2 pin on the
   S3, and ADC2 is documented as unreliable while Wi-Fi is active -- a real
   constraint for whichever phase reads battery level over Wi-Fi.
-- **Panel power is not a GPIO.** It is pin 13 of the 74HCT4094 shift
-  register, reached only through `CFG_DATA`/`CFG_CLK`/`CFG_STR`
-  (`README.MD` FAQ 1: "software must call `epd_poweron()` to enable it").
-  `epd_poweroff()` also cuts power to the Molex connector, since they share a
-  rail. There is no separate status-LED GPIO either -- the board's one LED is
-  on the same register (`README.MD` FAQ 4 mentions it only as something
-  `epd_poweroff()` cannot turn off by itself).
+  **Narrowed 2026-10-13 by the v2.4 schematic, not measured:** the divider is
+  `R29`/`R32`, 100 kOhm 1 % each, from the battery straight to ground with
+  10 nF on the tap. Nothing switched sits in it, so on this revision it
+  should read correctly with `PWR_EN` low too -- the demo's comment may
+  describe an earlier board -- and it draws about 20 uA from the battery all
+  the time. Confirm when the battery adapter lands (phase 5).
+- **~~`epd_poweroff()` also cuts power to the Molex connector~~ -- corrected
+  2026-10-13 (phase 3a).** Pin 13 of the 74HCT4094 is `PWR_EN` on the
+  schematic: it switches the `3V3` rail that feeds the white 4-pin
+  connectors, the blue LED and the panel's high-voltage boost, not "panel
+  power" alone, and EPDiy keeps it set through `epd_poweroff()` -- on this
+  board the rail stays up between refreshes. See "Power rails and
+  connectors" below. This finding first read: "Panel power is not a GPIO. It
+  is pin 13 of the 74HCT4094 shift register, reached only through
+  `CFG_DATA`/`CFG_CLK`/`CFG_STR` (`README.MD` FAQ 1: 'software must call
+  `epd_poweron()` to enable it'). `epd_poweroff()` also cuts power to the
+  Molex connector, since they share a rail. There is no separate status-LED
+  GPIO either -- the board's one LED is on the same register (`README.MD`
+  FAQ 4 mentions it only as something `epd_poweroff()` cannot turn off by
+  itself)." The board has three LEDs, in fact: the blue one on that rail,
+  the only one firmware influences, and the charger's red and green ones.
+
+## Power rails and connectors
+
+**Read from the schematic and measured 2026-10-13, phase 3a**, to decide
+where the sensors take their power. Sources:
+
+- The schematic `schematic/Screen-4.7-S3-V2.4 24-12-03.pdf` in
+  `Xinyuan-LilyGO/LilyGo-EPD47`, branch `esp32s3`, last changed by commit
+  `e3c0a1aab2575d0f6bc6dcf15b0649b410a4f25d` (2025-12-12), SHA-256
+  `dc38d925ff17...`; its revision matches this unit's silkscreen. It was
+  read from a rendering, not a netlist: designators and values are as
+  printed, and the few that are hard to read say so.
+- LilyGO's board pinmap for the capacitive-touch V2.4,
+  `https://wiki.lilygo.cc/products/t5-series/t5-e-paper/index/image/t5-e-paper-pin-en.jpg`
+  (2025-02-27 in its metadata), which photographs the connectors with their
+  silkscreen.
+- Measurements on this unit with this project's EPDiy firmware, by eye and
+  with a multimeter.
+
+### Rails
+
+| Net | Source | Present | Feeds |
+|---|---|---|---|
+| `VBUS` | USB-C, before the Schottky `D8` | only with USB plugged in | the charger; pins 2 and 4 of the 40-pin header |
+| `5V` | `VBUS` through `D8`, or the battery through P-MOSFET `Q5` while `VBUS` is absent (3.7-4.2 V then) | whenever the board is powered | the LDO |
+| `VDD3V3` | LDO `U13` (ME6217-3V3) from `5V` | whenever the board is powered | the ESP32-S3 module, the RTC, the 74HCT4094 (`VCC` and `OE`), the touch connector `P2`, the I2C pull-ups |
+| `3V3` | `VDD3V3` through P-MOSFET `Q4`, switched by `PWR_EN` (NPN `Q2` pulls the gate) | while `PWR_EN` is high | pin 1 ("V") of the 4-pin connectors `P4`/`P5`, the blue LED `LED7` (through 2 kOhm), and the boost `U2` (LT1945): its `VIN`, and `SHDN1`/`SHDN2` through 100 kOhm |
+| +22 V, -20 V | boost `U2` | while `3V3` is up -- see below | the panel; ±15 V derived from them by `U1`/`U6` (78L15/79L15) |
+
+A second P-MOSFET on `PWR_EN`'s gate net, `Q3`, connects the battery to the
+LDO input; its role was not traced further.
+
+`VBUS` is never a sensor supply: it is 5 V, absent on battery, and a sensor
+module's pull-ups would put 5 V on the ESP32's I2C pins.
+
+### The 74HCT4094 (`U3`)
+
+Matched against the order `epd_board_set_ctrl()` shifts the bits out in
+EPDiy's `src/board/epd_board_lilygo_t5_47_s3.c` (the first bit pushed ends
+in `QP7`):
+
+| Output (pin) | Net | Through | EPDiy bit |
+|---|---|---|---|
+| `QP0` (4) | `EP_LE` | 0 Ohm | `ep_latch_enable` |
+| `QP1` (5) | `SMPS_CTRL` | resistor marked **NC** | `power_disable` |
+| `QP2` (6) | `POS_CTRL` | resistor marked **NC** | `pos_power_enable` |
+| `QP3` (7) | `NEG_CTRL` | resistor marked **NC** | `neg_power_enable` |
+| `QP4` (14) | `EP_STV` | `R33`, 0 Ohm | `ep_stv` |
+| `QP5` (13) | `PWR_EN` | direct | `ep_scan_direction` |
+| `QP6` (12) | `EP_MODE` | direct | `ep_mode` |
+| `QP7` (11) | `EP_OE` | direct | `ep_output_enable` |
+
+The three resistors on `QP1`-`QP3` are `R6`, `R7` and `R21`, all printed NC;
+which designator sits on which output is not legible, and does not matter.
+Three consequences:
+
+- **`PWR_EN` is the bit EPDiy calls `ep_scan_direction`**, which its board
+  file describes as "repurposed as power enable of the touch controller /
+  display supply. Kept set, as in LILYGO's driver": set at init, left set by
+  `epd_poweroff()`. This is pin 13 of LilyGO's `README.MD` FAQ 1.
+- **`power_disable`, `pos_power_enable` and `neg_power_enable` drive
+  nothing on this revision.** `SMPS_CTRL`, `POS_CTRL` and `NEG_CTRL` run only
+  to the 40-pin header, and the boost's shutdown pins are pulled up to `3V3`.
+  So the panel's high-voltage rails are up whenever `3V3` is, and EPDiy's
+  power sequencing does not switch them -- which is the open item "Panel
+  power" below, explained. From the schematic; not yet measured.
+- **`OE` is tied to `VDD3V3`**, so the outputs are always driven, and after
+  power-up they hold whatever the register happens to contain until the
+  first latch.
+
+The schematic also carries an unfitted option, in dashed boxes, that drives
+`EP_LE` and `EP_STV` straight from IO48 and IO45 through resistors marked
+NC. LilyGO's pinmap labels "STV IO45" and "LE IO48" describe that option;
+on this unit EPDiy drives both through the register, and IO45 and IO48 stay
+free, as the pin table above says.
+
+### Connectors
+
+| Ref | What it is | Pins |
+|---|---|---|
+| `P2` | 6-pin 0.5 mm FPC socket beside the RST button: **the touch panel's**, occupied by its flex | 1 GND, 2 INT (IO47), 3 SCL (IO17), 4 SDA (IO18), 5 `VDD3V3`, 6 NC. The only connector carrying `VDD3V3`. Pull-ups beside it: see the open item on pull-ups |
+| `P6` | 8-pin FPC footprint with a `T_RST` line, in a dashed option box | not fitted on this revision (absent from LilyGO's photographs) |
+| `P5` | the white 4-pin connector, fitted | 1 `3V3` (switched), 2 IO15, 3 IO16, 4 GND -- LilyGO's "G 16 15 V". IO15/IO16 are the SD card's MOSI/MISO |
+| `P4` | a 4-hole footprint beside `P5`, not fitted | 1 `3V3` (switched), 2 IO48, 3 IO45, 4 GND. **IO45 is a strapping pin** (it selects the flash supply voltage at reset): never put a pull-up on it |
+| `P8` | the 40-pin header, "Raspberry Pi compatible" (`P3` is a second footprint for the same signals) | 1 NC; 2, 4 `VBUS`; 3 IO18 (SDA); 5 IO17 (SCL); 6, 9 GND; 7 IO47; 8, 10 UART0 RX/TX; 19, 21, 23, 24 MOSI/MISO/SCLK/CS; 33, 35, 37 `NEG_CTRL`/`POS_CTRL`/`SMPS_CTRL` (undriven, above); the rest NC or GND. **No 3.3 V pin** |
+
+**Discrepancy on the 40-pin header.** LilyGO's pinmap labels pin 3
+"SCL(17)" and pin 5 "SDA(18)". The schematic puts IO18 on pin 3 and IO17 on
+pin 5 (through `R17`/`R20`, 0 Ohm), and so does the board's own silkscreen,
+legible in the same pinmap's close-up ("18" beside pin 3, "17" beside pin
+5). The schematic and silkscreen win. A swap is harmless to test: a bus
+scan simply finds nothing.
+
+### Measured: the switched `3V3`
+
+- **It comes up together with the blue LED and stays up** -- between
+  refreshes as during them -- on `P5` pin 1, with this project's EPDiy
+  firmware. Measured 2026-10-13.
+- **Pressing RST turns the blue LED off**, so the rail drops with an ESP32
+  reset, and comes back when the firmware's EPDiy init writes the register
+  again. The likely mechanism, not verified: `epd_board_set_ctrl()` leaves
+  `CFG_STR` (GPIO0) high, so the 74HCT4094's storage register is transparent,
+  and in reset `CFG_CLK`/`CFG_DATA` (GPIO12/13) float. What a software reset
+  (panic, watchdog, `esp_restart()`) does is an open item below.
+
+### The sensor wiring this implies
+
+Phase 3's sensors take power from `P5` ("V" and "G") and the bus from the
+40-pin header's pin 3 (SDA), pin 5 (SCL) and a GND pin. `P2` is the only
+connector with `VDD3V3`, and the touch panel occupies it. What follows for
+the firmware:
+
+- **Sensor power follows `PWR_EN`.** It is undefined from power-up until
+  EPDiy's init first writes the register, so the sensors are initialised
+  after the display adapter, allowing each sensor's power-up time after
+  that. A `CONFIG_HAC_DISPLAY_NULL` build never writes the register at all.
+- **A hardware reset power-cycles the sensors**: every such boot starts the
+  SCD41 from idle, warm-up included, and the BME68x unconfigured. A software
+  reset may or may not do the same, so the SCD4x driver must not assume
+  either -- it stops periodic measurement first.
+- **Phase 5**: clearing `PWR_EN` switches off the sensors, the panel's
+  high-voltage rails and the blue LED together, and deep sleep that does not
+  hold GPIO0/12/13 probably drops the rail as a reset does.
+
+### The sensor modules
+
+From the enclosure research notes, kept outside this repository
+(`mechanical/common/research/sensors.md`, 2026-09-17), which identify the
+modules from the seller's photographs:
+
+- **BME68x**: a purple T-shaped breakout with pads VCC, GND, SCL, SDA, SDO
+  and CS and a level converter, matching TinyTronics SKU 003658
+  (BME680LVLCNV, the CJMCU-680 outline). Its address, `0x76` or `0x77`,
+  depends on how SDO is strapped: a wiring fact the bus scan settles.
+  Whether the chip is a BME680 or a BME688 is not established -- see the
+  open items.
+- **SCD4x**: a blue breakout marked "SCD41 CO2 IIC", Banggood product
+  2038457, option 6334266, with pads GND, VDD, SCL and SDA. The same listing
+  sells a purple SCD40, which has no single-shot mode and a narrower range,
+  so the variant is read back from the sensor rather than assumed.
 
 ## Per-row signal sequence (STH, CKH, CKV, LE)
 
@@ -386,6 +540,23 @@ layout settles, not before.
       times at 100 kHz are marginal on a bus with several devices and a
       cable to the sensors -- relevant in phase 3, when the sensors are
       wired. The schematic answers it; an idle-line reading cannot.
+      **Answered by the schematic 2026-10-13, values unconfirmed:** beside
+      the touch connector `P2`, `N6` and `N7` (10 kOhm) pull SCL and SDA up
+      to a node fed from `VDD3V3` through `N8`, printed 10 kOhm; `N5` (on
+      INT) and `N9` (that node to the switched `3V3`) are NC. If `N8` really
+      is 10 kOhm in series, each line sees about 20 kOhm. With the board
+      unpowered, SDA to SCL (40-pin header pins 3 and 5) reads about 20 kOhm
+      if `N6` and `N7` are fitted. The sensor modules add their own
+      pull-ups, to the switched `3V3`.
+- [ ] **What a software reset does to `PWR_EN`.** Pressing RST drops the
+      switched `3V3` and with it the sensors' power ("Power rails and
+      connectors", "Measured"). Whether a panic, the watchdog or
+      `esp_restart()` does the same is not observed, and it decides whether
+      the SCD41 is found idle or still measuring after such a reboot. A
+      console `restart` command and an eye on the blue LED answer it.
+- [ ] **Which sensor variants are fitted.** BME680 or BME688 (the BME68x's
+      `variant_id` register), and SCD40 or SCD41 (the seller lists both;
+      read the variant back): the drivers log both, phase 3a/3b.
 - [ ] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
       timestamps, or is only used for scheduling.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings
@@ -725,6 +896,21 @@ layout settles, not before.
       the answer, but panel health and the power budget do. A current measurement at the USB input during the 60 s idle gaps,
       or a meter on VPOS/VNEG, settles it; the schematic's rail-enable
       wiring explains it.
+      **Explained by the schematic 2026-10-13, not yet measured** ("Power
+      rails and connectors", "The 74HCT4094"): on v2.4 the resistors that
+      would carry `power_disable`/`pos_power_enable`/`neg_power_enable` to
+      the supply are not fitted, and the LT1945 boost's shutdown pins are
+      pulled up to the switched `3V3`, which `PWR_EN` -- EPDiy's
+      `ep_scan_direction`, never cleared -- holds up. So the rails come up
+      with the first register write and never go down while the firmware
+      runs. The measurement that confirms it, between refreshes, on the
+      LT1945's pins 1-5 only: pin 1 (`NFB1`) about -1.23 V and pin 5
+      (`FB2`) about +1.23 V while the converters regulate (dividers
+      560k/39k for -20 V and 2M/120k for +22 V), pins 2 and 4 (`SHDN1`/
+      `SHDN2`) about 3.3 V; all near 0 V when off. Keep off pins 6-10: two
+      are switch nodes, and `VIN` sits between the two `PGND` pins. Turning
+      the rails off between refreshes would mean clearing `PWR_EN`, which
+      also cuts the sensors -- a phase-5 decision, not a driver setting.
 - [ ] `update_policy`'s status trigger can fire on `charging` or
       `telemetry_connected` alone, neither of which `screen_home` draws yet,
       making the empty-diff skip in `event_loop.c`'s `redraw()`
