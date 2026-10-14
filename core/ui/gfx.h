@@ -15,6 +15,7 @@
 
 #include "ui/fonts/font.h"
 #include "ui/framebuffer.h"
+#include "ui/image.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +40,16 @@ void gfx_fill_rect(framebuffer_t *fb, int32_t x, int32_t y, int32_t w, int32_t h
 // is already on the buffer.
 void gfx_blit_glyph1bpp(framebuffer_t *fb, int32_t x, int32_t y, const uint8_t *bits, uint8_t width,
                         uint8_t height, uint8_t value);
+
+// Copies every pixel of `img` with its top-left corner at (x, y), clipped to
+// the buffer. Opaque: there is no transparent level, so the whole rectangle
+// is replaced. A GRAY4 picture placed at an even x copies whole bytes per
+// row; anywhere else it goes pixel by pixel, with the same result.
+//
+// `img` must be in the buffer's own format. Anything else draws nothing:
+// turning sixteen greys into one bit means choosing a threshold or a dither,
+// which is the caller's decision, not a primitive's.
+void gfx_blit_image(framebuffer_t *fb, int32_t x, int32_t y, const image_t *img);
 
 // Draws `text` with (x, y) as the left end of its baseline. A codepoint
 // outside the font's covered range is skipped and does not move the cursor.

@@ -193,7 +193,9 @@ On the grey ramp the calibration run leaves on the panel, levels **0 and 1
 cannot be told apart**; 14 and 15 can, and every other neighbouring pair can.
 Fifteen usable greys. Nothing in `core/ui/view_model.h` uses level 1 today.
 The window renders level 1 as level 0 (`EPD_SIM_DARKEST_MERGED_LEVEL`), so a
-design that leans on the difference fails on the PC first.
+design that leans on the difference fails on the PC first. (Since 2026-10-14
+the window shows every level by its measured lightness, which has level 1 equal
+to level 0, and the constant is gone: `docs/adr/0013-grey-level-lightness.md`.)
 
 ## Residue that survives a full refresh
 
@@ -292,6 +294,11 @@ model keeps the calibrated figure; re-measuring the clear from the product's
 task is an open item.
 
 ## What the simulator still gets wrong, by how much
+
+(2026-10-14: the window used to show a full refresh as the clear's flashing
+and then the finished picture under its highlight. The panel goes black
+before the picture appears -- GC16's dark passes -- and the window now plays
+that too, timed as the dark share of the draw: `EPD_SIM_GC16_DARK_PASSES`.)
 
 - Full refresh in the product: about +4 %, all of it the clear's task context.
 - Partial refreshes: within about 1 % of the panel, product frames included.

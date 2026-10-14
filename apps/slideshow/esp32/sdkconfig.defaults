@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Layered on top of ../../firmware_esp32/sdkconfig.defaults (see
+# CMakeLists.txt). Only what has to differ for the slideshow belongs here.
+#
+# Defaults only fill symbols an sdkconfig does not already hold: after
+# changing this file, delete build/ and sdkconfig, rebuild, and grep the
+# symbol back out of sdkconfig rather than assuming it took (CLAUDE.md).
+
+# The firmware's partition table, resolved from this project's directory:
+# same offsets, so the same esptool command flashes it.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../firmware_esp32/partitions.csv"
+
+# The slideshow flushes from app_main, and EPDiy's flush overflowed the
+# default 3584-byte main stack in the calibration image, which does the same
+# (CAL_MIN_MAIN_TASK_STACK_BYTES in apps/firmware_esp32/main/epd_calibration.c).
+# main/main.c refuses to compile without this.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

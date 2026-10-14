@@ -92,6 +92,19 @@
 #define EPD_SIM_CLEAR_DARK_PUSHES 10u
 #define EPD_SIM_CLEAR_WHITE_PUSHES 12u  // 10 towards white + 2 neutral
 
+// What the glass shows while GC16 draws the image after the clear, and so what
+// the window shows then. GC16 takes each pixel it drives towards black for the
+// first half of its passes and to its own level in the second -- 15 and 15 for
+// white to white (docs/hardware/board_notes.md, "Vertical stripes in white
+// after a full refresh"). After the clear it drives a pixel only where its row
+// holds a non-white pixel of the new frame (the rows it writes) and so does its
+// column (EPDiy's one, global column mask). Seen on the panel 2026-10-14:
+// after the clear's flashing the screen goes black, then the picture appears.
+// From the source and that observation; only the total is timed, and the
+// window gives the dark passes their share of the draw.
+#define EPD_SIM_GC16_PASSES 30u
+#define EPD_SIM_GC16_DARK_PASSES 15u
+
 // --- panel constraints reported up to the core -----------------------------
 //
 // These two reach core/app/update_policy.c through port_display, and are the
@@ -130,9 +143,9 @@
 // The window counts, per pixel, the partial refreshes since that pixel was
 // last driven (only refreshes whose rectangle covered it). Once a dark pixel
 // has gone unredriven for EPD_SIM_GHOST_VISIBLE_AFTER of them, it is shown
-// EPD_SIM_GHOST_LIGHTEN lighter: one of the panel's sixteen grey steps, the
-// smallest difference it can show, because what was seen stayed faint --
-// "noticeable only when looking closely" -- all the way to 40.
+// EPD_SIM_GHOST_LIGHTEN lighter, in the window's 8-bit grey -- about one
+// nominal grey step, faint, because what was seen stayed faint -- "noticeable
+// only when looking closely" -- all the way to 40.
 //
 // VISIBLE_AFTER is the observed onset's lower bound (11). Whether the
 // outlines deepen past one step with many more partial refreshes was not
@@ -145,11 +158,35 @@
 
 // --- grey levels -----------------------------------------------------------
 //
-// OBSERVED by eye on this unit's grey ramp: levels 0 and 1 cannot be told
-// apart, while 14 and 15 can. The window renders level 1 as level 0, so a
-// design that relies on the difference fails on the PC the way it would on
-// the glass. Nothing in core/ui/view_model.h uses level 1 today.
-#define EPD_SIM_DARKEST_MERGED_LEVEL 1u
+// How light each GRAY4 level is on the glass, in permille of the way from the
+// panel's black (level 0) to its white (level 15): relative reflectance,
+// linear in light, so a fine mix of two levels is as light as the average of
+// theirs. The window and the headless frames show each level as this
+// (epd_level_display_grey() in epd_model.c), and
+// apps/tools/image_gen/image_gen.py prepare reads this very array to dither
+// photographs towards the panel's real greys -- one table, so a picture looks
+// on the PC as it will on the glass (docs/adr/0013-grey-level-lightness.md).
+//
+// MEASURED by eye on this unit, 2026-10-14, levels 1-10: each level matched
+// against fine mixes of levels 0 and 15 on the level-match chart
+// (apps/slideshow/images/06_level_match.png), in room light from viewing
+// distance; docs/hardware/board_notes.md, "How light each grey level really
+// is", has the readings. Level 1 matched black: it is phase 2c's "levels 0
+// and 1 look identical", and the window now shows it so through this table.
+// Levels 4-10 lie within 3 points of even steps in reflectance; the
+// uncalibrated L x 17 this replaces had level 7 at 18 % where it measures 50.
+//
+// ESTIMATED, levels 11-14: the chart could not match them -- sparse black dots
+// on white render darker than their share on e-paper -- so they are spaced
+// evenly between level 10 and white, as levels 4-10 are. A measurement free of
+// that effect replaces them: a RAW photograph of the solid ramp, or a chart
+// mixing levels 10 and 15. No branch has it planned yet.
+// Kept out of clang-format: versions disagree on how to lay out a braced list
+// in a macro, and CI's must pass as well as the local one.
+// clang-format off
+#define EPD_SIM_LEVEL_LIGHTNESS_PERMILLE \
+    {0, 0, 47, 156, 273, 344, 430, 500, 547, 594, 656, 725, 794, 862, 931, 1000}
+// clang-format on
 
 // --- presentation ----------------------------------------------------------
 

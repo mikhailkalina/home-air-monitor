@@ -2,7 +2,9 @@
 
 #include "epd_model.h"
 
+#include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -197,6 +199,62 @@ void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode,
 
     m->flush_count++;
     m->simulated_ms_total += out->duration_ms;
+}
+
+epd_full_phases_t epd_model_full_phases(const epd_flush_t *flush)
+{
+    epd_full_phases_t p = {0u, 0u, 0u, 0u};
+
+    if (flush->performed == REFRESH_CLEAR) {
+        p.clear_ms = flush->duration_ms;
+        return p;
+    }
+    if (flush->performed != REFRESH_FULL) {
+        p.light_ms = flush->duration_ms;
+        return p;
+    }
+
+    uint32_t rest = flush->duration_ms;
+    p.clear_ms = (rest < EPD_SIM_CLEAR_REFRESH_MS) ? rest : EPD_SIM_CLEAR_REFRESH_MS;
+    rest -= p.clear_ms;
+
+    const uint32_t diff = us_to_ms((uint64_t)flush->area.h * EPD_SIM_DIFF_PER_ROW_US);
+    p.diff_ms = (rest < diff) ? rest : diff;
+    rest -= p.diff_ms;
+
+    p.dark_ms = rest * EPD_SIM_GC16_DARK_PASSES / EPD_SIM_GC16_PASSES;
+    p.light_ms = rest - p.dark_ms;
+    return p;
+}
+
+void epd_model_gc16_masks(const framebuffer_t *next, const rect_t *area, uint8_t *rows,
+                          uint8_t *cols)
+{
+    memset(rows, 0, next->height);
+    memset(cols, 0, next->width);
+
+    for (uint32_t y = area->y; y < (uint32_t)area->y + area->h && y < next->height; ++y) {
+        for (uint32_t x = area->x; x < (uint32_t)area->x + area->w && x < next->width; ++x) {
+            if (framebuffer_get_pixel(next, (int32_t)x, (int32_t)y) != EPD_MODEL_GRAY4_WHITE) {
+                rows[y] = 1u;
+                cols[x] = 1u;
+            }
+        }
+    }
+}
+
+uint8_t epd_level_display_grey(uint8_t level)
+{
+    static const uint16_t k_lightness_permille[16] = EPD_SIM_LEVEL_LIGHTNESS_PERMILLE;
+    const uint8_t index = (level < 16u) ? level : 15u;
+    const float light = (float)k_lightness_permille[index] / 1000.0f;
+
+    // sRGB's own transfer function: what makes a screen's grey look as light
+    // as the panel's.
+    const float encoded =
+        (light <= 0.0031308f) ? 12.92f * light : 1.055f * powf(light, 1.0f / 2.4f) - 0.055f;
+    const float grey = encoded * 255.0f + 0.5f;
+    return (uint8_t)((grey >= 255.0f) ? 255.0f : grey);
 }
 
 const char *epd_refresh_mode_name(refresh_mode_t mode)

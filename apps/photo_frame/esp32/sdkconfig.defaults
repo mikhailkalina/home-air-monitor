@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Layered on top of ../../firmware_esp32/sdkconfig.defaults (see
+# CMakeLists.txt). The first two lines are the slideshow's own
+# (apps/slideshow/esp32/sdkconfig.defaults, which explains them); the last is
+# what makes this the photo frame.
+#
+# Defaults only fill symbols an sdkconfig does not already hold: after
+# changing this file, delete build/ and sdkconfig, rebuild, and grep the
+# symbol back out of sdkconfig rather than assuming it took (CLAUDE.md).
+
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../firmware_esp32/partitions.csv"
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# A photograph is for looking at: no "n/N name" box over it. The caption is
+# drawn unrotated, too, and these photographs are turned for a panel standing
+# on its side.
+# CONFIG_HAC_SLIDESHOW_CAPTION is not set

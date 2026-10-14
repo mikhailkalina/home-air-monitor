@@ -85,6 +85,16 @@ cd apps/firmware_esp32 && idf.py reconfigure && idf.py build
 # On-target contract tests (ADR 0009): Unity app, every linked test runs at boot
 cd apps/firmware_esp32/test_app && idf.py -T hac_platform build
 
+# Slideshow test app (ADR 0012): a picture a minute, PNGs from apps/slideshow/images/
+./build/host-debug/apps/slideshow/host/slideshow --time-scale 20
+./build/host-debug/apps/slideshow/host/slideshow --headless --frames out/
+cd apps/slideshow/esp32 && idf.py build      # -DSLIDESHOW_IMAGES_DIR=<dir> for others
+python3 apps/tools/image_gen/image_gen.py prepare photo.jpg --out-dir <dir>  # needs Pillow
+
+# Photo frame: the same app with the gitignored apps/photo_frame/images/ -- private, never commit
+./build/host-debug/apps/photo_frame/host/photo_frame --time-scale 20
+cd apps/photo_frame/esp32 && idf.py build
+
 # Panel calibration image (ADR 0008), in its own build dir and sdkconfig
 cd apps/firmware_esp32 && idf.py -B build-calibration -D SDKCONFIG=build-calibration/sdkconfig \
     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.calibration" build
@@ -213,6 +223,11 @@ ESP-IDF's `i2c_master` behind `port_i2c` (ADR 0011). The boot scan finds the RTC
 and the touch controller at `0x5D`, where a GT911 answers — not the `0x5A` recorded before.
 The `port_i2c` contract passes in the test app, including a forced hang that `recover()`
 clears and a stalled SCL. Serial console on USB-Serial-JTAG: `i2c_scan`, `i2c_recover`.
+
+Side work between 2d and 3, branch `slideshow-test-app` (ADR 0012, 0013): an image
+pipeline (`image_gen.py`), `gfx_blit_image()`, a slideshow test app and a photo frame, and
+the panel's grey levels measured into one table the simulator and `prepare` share. Next is
+still phase 3.
 
 Next: phase 3 — sensors (SCD41, BME68x drivers over `port_i2c`, wrapped as
 `sensor_source_t`, with fake-i2c device models on the host). See the open items in

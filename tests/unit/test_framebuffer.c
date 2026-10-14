@@ -269,6 +269,70 @@ static void out_of_range_writes_do_not_affect_the_dirty_rect(void)
     HAC_CHECK_EQ_INT(fb.dirty_rect.h, 1);
 }
 
+// --- marking an area dirty -------------------------------------------
+
+static void mark_dirty_on_a_clean_buffer_reports_exactly_the_area(void)
+{
+    uint8_t storage[20] = {0};  // 8x5 GRAY4
+    framebuffer_t fb;
+    framebuffer_init(&fb, storage, sizeof(storage), 8, 5, PIXFMT_GRAY4);
+
+    const rect_t area = {.x = 2, .y = 1, .w = 3, .h = 2};
+    framebuffer_mark_dirty(&fb, &area);
+
+    HAC_CHECK(fb.dirty);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.x, 2);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.y, 1);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.w, 3);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.h, 2);
+}
+
+static void mark_dirty_grows_an_existing_rect_to_the_bounding_box(void)
+{
+    uint8_t storage[20] = {0};
+    framebuffer_t fb;
+    framebuffer_init(&fb, storage, sizeof(storage), 8, 5, PIXFMT_GRAY4);
+
+    framebuffer_set_pixel(&fb, 6, 0, 1);
+    const rect_t area = {.x = 1, .y = 3, .w = 2, .h = 1};
+    framebuffer_mark_dirty(&fb, &area);
+
+    HAC_CHECK_EQ_INT(fb.dirty_rect.x, 1);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.y, 0);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.w, 6);  // columns 1..6
+    HAC_CHECK_EQ_INT(fb.dirty_rect.h, 4);  // rows 0..3
+}
+
+static void mark_dirty_clips_to_the_buffer(void)
+{
+    uint8_t storage[20] = {0};
+    framebuffer_t fb;
+    framebuffer_init(&fb, storage, sizeof(storage), 8, 5, PIXFMT_GRAY4);
+
+    const rect_t area = {.x = 5, .y = 2, .w = 100, .h = 100};
+    framebuffer_mark_dirty(&fb, &area);
+
+    HAC_CHECK_EQ_INT(fb.dirty_rect.x, 5);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.y, 2);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.w, 3);
+    HAC_CHECK_EQ_INT(fb.dirty_rect.h, 3);
+}
+
+static void mark_dirty_ignores_an_empty_or_off_buffer_area(void)
+{
+    uint8_t storage[20] = {0};
+    framebuffer_t fb;
+    framebuffer_init(&fb, storage, sizeof(storage), 8, 5, PIXFMT_GRAY4);
+
+    const rect_t empty = {.x = 1, .y = 1, .w = 0, .h = 3};
+    const rect_t outside = {.x = 8, .y = 0, .w = 2, .h = 2};
+    framebuffer_mark_dirty(&fb, &empty);
+    framebuffer_mark_dirty(&fb, &outside);
+    framebuffer_mark_dirty(&fb, NULL);
+
+    HAC_CHECK(!fb.dirty);
+}
+
 // --- diffing against a previous frame ---------------------------------
 //
 // framebuffer_diff_dirty_rect() is what turns "screen_home redraws
@@ -402,6 +466,11 @@ int main(void)
     HAC_RUN(writing_the_same_pixel_twice_does_not_widen_the_rect);
     HAC_RUN(reset_dirty_clears_the_flag_and_rect);
     HAC_RUN(out_of_range_writes_do_not_affect_the_dirty_rect);
+
+    HAC_RUN(mark_dirty_on_a_clean_buffer_reports_exactly_the_area);
+    HAC_RUN(mark_dirty_grows_an_existing_rect_to_the_bounding_box);
+    HAC_RUN(mark_dirty_clips_to_the_buffer);
+    HAC_RUN(mark_dirty_ignores_an_empty_or_off_buffer_area);
 
     HAC_RUN(diff_reports_no_change_as_no_dirty_rect);
     HAC_RUN(diff_reports_a_single_changed_pixel);

@@ -45,6 +45,15 @@ struct adp_display_sdl_s {
     // has pushed out yet, and the window must keep showing the old one.
     uint8_t *glass;
 
+    // epd_level_display_grey() for every level, worked out once: the window
+    // is repainted every frame.
+    uint8_t level_grey[16];
+
+    // The rows and columns GC16 drives in a full refresh
+    // (epd_model_gc16_masks()), for the dark half of its draw.
+    uint8_t *row_mask;
+    uint8_t *col_mask;
+
     // Per pixel, the partial refreshes since it was last driven (counting only
     // those whose rectangle covered it), saturating. A dark pixel left
     // undriven long enough shows lighter than freshly driven ones -- the
@@ -68,27 +77,27 @@ static bool rect_contains(const rect_t *r, uint16_t x, uint16_t y)
            (uint32_t)y < (uint32_t)r->y + r->h;
 }
 
-// What one glass pixel looks like, in 8-bit grey: its GRAY4 level as this
-// unit shows it (levels it cannot tell apart are merged), lightened if it is a
-// dark pixel that partial refreshes have left undriven for long enough.
+// What one glass pixel looks like, in 8-bit grey: its GRAY4 level as light as
+// this unit shows it (epd_emulation.h's measured table -- which is also what
+// shows level 1 as black), lightened if it is a dark pixel that partial
+// refreshes have left undriven for long enough.
 static int32_t displayed_level(const adp_display_sdl_t *d, size_t i)
 {
-    uint8_t gray4 = d->glass[i];
-    if (gray4 <= EPD_SIM_DARKEST_MERGED_LEVEL) {
-        gray4 = 0u;
-    }
+    const uint8_t gray4 = d->glass[i];
 
-    int32_t level = (int32_t)gray4 * 17;  // 0-15 -> 0-255
-    if (d->glass[i] < EPD_SIM_GHOST_DARK_BELOW && d->undriven[i] >= EPD_SIM_GHOST_VISIBLE_AFTER) {
+    int32_t level = (int32_t)d->level_grey[gray4 & 0x0Fu];
+    if (gray4 < EPD_SIM_GHOST_DARK_BELOW && d->undriven[i] >= EPD_SIM_GHOST_VISIBLE_AFTER) {
         level += (int32_t)EPD_SIM_GHOST_LIGHTEN;
     }
     return (level > 255) ? 255 : level;
 }
 
 // Paints the glass, with `solid` (if given) overridden by one flat 8-bit grey
-// -- what the clear's black and white pushes show over the refreshed region.
+// -- what the clear's black and white pushes show over the refreshed region --
+// and, when `dark_rows` and `dark_cols` are given, every pixel both mark shown
+// black: GC16's dark passes.
 static void render(adp_display_sdl_t *d, const rect_t *solid, uint8_t solid_level,
-                   const rect_t *highlight)
+                   const rect_t *highlight, const uint8_t *dark_rows, const uint8_t *dark_cols)
 {
     for (uint16_t y = 0; y < d->height; ++y) {
         for (uint16_t x = 0; x < d->width; ++x) {
@@ -97,6 +106,10 @@ static void render(adp_display_sdl_t *d, const rect_t *solid, uint8_t solid_leve
             int32_t level = displayed_level(d, i);
             if (solid != NULL && rect_contains(solid, x, y)) {
                 level = (int32_t)solid_level;
+            }
+            if (dark_rows != NULL && dark_cols != NULL && dark_rows[y] != 0u &&
+                dark_cols[x] != 0u) {
+                level = 0;
             }
 
             const uint32_t g = (uint32_t)level;
@@ -128,7 +141,7 @@ static void render(adp_display_sdl_t *d, const rect_t *solid, uint8_t solid_leve
 
 void adp_display_sdl_present(adp_display_sdl_t *d)
 {
-    render(d, NULL, 0u, NULL);
+    render(d, NULL, 0u, NULL, NULL, NULL);
 }
 
 // Waits out an emulated panel duration in real time, compressed by the
@@ -157,9 +170,9 @@ static void flash_clear(adp_display_sdl_t *d, const rect_t *area)
     const uint32_t white_ms = EPD_SIM_CLEAR_REFRESH_MS * EPD_SIM_CLEAR_WHITE_PUSHES / pushes;
 
     for (uint32_t c = 0u; c < EPD_SIM_CLEAR_CYCLES; ++c) {
-        render(d, area, 0u, NULL);
+        render(d, area, 0u, NULL, NULL, NULL);
         wait_panel(d, dark_ms);
-        render(d, area, 255u, NULL);
+        render(d, area, 255u, NULL, NULL, NULL);
         wait_panel(d, white_ms);
     }
 }
@@ -214,16 +227,28 @@ static hal_status_t sdl_flush(port_display_t *port, const rect_t *area, refresh_
     }
 
     const bool full = (f.performed == REFRESH_FULL || f.performed == REFRESH_CLEAR);
-    uint32_t remaining_ms = f.duration_ms;
+    const epd_full_phases_t phases = epd_model_full_phases(&f);
+    uint32_t remaining_ms = phases.light_ms;
 
     if (full) {
         // The clear's black and white flashing. It is the most recognizable
         // thing a full refresh does, and seeing it too often on a PC is the
         // cheapest possible warning that a refresh strategy is wrong.
         flash_clear(d, &f.area);
-        remaining_ms = (remaining_ms > EPD_SIM_CLEAR_REFRESH_MS)
-                           ? remaining_ms - EPD_SIM_CLEAR_REFRESH_MS
-                           : 0u;
+    }
+
+    if (f.performed == REFRESH_FULL) {
+        // Then GC16, as the glass shows it: white while EPDiy works out the
+        // difference, black wherever it drives during its dark passes, and
+        // only then the picture (epd_emulation.h, EPD_SIM_GC16_DARK_PASSES).
+        for (uint32_t y = f.area.y; y < (uint32_t)f.area.y + f.area.h; ++y) {
+            memset(d->glass + (size_t)y * d->width + f.area.x, EPD_MODEL_GRAY4_WHITE, f.area.w);
+        }
+        render(d, NULL, 0u, &f.area, NULL, NULL);
+        wait_panel(d, phases.diff_ms);
+        epd_model_gc16_masks(&d->fb, &f.area, d->row_mask, d->col_mask);
+        render(d, NULL, 0u, &f.area, d->row_mask, d->col_mask);
+        wait_panel(d, phases.dark_ms);
     }
 
     transfer(d, &f.area, f.performed);
@@ -232,10 +257,10 @@ static hal_status_t sdl_flush(port_display_t *port, const rect_t *area, refresh_
     if (highlight_ms < EPD_SIM_HIGHLIGHT_MIN_MS) {
         highlight_ms = EPD_SIM_HIGHLIGHT_MIN_MS;
     }
-    render(d, NULL, 0u, &f.area);
+    render(d, NULL, 0u, &f.area, NULL, NULL);
     wait_panel(d, highlight_ms);
 
-    render(d, NULL, 0u, NULL);
+    render(d, NULL, 0u, NULL, NULL, NULL);
     framebuffer_reset_dirty(&d->fb);
     return HAL_OK;
 }
@@ -248,7 +273,7 @@ static hal_status_t sdl_power(port_display_t *port, bool on)
     if (!on) {
         // A powered-down panel keeps its last image: e-paper is bistable.
         // Nothing to do but say so.
-        render(d, NULL, 0u, NULL);
+        render(d, NULL, 0u, NULL, NULL, NULL);
     }
     return HAL_OK;
 }
@@ -282,13 +307,20 @@ adp_display_sdl_t *adp_display_sdl_create(uint16_t width, uint16_t height, float
     d->glass = calloc(1u, px_count);
     d->undriven = calloc(1u, px_count);
     d->argb = calloc(px_count, sizeof(uint32_t));
-    if (d->pixels == NULL || d->glass == NULL || d->undriven == NULL || d->argb == NULL) {
+    d->row_mask = calloc(1u, height);
+    d->col_mask = calloc(1u, width);
+    if (d->pixels == NULL || d->glass == NULL || d->undriven == NULL || d->argb == NULL ||
+        d->row_mask == NULL || d->col_mask == NULL) {
         adp_display_sdl_destroy(d);
         return NULL;
     }
 
     // A panel that has never been refreshed is white, like paper.
     memset(d->glass, EPD_MODEL_GRAY4_WHITE, px_count);
+
+    for (uint8_t level = 0u; level < 16u; ++level) {
+        d->level_grey[level] = epd_level_display_grey(level);
+    }
 
     framebuffer_init(&d->fb, d->pixels, fb_size, width, height, PIXFMT_GRAY4);
     framebuffer_clear(&d->fb, 0x0Fu);
@@ -340,7 +372,7 @@ adp_display_sdl_t *adp_display_sdl_create(uint16_t width, uint16_t height, float
     d->port.power = sdl_power;
     d->port.impl = d;
 
-    render(d, NULL, 0u, NULL);
+    render(d, NULL, 0u, NULL, NULL, NULL);
     return d;
 }
 
@@ -366,6 +398,8 @@ void adp_display_sdl_destroy(adp_display_sdl_t *d)
     free(d->glass);
     free(d->undriven);
     free(d->argb);
+    free(d->row_mask);
+    free(d->col_mask);
     free(d);
 }
 

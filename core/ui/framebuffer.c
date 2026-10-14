@@ -141,6 +141,28 @@ void framebuffer_reset_dirty(framebuffer_t *fb)
     memset(&fb->dirty_rect, 0, sizeof(fb->dirty_rect));
 }
 
+void framebuffer_mark_dirty(framebuffer_t *fb, const rect_t *area)
+{
+    if (fb->pixels == NULL || area == NULL || area->w == 0u || area->h == 0u ||
+        area->x >= fb->width || area->y >= fb->height) {
+        return;
+    }
+
+    uint32_t x1 = (uint32_t)area->x + area->w;
+    uint32_t y1 = (uint32_t)area->y + area->h;
+    if (x1 > fb->width) {
+        x1 = fb->width;
+    }
+    if (y1 > fb->height) {
+        y1 = fb->height;
+    }
+
+    // The dirty rect is a bounding box, so its two opposite corners grow it
+    // exactly as every pixel in between would.
+    mark_dirty_pixel(fb, area->x, area->y);
+    mark_dirty_pixel(fb, (uint16_t)(x1 - 1u), (uint16_t)(y1 - 1u));
+}
+
 static uint32_t pixels_per_byte(pixel_format_t format)
 {
     return (format == PIXFMT_GRAY4) ? 2u : 8u;
