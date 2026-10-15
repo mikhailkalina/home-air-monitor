@@ -128,7 +128,8 @@ hal_status_t scd4x_source_setup(scd4x_source_t *s, const scd4x_source_config_t *
 // 3.7.5) -- allowed while it measures, and recommended where the pressure
 // changes. HAL_ERR_INVALID_ARG outside 700-1200 hPa or before init();
 // HAL_ERR_BUSY while a single shot is being measured. Nothing feeds it yet:
-// the BME68x that measures pressure is phase 3b's.
+// bme68x_source measures pressure since phase 3b, and connecting the two is
+// the composition's job.
 hal_status_t scd4x_source_set_ambient_pressure(scd4x_source_t *s, float pressure_hpa);
 
 const char *scd4x_variant_name(scd4x_variant_t variant);

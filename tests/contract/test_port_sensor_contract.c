@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Host runner for port_sensor_contract.c, the shared body, against every
-// sensor_source_t this build has: replay_source (CSV playback) and
+// sensor_source_t this build has: replay_source (CSV playback);
 // scd4x_source -- Sensirion's own driver -- over the fake I2C bus with the
-// SCD41 command-level model on it, in both of its modes. Each prints one
-// "contract port_sensor <implementation> <check> PASS|FAIL" line per check.
+// SCD41 command-level model on it, in both of its modes; and bme68x_source
+// -- Bosch's own driver -- over the same bus with the BME680 register-level
+// model. Each prints one "contract port_sensor <implementation> <check>
+// PASS|FAIL" line per check.
 
 #ifndef HAC_TEST_TMP_DIR
 #error "HAC_TEST_TMP_DIR must be defined by the build (see tests/contract/CMakeLists.txt)"
@@ -17,8 +19,10 @@
 
 #include "adp_clock_virtual.h"
 #include "adp_i2c_fake.h"
+#include "bme68x_source.h"
 #include "contract_print.h"
 #include "hac_test.h"
+#include "i2c_models/bme680_model.h"
 #include "i2c_models/scd41_model.h"
 #include "replay/replay_source.h"
 #include "scd4x_source.h"
@@ -27,6 +31,11 @@
 // about the board; this is the sensor's, not board_config.h's.
 #define SCD41_ADDR 0x62u
 #define SCD41_SOURCE_ID 1u
+
+// One of the BME680's two addresses (its datasheet, 6.2), and again the
+// sensor's, not the board's.
+#define BME680_ADDR 0x77u
+#define BME680_SOURCE_ID 2u
 
 static void report_to_hac_test(void *ctx, const char *check, bool ok)
 {
@@ -140,6 +149,36 @@ static void scd4x_source_satisfies_the_sensor_source_contract_in_single_shot_mod
 
     HAC_CHECK_EQ_INT((int)rig.sensor.stats.rejected, 0);
     HAC_CHECK_EQ_INT((int)rig.sensor.stats.nacked_while_busy, 0);
+}
+
+static void bme68x_source_satisfies_the_sensor_source_contract(void)
+{
+    static adp_clock_virtual_t clock;
+    static adp_i2c_fake_t bus;
+    static bme680_model_t sensor;
+    static bme68x_source_t source;
+    adp_clock_virtual_init(&clock, 1.0);
+    adp_i2c_fake_init(&bus, &clock);
+    bme680_model_init(&sensor, clock.now_ms);
+    HAC_CHECK(adp_i2c_fake_attach(&bus, BME680_ADDR, bme680_model_port(&sensor)));
+
+    const bme68x_source_config_t cfg = {
+        .bus = adp_i2c_fake_port(&bus),
+        .clock = adp_clock_virtual_port(&clock),
+        .log = NULL,
+        .address = BME680_ADDR,
+        .id = BME680_SOURCE_ID,
+    };
+    HAC_CHECK_EQ_INT(bme68x_source_setup(&source, &cfg), HAL_OK);
+    run(&source.port, &clock, "bme68x_source+bme680_model");
+
+    // Over the real register protocol: nothing read early, nothing written
+    // that the sensor dropped, nothing refused.
+    HAC_CHECK_EQ_INT((int)sensor.stats.completed, 1);
+    HAC_CHECK_EQ_INT((int)sensor.stats.early_reads, 0);
+    HAC_CHECK_EQ_INT((int)sensor.stats.ignored_writes, 0);
+    HAC_CHECK_EQ_INT((int)sensor.stats.read_only_writes, 0);
+    HAC_CHECK_EQ_INT((int)sensor.stats.address_nacks, 0);
 }
 
 // --- the suite has teeth ------------------------------------------------
@@ -277,6 +316,7 @@ int main(void)
     HAC_RUN(a_co2_only_replay_source_reports_nothing_outside_its_capability);
     HAC_RUN(scd4x_source_satisfies_the_sensor_source_contract_in_periodic_mode);
     HAC_RUN(scd4x_source_satisfies_the_sensor_source_contract_in_single_shot_mode);
+    HAC_RUN(bme68x_source_satisfies_the_sensor_source_contract);
     HAC_RUN(the_contract_catches_a_source_reporting_outside_its_capabilities);
     HAC_RUN(the_contract_catches_a_source_reading_before_start);
     return hac_test_summary();

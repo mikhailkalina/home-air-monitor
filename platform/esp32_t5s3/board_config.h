@@ -270,9 +270,10 @@
 // misbehave. It stops being free the moment a waveform with several ranges
 // is used.
 //
-// Replaced in phase 3, which brings the BME68x and therefore a real ambient
-// temperature; EPDiy also offers epd_ambient_temperature() for boards with a
-// sensor on the panel itself, which this one does not have.
+// Replaced once a composition runs bme68x_source (drivers/bme68x/, phase
+// 3b), which gives a real ambient temperature; EPDiy also offers
+// epd_ambient_temperature() for boards with a sensor on the panel itself,
+// which this one does not have.
 #define BOARD_EPD_ASSUMED_TEMPERATURE_C 25
 
 #endif  // HAC_PLATFORM_ESP32_T5S3_BOARD_CONFIG_H

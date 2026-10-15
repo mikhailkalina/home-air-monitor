@@ -38,9 +38,9 @@ target_link_libraries(test_port_i2c_contract PRIVATE
 hac_apply_warnings(test_port_i2c_contract)
 add_test(NAME test_port_i2c_contract COMMAND test_port_i2c_contract)
 
-# port_sensor: the shared body against replay_source and against
-# scd4x_source over the fake bus and its SCD41 model, plus broken wrappers
-# that prove the body catches what it claims to.
+# port_sensor: the shared body against replay_source, and against
+# scd4x_source and bme68x_source over the fake bus and their device models,
+# plus broken wrappers that prove the body catches what it claims to.
 add_executable(test_port_sensor_contract test_port_sensor_contract.c)
 target_link_libraries(test_port_sensor_contract PRIVATE
     hac_contract_bodies hac_drivers hac_platform_host hac_test_support)

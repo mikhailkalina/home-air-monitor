@@ -250,8 +250,18 @@ adapter — the sensors run from the switched `3V3` that EPDiy's init raises, an
 they hold the bus low. A software reset (`restart`) keeps them powered. Nothing composes
 `scd4x_source` in the firmware yet.
 
-Next: a composition that runs `scd4x_source` on the board, and phase 3b — the BME68x driver
-over `port_i2c`. See the open items in `docs/hardware/board_notes.md`.
+Phase 3b on branch `phase-3b-bme68x-driver` (ADR 0016): Bosch's BME68x Sensor API vendored
+under `drivers/bme68x/vendor/`, its callbacks over `port_i2c`/`port_clock`, `bme68x_source`
+as a `sensor_source_t` in forced mode — temperature, humidity, pressure and raw gas
+resistance, no IAQ without BSEC — and a BME680 register-level model whose raw values invert
+the datasheet's compensation, so host tests prove the plumbing, not Bosch's arithmetic. The
+home screen's IAQ cell shows gas resistance while nothing provides IAQ. All verified on the
+host only. Three estimates in `drivers/bme68x/bme68x_limits.h` — heater profile, gas
+burn-in, self-heating offset — are phase 3c's to replace.
+
+Next: a composition that runs `scd4x_source` and `bme68x_source` on the board, then phase 3c
+(BSEC, or this unit's own figures for the estimates). See the open items in
+`docs/hardware/board_notes.md`.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

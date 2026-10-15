@@ -81,6 +81,20 @@ target_link_libraries(test_scd4x_source PRIVATE hac_drivers hac_platform_host ha
 hac_apply_warnings(test_scd4x_source)
 add_test(NAME test_scd4x_source COMMAND test_scd4x_source)
 
+# The BME680 register-level model against the datasheet and a published set
+# of test vectors, and the BME68x driver -- Bosch's code behind
+# sensor_source_t -- against the model, over the fake bus
+# (docs/adr/0016-bme68x-driver.md).
+add_executable(test_bme680_model unit/test_bme680_model.c)
+target_link_libraries(test_bme680_model PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_bme680_model)
+add_test(NAME test_bme680_model COMMAND test_bme680_model)
+
+add_executable(test_bme68x_source unit/test_bme68x_source.c)
+target_link_libraries(test_bme68x_source PRIVATE hac_drivers hac_platform_host hac_test_support)
+hac_apply_warnings(test_bme68x_source)
+add_test(NAME test_bme68x_source COMMAND test_bme68x_source)
+
 # The pure half of the ESP32 I2C adapter -- deadline-to-driver-wait
 # arithmetic and failure classification -- compiled from where the firmware
 # compiles it, like duration_stats.c above. adp_i2c.c itself needs ESP-IDF

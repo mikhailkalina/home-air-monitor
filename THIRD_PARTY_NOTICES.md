@@ -13,7 +13,7 @@ whenever a dependency is added or removed.
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
 | Sensirion `embedded-i2c-scd4x` (tag `1.2.0`, commit `d953712213957544b5429542381fd7629cbb3786`) | 1.2.0 | BSD-3-Clause | `drivers/scd4x/scd4x_source.c` (through `drivers/scd4x/scd4x_hal.c`) | Yes — vendored unmodified in `drivers/scd4x/vendor/`; see below |
-| Bosch BME68x Sensor API | — | BSD-3-Clause | `drivers/bme68x` | Vendored |
+| Bosch BME68x Sensor API (tag `v4.4.8`, commit `80ea120a8b8ac987d7d79eb68a9ed796736be845`) | 4.4.8 | BSD-3-Clause | `drivers/bme68x/bme68x_source.c` (through `drivers/bme68x/bme68x_hal.c`) | Yes — vendored unmodified in `drivers/bme68x/vendor/`; see below |
 | Bosch BSEC2 headers & config | 2.x | BSD-3-Clause | `drivers/bme68x/bsec` | Headers only |
 | Bosch BSEC2 library binary (`libalgobsec.a`) | 2.x | **Proprietary — Bosch Sensortec license agreement** | optional IAQ backend | **No — see below** |
 | SDL2 | 2.x | Zlib | `platform/host/adp_display_sdl.c`, `platform/host/adp_input_sdl.c`, later `platform/host/sim_gui` | No (system package; optional, see below) |
@@ -44,6 +44,36 @@ else -- must reproduce the copyright notice, the conditions and the
 disclaimer in its documentation, as the console's linenoise and argtable3
 already require (below). The third clause forbids using Sensirion's name to
 promote this project.
+
+## Notes on Bosch's BME68x Sensor API
+
+Phase 3b (`docs/adr/0016-bme68x-driver.md`) vendors Bosch Sensortec's own C
+driver for the BME680 and BME688, `boschsensortec/BME68x_SensorAPI`, at tag
+`v4.4.8` (commit `80ea120a8b8ac987d7d79eb68a9ed796736be845`, 2023-05-17), into
+`drivers/bme68x/vendor/`: `bme68x.c`, `bme68x.h` and `bme68x_defs.h`, each
+byte-for-byte as upstream, with upstream's `LICENSE`. Bosch ships no HAL to
+replace: the API takes its bus and delay as callbacks, which
+`drivers/bme68x/bme68x_hal.c`, this project's own (Apache-2.0), supplies.
+`drivers/bme68x/vendor/README.md` lists the files and their SHA-256 hashes.
+
+The licence is **BSD-3-Clause** (Copyright (c) 2023 Bosch Sensortec GmbH),
+checked in the repository at that commit. Its obligations are the same as
+Sensirion's above: keep the notices in source, which the vendored files and
+`LICENSE` do untouched; reproduce the copyright notice, conditions and
+disclaimer in the documentation of a firmware image given to someone else;
+and do not use Bosch's name to promote this project.
+
+This is the open-source half of Bosch's offer and nothing more: it reads the
+sensor and compensates temperature, humidity, pressure and gas resistance.
+It computes no IAQ. That is BSEC's, below, which remains unlinked; without
+it the firmware reports raw gas resistance, as the BSEC note says.
+
+The calibration set the host's BME680 model starts from
+(`platform/host/i2c_models/bme680_model.c`) is a real sensor's, published in
+`pimoroni/bme680-python` (MIT), `tests/conftest.py` at commit
+`30fcb34efc2d19f60a63ece656b9059adb373150`, with that project's test vectors
+for it. They are numbers read off a sensor, cited at their use; no code is
+taken from that project.
 
 ## Notes on the console's linenoise and argtable3
 
@@ -188,8 +218,12 @@ available for download after accepting Bosch Sensortec's license agreement:
 
 To build with IAQ support, download the archive, accept the terms, and place the
 static library and configuration under `third_party/bsec/` (gitignored). Without
-it, the firmware falls back to reporting raw gas resistance and a simple VOC
-indicator, as recommended in the requirements document.
+it, the firmware falls back to reporting raw gas resistance, as recommended in
+the requirements document: since phase 3b `bme68x_source` measures it and the
+home screen shows it in the IAQ cell (`docs/adr/0016-bme68x-driver.md`). No
+"simple VOC indicator" is derived from it yet; raw resistance means little
+across sensors or before burn-in, and an indicator worth the name is BSEC's
+job or phase 3c's.
 
 Pre-built firmware binaries containing BSEC must not be attached to GitHub
 Releases without first confirming that Bosch's terms permit that form of

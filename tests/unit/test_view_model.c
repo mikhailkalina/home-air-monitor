@@ -233,6 +233,128 @@ static void the_update_line_reports_the_freshest_quantity(void)
     HAC_CHECK(strcmp(vm.updated_text, "--") == 0);
 }
 
+// --- the IAQ cell without BSEC ------------------------------------------------
+
+// What the device reads with no BSEC linked: a BME68x reporting gas
+// resistance, and nothing reporting IAQ.
+static air_reading_t without_bsec(float gas_ohm, value_status_t gas_status)
+{
+    air_reading_t r = normal_reading(1000u);
+    r.iaq = measurement_unavailable();
+    if (gas_status == VAL_OK || gas_status == VAL_STALE) {
+        r.gas_resistance_ohm = measurement_ok(gas_ohm, 1000u, 2u);
+        r.gas_resistance_ohm.status = gas_status;
+    } else {
+        r.gas_resistance_ohm = measurement_status(gas_status, 1000u, 2u);
+    }
+    return r;
+}
+
+static void without_iaq_the_cell_shows_gas_resistance(void)
+{
+    view_model_t vm;
+    const air_reading_t r = without_bsec(182000.0f, VAL_OK);
+    view_model_build(&vm, &r, 1000u);
+
+    const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
+    HAC_CHECK(strcmp(cell->label, "Gas resistance") == 0);
+    HAC_CHECK(strcmp(cell->unit, "kOhm") == 0);
+    HAC_CHECK(text_is(cell, "182"));
+    HAC_CHECK(cell->has_value);
+    HAC_CHECK_EQ_INT(cell->status, VAL_OK);
+    HAC_CHECK_EQ_INT(cell->mark, VM_MARK_NONE);
+    HAC_CHECK_EQ_INT(cell->ink, VM_INK_PRIMARY);
+    HAC_CHECK(strcmp(vm.status_text, "all sensors OK") == 0);
+}
+
+static void gas_resistance_reads_in_kohm_with_a_decimal_only_when_small(void)
+{
+    const struct {
+        float ohm;
+        const char *text;
+    } cases[] = {
+        {8400.0f, "8.4"}, {9940.0f, "9.9"},       {9960.0f, "10"},    {10000.0f, "10"},
+        {87000.0f, "87"}, {182499.0f, "182"},     {182500.0f, "183"}, {1234567.0f, "1235"},
+        {950.0f, "1.0"},  {12946860.0f, "12947"},
+    };
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        view_model_t vm;
+        const air_reading_t r = without_bsec(cases[i].ohm, VAL_OK);
+        view_model_build(&vm, &r, 1000u);
+        HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], cases[i].text));
+    }
+}
+
+static void gas_resistance_brings_its_own_status(void)
+{
+    view_model_t vm;
+    air_reading_t r = without_bsec(0.0f, VAL_WARMUP);  // the BME68x burning in
+    view_model_build(&vm, &r, 1000u);
+    const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
+    HAC_CHECK(strcmp(cell->label, "Gas resistance") == 0);
+    HAC_CHECK(text_is(cell, "warm"));
+    HAC_CHECK_EQ_INT(cell->mark, VM_MARK_WARMUP);
+    HAC_CHECK_EQ_INT(vm.warmup_count, 1);
+    HAC_CHECK(strcmp(vm.status_text, "sensors warming up") == 0);
+
+    r = without_bsec(0.0f, VAL_ERROR);  // not marked valid and heater-stable
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "ERR"));
+    HAC_CHECK_EQ_INT(vm.error_count, 1);
+    HAC_CHECK(strcmp(vm.status_text, "1 sensor error") == 0);
+
+    r = without_bsec(87000.0f, VAL_STALE);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "87"));
+    HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].ink, VM_INK_STALE);
+    HAC_CHECK_EQ_INT(vm.stale_count, 1);
+}
+
+static void an_iaq_that_is_provided_keeps_the_cell(void)
+{
+    view_model_t vm;
+    air_reading_t r = without_bsec(87000.0f, VAL_OK);
+
+    // BSEC is there but not settled, or failing: still IAQ's cell.
+    r.iaq = measurement_status(VAL_WARMUP, 1000u, 2u);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].label, "IAQ") == 0);
+    HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "warm"));
+
+    r.iaq = measurement_status(VAL_ERROR, 1000u, 2u);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "ERR"));
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "") == 0);
+
+    r.iaq = measurement_ok(84.0f, 1000u, 2u);
+    r.gas_resistance_ohm = measurement_status(VAL_ERROR, 1000u, 2u);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "84"));
+    HAC_CHECK_EQ_INT(vm.error_count, 0);  // the gas is not on the screen
+
+    // Neither: the cell is IAQ's, and says it is not available.
+    r.iaq = measurement_unavailable();
+    r.gas_resistance_ohm = measurement_unavailable();
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].label, "IAQ") == 0);
+    HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "n/a"));
+}
+
+static void the_update_line_follows_the_gas_in_the_cell(void)
+{
+    view_model_t vm;
+    air_reading_t r;
+    air_reading_init(&r);
+    r.co2_ppm = measurement_ok(738.0f, 1000u, 1u);                // 90 s old
+    r.gas_resistance_ohm = measurement_ok(87000.0f, 88000u, 2u);  // 3 s old
+    view_model_build(&vm, &r, 91000u);
+    HAC_CHECK(strcmp(vm.updated_text, "3 s") == 0);
+
+    r.iaq = measurement_ok(84.0f, 1000u, 2u);  // now IAQ's cell: the gas is off screen
+    view_model_build(&vm, &r, 91000u);
+    HAC_CHECK(strcmp(vm.updated_text, "1 min") == 0);
+}
+
 int main(void)
 {
     HAC_RUN(a_normal_reading_becomes_numbers_and_units);
@@ -241,5 +363,10 @@ int main(void)
     HAC_RUN(faults_are_counted_and_summarized);
     HAC_RUN(the_co2_band_follows_the_requirements);
     HAC_RUN(the_update_line_reports_the_freshest_quantity);
+    HAC_RUN(without_iaq_the_cell_shows_gas_resistance);
+    HAC_RUN(gas_resistance_reads_in_kohm_with_a_decimal_only_when_small);
+    HAC_RUN(gas_resistance_brings_its_own_status);
+    HAC_RUN(an_iaq_that_is_provided_keeps_the_cell);
+    HAC_RUN(the_update_line_follows_the_gas_in_the_cell);
     return hac_test_summary();
 }
