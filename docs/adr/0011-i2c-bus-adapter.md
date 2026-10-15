@@ -173,7 +173,9 @@ writes, stops at the first probe that neither answers nor is refused (a dead
 bus would otherwise repeat one timeout 112 times), and merges the result with
 an expected-address table into rows: `found`, `MISSING`, `absent` (a candidate
 that did not answer), `UNEXPECTED`, `not scanned`. Pure over the port, tested
-on the host against the fake.
+on the host against the fake. (Since 2026-10-16 `console.c` does not print the
+`absent` rows: a silent candidate says no more than an address the table never
+names. The report still produces them.)
 
 `console.c` runs ESP-IDF's `esp_console` REPL on the USB-Serial-JTAG port the
 log already uses, with `i2c_scan` and `i2c_recover`; the firmware also runs the

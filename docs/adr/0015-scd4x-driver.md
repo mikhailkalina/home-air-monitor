@@ -113,8 +113,8 @@ In `drivers/scd4x/scd4x_source.c` (ADR 0014 for why there).
   was measuring (a measuring sensor refuses it); stop periodic measurement;
   reinit; read the serial number and variant, and log both with
   `found_measuring`. The stop runs whatever the reset was, as the owner asked:
-  a hardware reset leaves the sensor idle on this board, a software reset is
-  not yet known to. About 0.56 s. An SCD40 is refused single-shot mode
+  a hardware reset leaves the sensor idle on this board, and a software reset
+  leaves it powered and measuring (seen 2026-10-16, below). About 0.56 s. An SCD40 is refused single-shot mode
   (`HAL_ERR_UNSUPPORTED`); a firmware too old for `get_sensor_variant` leaves
   the variant "unknown" instead of failing.
 - **Readings**: converted from the raw words with the datasheet's formulas
@@ -162,10 +162,25 @@ the blue LED whether a software reset drops the sensors' supply.
   and `test_i2c_scan` pass unchanged on the new bus.
 - **Verified for the ESP32-S3**: the firmware and the test app build with the
   project's warning set; the vendored files get exactly the three relaxations.
-- **Not verified, because no sensor is wired**: anything about the real
-  SCD41 -- that it answers at 0x62, its variant, the three ASSUMED behaviours,
-  the warm-up, the timing on the real bus. Each surfaces in the first logs
-  once a composition runs the source on the board.
+- **Verified on the board, 2026-10-16: the addresses.** With the sensors
+  wired, the boot scan found the SCD4x at 0x62 and the BME68x at 0x77, and
+  nothing unexpected (`docs/hardware/board_notes.md`, "Sensors on the bus").
+  It took a change of boot order first: the sensors run from the switched
+  `3V3` that EPDiy's init raises, and while it is down they hold the bus
+  low. With the bus brought up and scanned before the display, every boot
+  ended in a reset as the rail came up; brought up after it, the board boots
+  on USB alone. Why touching the bus early caused the reset is not
+  established -- the board notes record what is known and what it binds
+  phase 5 to.
+- **Verified on the board, 2026-10-16: a software reset keeps the sensors'
+  supply.** `restart` at the console (`esp_restart()`) left the blue LED on
+  the switched `3V3` lit, as ESP-IDF's source predicted: it resets the CPUs,
+  not the GPIOs that hold `PWR_EN`. So the stop at init is needed, not
+  merely defensive.
+- **Not verified on the board**: anything the driver itself does with the
+  real SCD41 -- its variant, the three ASSUMED behaviours, the warm-up, the
+  timing on the real bus. Each surfaces in the first logs once a
+  composition runs the source on the board.
 - **The `i2c.master` driver logs every NACK** (ADR 0011). A single shot read
   inside the grace, or a sensor that is unplugged, will put one such line in
   the log per attempt. Whether to quieten that tag is decided with the

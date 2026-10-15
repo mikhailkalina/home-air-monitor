@@ -49,14 +49,14 @@
 // age into VAL_STALE in the core (measurement_apply_age()).
 //
 // Resets. On this board a hardware reset power-cycles the sensor, so after
-// one it is idle (docs/hardware/board_notes.md, "Power rails and
-// connectors"). A software reset may leave it powered and still measuring --
-// and while it measures it refuses all but five commands. init() therefore
-// stops periodic measurement first and reinitialises, whatever the reset
-// was, so both cases continue identically. It costs about 0.56 s of init().
-// Which case it was is logged (found_measuring): before the stop, init() asks
-// for the serial number once, which a measuring sensor refuses. On the board
-// that answers what a software reset does to the sensor's supply.
+// one it is idle; a software reset (esp_restart(), seen 2026-10-16) leaves
+// it powered, and still measuring if it was (docs/hardware/board_notes.md,
+// "Power rails and connectors" and the open item on software resets). While
+// it measures it refuses all but five commands. init() therefore stops
+// periodic measurement first and reinitialises, whatever the reset was, so
+// both cases continue identically. It costs about 0.56 s of init(). Which
+// case it was is logged (found_measuring): before the stop, init() asks for
+// the serial number once, which a measuring sensor refuses.
 //
 // One SCD4x per image: see scd4x_hal.h.
 

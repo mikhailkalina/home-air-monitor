@@ -227,7 +227,8 @@ Three consequences:
   to the 40-pin header, and the boost's shutdown pins are pulled up to `3V3`.
   So the panel's high-voltage rails are up whenever `3V3` is, and EPDiy's
   power sequencing does not switch them -- which is the open item "Panel
-  power" below, explained. From the schematic; not yet measured.
+  power" below, explained. Read from the schematic, then measured on the
+  LT1945 2026-10-15 ("Measured" below).
 - **`OE` is tied to `VDD3V3`**, so the outputs are always driven, and after
   power-up they hold whatever the register happens to contain until the
   first latch.
@@ -266,6 +267,16 @@ scan simply finds nothing.
   `CFG_STR` (GPIO0) high, so the 74HCT4094's storage register is transparent,
   and in reset `CFG_CLK`/`CFG_DATA` (GPIO12/13) float. What a software reset
   (panic, watchdog, `esp_restart()`) does is an open item below.
+- **The high-voltage boost runs whenever the rail is up.** On the LT1945
+  (`U2`), pins 1, 2, 4 and 5 read -1.23, 2.78, 2.78 and +1.21 V; they appear
+  together with the blue LED and do not change between refreshes. The far
+  ends of the 100 kOhm resistors on pins 2 and 4 read 3.2 V -- the switched
+  `3V3` itself. Pins 1 (`NFB1`) and 5 (`FB2`) sit at the converters'
+  feedback reference, so both regulate: +22 V and -20 V, and the ±15 V
+  derived from them, are present from the first register write to the next
+  reset, refreshing or idle. The 0.4 V across each 100 kOhm is about 4 uA
+  into each `SHDN` pin, which still leaves them at a firm logic high.
+  Measured 2026-10-15.
 
 ### The sensor wiring this implies
 
@@ -305,21 +316,33 @@ modules from the seller's photographs:
 
 ## Sensors on the bus
 
-**Phase 3a, 2026-10-14: what the firmware expects, not yet what a scan has
-seen** -- the sensors are not wired yet. `platform/esp32_t5s3/board_config.h`
-names three addresses, and the console's `i2c_scan` (and the boot scan) lists
-all three beside what answers:
+**Seen on the board 2026-10-16** (boot scan, phase 3a, ELF SHA256
+`c59289da4...`, the sensors wired to `P5` and the 40-pin header):
 
-| Device | Address | Where it comes from | Scan row |
+```
+I2C_SCAN bus sda_gpio=18 scl_gpio=17 scl_hz=100000, idle lines sda=high scl=high
+I2C_SCAN 0x14 absent      touch: GT911, if INT was high at reset (BOARD_TOUCH_ALT_I2C_ADDRESS)
+I2C_SCAN 0x51 found       rtc: PCF8563 (BOARD_RTC_I2C_ADDRESS)
+I2C_SCAN 0x5D found       touch: GT911, INT low at reset (BOARD_TOUCH_I2C_ADDRESS)
+I2C_SCAN 0x62 found       co2: SCD4x, its only address (BOARD_SCD4X_I2C_ADDRESS)
+I2C_SCAN 0x76 absent      env: BME68x, if SDO is low (BOARD_BME68X_ALT_I2C_ADDRESS)
+I2C_SCAN 0x77 found       env: BME68x, SDO high (BOARD_BME68X_I2C_ADDRESS)
+I2C_SCAN_RESULT answered=4 missing=0 unexpected=0 scan=complete scan_ms=27
+```
+
+| Device | Address | Where it comes from | Seen |
 |---|---|---|---|
-| SCD4x | `0x62` | the part's only address (Sensirion SCD4x datasheet v1.7, Table 8); nothing on a module changes it | required |
-| BME68x, SDO high | `0x77` | Bosch BME680 datasheet, "I2C interface"; the more common strap on CJMCU-680-style breakouts -- **a guess** for this module | required |
-| BME68x, SDO low | `0x76` | the same; kept named, as the GT911's second address is | candidate |
+| SCD4x | `0x62` | the part's only address (Sensirion SCD4x datasheet v1.7, Table 8); nothing on a module changes it | found |
+| BME68x, SDO high | `0x77` | Bosch BME680 datasheet, "I2C interface" | found: this module straps SDO high |
+| BME68x, SDO low | `0x76` | the same; kept named, as the GT911's second address is | absent |
 
-Until the sensors are wired, the scan prints two `MISSING` rows and
-`I2C_SCAN_RESULT ... missing=2`; that is expected. Once they are, correct
-`board_config.h` from what answers. A BME68x whose SDO is left floating has
-no defined address and may move between power-ups.
+That boot ran on USB power alone. A scan sees the sensors only once
+`PWR_EN` is up: before it, they sit on the bus unpowered and hold both
+lines low (open item "A reboot loop when the switched `3V3` comes up"), so
+the firmware brings the bus up and scans after the display adapter. The
+address answers but does not name the parts: the SCD4x driver reads its
+variant back, the BME68x driver its `variant_id` (open item "Which sensor
+variants are fitted").
 
 **Bus speed: 100 kHz stays** (decided in phase 3a, the decision
 `BOARD_I2C_SCL_HZ`'s comment used to defer). Nothing needs more: the SCD4x
@@ -344,15 +367,9 @@ the firmware runs it yet.
 
 **Checks still to do on the board, in order:**
 
-1. Flash the phase-3a firmware and type `restart` at the console, watching
-   the blue LED: dark for a moment means a software reset drops the switched
-   `3V3` as RST does; lit throughout means it does not, and the SCD41 will be
-   found still measuring after such a reboot. The boot log's reset reason
-   should read `rst:0xc (RTC_SW_CPU_RST)`. Record the answer in the open item
-   "What a software reset does to `PWR_EN`" below, which also says why
-   "lit throughout" is the likelier outcome.
-2. Wire the sensors -- power from `P5`, the bus from the 40-pin header -- and
-   scan. Record the addresses here.
+1. ~~`restart` at the console, watching the blue LED.~~ Done 2026-10-16:
+   it stays lit -- open item "What a software reset does to `PWR_EN`".
+2. ~~Wire the sensors and scan.~~ Done 2026-10-16, above.
 3. Run `scd4x_source` on the board, once a composition does: its first log
    line names the variant, and its first minutes of readings replace the
    warm-up estimate (`SCD4X_WARMUP_MS`).
@@ -431,8 +448,9 @@ bring-up test pattern rendered solid black, `screen_home` rendered from the
 same core code the simulator runs, and `update_policy`'s partial refreshes
 updated the CO2 headline region in place over several minutes. That is the
 phase 2b deliverable, observed on the build that drives the panel through
-EPDiy's highlevel API -- see "Panel power" in the open items below for the
-one thing about that build that is not yet understood. **Confirmed the same
+EPDiy's highlevel API -- see "Panel power" in the open items below for why
+that build rendered without `epd_poweron()` (resolved 2026-10-15: the
+panel's supply was already up). **Confirmed the same
 day** on the reviewed build, which adds the `epd_poweron()`/`epd_poweroff()`
 bracket EPDiy documents and an `epd_clear()` before every full refresh: same
 image, same partial refreshes, longer full refreshes (below).
@@ -603,7 +621,20 @@ layout settles, not before.
       if `N6` and `N7` are fitted. The sensor modules add their own
       pull-ups, to the switched `3V3`. Phase 3a kept the bus at 100 kHz
       until these values and a rise time are known ("Sensors on the bus").
-- [ ] **What a software reset does to `PWR_EN`.** Pressing RST drops the
+- [x] **What a software reset does to `PWR_EN`.** **Answered for
+      `esp_restart()` 2026-10-16:** the owner typed `restart` at the console
+      (ELF SHA256 `c59289da4...`) and the blue LED stayed lit -- by eye, so a
+      dip shorter than the eye can see is not ruled out, but the rail is not
+      switched off. A software reset keeps the sensors powered: an SCD41 that
+      was measuring is still measuring when the firmware comes back, and a
+      BME68x keeps whatever configuration it had. Both drivers must reset or
+      stop their part at init rather than assume a power-on state --
+      `scd4x_source` does (stop, reinit), and phase 3b's BME68x driver must
+      too (its soft reset). It matches the reading below. Still only read,
+      not seen: the panic and task/interrupt-watchdog reboots, which go
+      through the same `esp_restart_noos()`; the RTC watchdog and brownout,
+      which reset the whole digital system.
+      The question as it stood: Pressing RST drops the
       switched `3V3` and with it the sensors' power ("Power rails and
       connectors", "Measured"). Whether a panic, the watchdog or
       `esp_restart()` does the same is not observed, and it decides whether
@@ -622,17 +653,81 @@ layout settles, not before.
       SCD41 keep measuring -- unlike RST, a chip reset. A reset that reaches
       the whole digital system (the RTC watchdog, brownout) is another case
       again. Once a composition runs `scd4x_source`, its `found_measuring`
-      log field answers the same question from the sensor's side. The driver
+      log field answers the same question from the sensor's side -- after a
+      `restart` with the source running, it should now read true. The driver
       stops periodic measurement at init either way.
+- [x] **A reboot loop when the switched `3V3` comes up.** **Gone
+      2026-10-16, mechanism not established** -- see the last paragraph.
+      Seen 2026-10-15
+      with the phase-3a firmware (ELF SHA256 `52329ece6...`) and the sensors
+      wired to `P5` and the 40-pin header, on USB power alone. Every boot:
+      `adp_i2c: bus up ... sda_high=false scl_high=false` -- both lines
+      **low** at idle, where phase 2d saw both high -- then the scan stops at
+      its first address (`I2C_SCAN stopped at 0x08: timeout`), then
+      `epdiy-i80: i80 row output ready`, and the chip resets. That line is
+      the last thing EPDiy logs before it first writes the 74HCT4094, which
+      raises `PWR_EN` and with it the switched `3V3`. The reset reason did
+      not reach the log: the ROM prints it, but a chip reset drops the
+      USB-Serial-JTAG device and the terminal misses the line. The one that
+      arrived, `rst:0x15 (USB_UART_CHIP_RESET)`, is a reset from the USB host,
+      probably the terminal reopening the port. Since 2026-10-15 `app_main`
+      logs `previous reset reason=... rom_code=...` itself.
+      Reading, not yet confirmed: (1) the lines are low because the sensor
+      modules sit on the bus unpowered -- their pull-ups go to a dead rail,
+      and their chips clamp SDA and SCL through their protection diodes --
+      for as long as `PWR_EN` is low, which is the whole boot until EPDiy's
+      init; the RTC and the touch controller lose the bus with them. (2) The
+      reset is the modules' capacitance and inrush, or a part latched up by
+      that back-powering, pulling `VDD3V3` -- which `Q4` connects straight to
+      the switched rail -- below the 2.44 V brownout threshold. Checks, each
+      decisive: boot with the sensors' `V` wire off `P5`; flash the phase-2d
+      image with the wiring unchanged (a loop there too clears the firmware);
+      check that `V` and `G` are not swapped (LilyGO prints the connector
+      "G 16 15 V") and that `P5` pins 1 and 4 are not shorted with the board
+      unpowered. Whatever the cause, (1) means the boot scan, and anything
+      else on the bus, must wait until `PWR_EN` is up while the sensors take
+      their power from the switched rail.
+      **Narrowed the same day by the owner's checks:** `V` and `G` are not
+      swapped. With the battery connected as well as USB the board stops
+      rebooting, but the boot scan still finds nothing; with the sensors
+      disconnected it finds the RTC and the touch controller again. So (1)
+      holds: unpowered sensors take the whole bus down. And (2) is the
+      supply -- a short or a latched part would not care about the battery.
+      The likely reading, not measured: the battery, behind `Q5`, holds the
+      `5V` node up when the USB supply, through its cable and `D8`, sags under
+      the inrush -- the switched rail feeds the panel's boost as well as the
+      sensors, and both start at the same register write. Not yet known:
+      which module draws the inrush, and the reset reason by name (the
+      `previous reset` line). **Firmware since 2026-10-15:** the bus comes up
+      and the boot scan runs after the display adapter, once EPDiy has raised
+      `PWR_EN`, `BOARD_SWITCHED_3V3_SETTLE_MS` later.
+      **And with that the loop is gone, on USB power alone** (2026-10-16,
+      ELF SHA256 `c59289da4...`; the owner's check, and the boot scan in
+      "Sensors on the bus"). So (2) was not the supply alone: the same rail
+      switching on, with the same modules on the same USB supply, no longer
+      resets the chip once nothing has touched the bus before it. What did
+      it is not established. Candidates: the state the ESP32's own I2C pins
+      were in when the rail rose -- the controller configured, its internal
+      pull-ups on, a probe just timed out against lines held low -- or the
+      extra current that put into the unpowered sensors' protection diodes.
+      The battery's margin hid it, which is why it looked like the supply.
+      **What follows, until the mechanism is known:** nothing may drive the
+      bus while `PWR_EN` is low and the sensors are on the switched rail.
+      That binds phase 5 above all: clearing `PWR_EN` for deep sleep, or
+      waking with it low, must leave the I2C controller deinitialised until
+      the rail is back. Powering the sensors from the always-on `VDD3V3`
+      instead would remove the whole question, at the cost of switching
+      them off by command rather than by rail.
 - [ ] **Which sensor variants are fitted.** BME680 or BME688 (the BME68x's
       `variant_id` register), and SCD40 or SCD41 (the seller lists both;
       read the variant back): the drivers log both, phase 3a/3b.
       **SCD4x side done in phase 3a, on the host:** `scd4x_source`'s init
       logs `variant=SCD40|SCD41|SCD43|unknown` and the serial number, and
       refuses single-shot mode on an SCD40 (`docs/adr/0015-scd4x-driver.md`).
-- [ ] **Which addresses the sensors answer at.** Expected `0x62` for the
-      SCD4x and `0x77` or `0x76` for the BME68x ("Sensors on the bus"); no
-      scan has seen them yet.
+- [x] **Which addresses the sensors answer at.** **Resolved 2026-10-16**
+      by the boot scan: the SCD4x at `0x62`, the BME68x at `0x77` (SDO high
+      on this module), nothing at `0x76`, nothing unexpected ("Sensors on
+      the bus").
 - [ ] **What the SCD41 does where its datasheet is silent.** The host model
       (`platform/host/i2c_models/scd41_model.h`) assumes, and the driver relies
       on, three behaviours the datasheet does not state: the address is
@@ -952,7 +1047,19 @@ layout settles, not before.
       white-to-white flashes), so the undriven dark pixels that make the
       outline ghosting are left as they are. A calibration case timing and
       photographing a headline-band clear would settle (2) cheaply.
-- [ ] **Panel power: why the first-light build rendered at all.** The build
+- [x] **Panel power: why the first-light build rendered at all.** **Resolved
+      2026-10-15 by measurement** ("Power rails and connectors",
+      "Measured"): the LT1945's feedback pins sit at its reference, -1.23 V
+      and +1.21 V, from the moment the blue LED lights and through every
+      idle gap. On this revision the high-voltage rails are not switched by
+      `power_disable`/`pos_power_enable`/`neg_power_enable` at all -- the
+      resistors that would carry them are not fitted -- but by `PWR_EN`,
+      which EPDiy sets at init and never clears. So the first-light build
+      rendered because the rails were already up, and on this revision
+      `epd_poweron()`/`epd_poweroff()` do not switch the panel's supply,
+      whatever else they set. What that means for panel health and idle current is a
+      phase-5 question, opened as its own item below. The history follows.
+      The build
       that first put an image on this panel (ELF SHA256 `320dfba08...`)
       called `epd_hl_update_area()` with no `epd_poweron()` anywhere in its
       call path -- confirmed by the boot log's own strings and by its timing,
@@ -996,6 +1103,19 @@ layout settles, not before.
       are switch nodes, and `VIN` sits between the two `PGND` pins. Turning
       the rails off between refreshes would mean clearing `PWR_EN`, which
       also cuts the sensors -- a phase-5 decision, not a driver setting.
+- [ ] **The panel's high-voltage rails stay up between refreshes (phase
+      5).** Measured 2026-10-15 (item above): +22 V, -20 V and the ±15 V
+      derived from them run as long as `PWR_EN` is set, which with EPDiy is
+      from the first register write to the next reset. This is the vendor's
+      design too -- EPDiy keeps the bit set "as in LILYGO's driver" -- so it
+      is not something this firmware introduced. Two things are unknown:
+      what it costs in idle current (the LT1945 and the two linear
+      regulators run continuously; a current reading at the USB input with
+      and without `PWR_EN` answers it), and whether holding the supply and
+      VCOM up while the panel is not driven matters for its life. Switching
+      it off between refreshes means clearing `PWR_EN`, which also cuts the
+      sensors' `3V3`, so it is the same decision as the sensors' power in
+      deep sleep ("The sensor wiring this implies").
 - [ ] `update_policy`'s status trigger can fire on `charging` or
       `telemetry_connected` alone, neither of which `screen_home` draws yet,
       making the empty-diff skip in `event_loop.c`'s `redraw()`

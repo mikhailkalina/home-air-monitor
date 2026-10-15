@@ -28,9 +28,10 @@
 // the constant it came from so a surprise in the scan points straight at the
 // line to correct. The GT911's second address is a candidate: it latches one
 // of the two at power-up, and only 0x5D has been seen (board_config.h,
-// "touch panel"). So is the BME68x's: SDO picks one of two, and which one is
-// not yet seen (board_config.h, "sensors"). The sensors are required, so a
-// board without them wired says MISSING -- which is the point of the scan.
+// "touch panel"). So is the BME68x's: SDO picks one of two, and this module
+// answers at 0x77 (board_config.h, "sensors"). A candidate is printed only
+// when it answers. The sensors are required, so a board without them wired
+// says MISSING -- which is the point of the scan.
 //
 // EXPECT() expands to the fields only; the braces stay at the use site. A
 // braced initializer as a macro body is laid out differently by clang-format
@@ -108,10 +109,18 @@ void console_print_i2c_scan(adp_i2c_t *bus)
     unsigned unexpected = 0u;
     for (size_t i = 0; i < n; i++) {
         const i2c_scan_row_t *row = &s_rows[i];
-        printf("I2C_SCAN 0x%02X %-11s %s\n", row->addr, i2c_scan_row_status_name(row->status),
-               row->what != NULL ? row->what : "not in board_config.h");
         missing += (row->status == I2C_ROW_MISSING) ? 1u : 0u;
         unexpected += (row->status == I2C_ROW_UNEXPECTED) ? 1u : 0u;
+        // A candidate that did not answer says no more than an address the
+        // table never names: it is listed only so that, if it ever answers,
+        // its row names the device instead of calling it UNEXPECTED. Not
+        // printed since 2026-10-16. A required address that did not answer
+        // is still printed, as MISSING, and so is anything not scanned.
+        if (row->status == I2C_ROW_ABSENT) {
+            continue;
+        }
+        printf("I2C_SCAN 0x%02X %-11s %s\n", row->addr, i2c_scan_row_status_name(row->status),
+               row->what != NULL ? row->what : "not in board_config.h");
     }
 
     if (result.status != HAL_OK) {
@@ -149,11 +158,12 @@ static int cmd_i2c_recover(void *context, int argc, char **argv)
 }
 
 // A software reset on demand: what a panic or the watchdog would do, minus
-// the fault. It exists to answer one question by eye -- does a software
+// the fault. It was added to answer one question by eye -- does a software
 // reset drop the switched 3V3 that powers the sensors, as pressing RST does?
 // The blue LED sits on that rail (docs/hardware/board_notes.md, "Power rails
-// and connectors"), and the answer decides whether the SCD41 is found idle
-// or still measuring after such a reboot.
+// and connectors"). It does not: the LED stayed lit (2026-10-16), so after
+// such a reboot the SCD41 is found still measuring. Kept for checking
+// exactly that path once the sensor drivers run.
 static int cmd_restart(void *context, int argc, char **argv)
 {
     (void)context;

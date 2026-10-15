@@ -171,24 +171,34 @@
 // --- sensors (phase 3) ------------------------------------------------------
 // On the bus through the 40-pin header, powered from the white 4-pin
 // connector's switched 3V3 (docs/hardware/board_notes.md, "Power rails and
-// connectors" and "Sensors on the bus"). No bus scan has seen them yet: the
-// console's i2c_scan lists all three addresses below, so the first scan with
-// the sensors wired confirms or corrects these lines.
+// connectors" and "Sensors on the bus").
 //
-// SCD4x: from the DATASHEET, not the wiring. 0x62 is the only address the
-// part has (Sensirion SCD4x datasheet v1.7, Table 8), and nothing on a
-// module can change it.
+// OBSERVED 2026-10-16 (boot scan, ELF SHA256 c59289da4...): both answer --
+// 0x62 and 0x77 found, 0x76 silent, nothing unexpected.
+//
+// SCD4x: 0x62 is also the only address the part has (Sensirion SCD4x
+// datasheet v1.7, Table 8); nothing on a module can change it.
 #define BOARD_SCD4X_I2C_ADDRESS 0x62u
 
 // BME68x: 0x76 with SDO to GND, 0x77 with SDO to VDDIO (Bosch BME680
-// datasheet, "I2C interface"), and undefined with SDO left floating. A GUESS,
-// not an observation: the CJMCU-680-style module brings SDO out to a pad,
-// and how the module straps it is not visible in the seller's photographs.
-// 0x77 is the more common default on such breakouts (SDO pulled up on the
-// module); 0x76 stays named, as the GT911's second address does, so the scan
-// reports whichever answers.
-#define BOARD_BME68X_I2C_ADDRESS 0x77u      // SDO high
+// datasheet, "I2C interface"), undefined with SDO left floating. This
+// CJMCU-680-style module answers at 0x77, so it straps SDO high. 0x76 stays
+// named, as the GT911's second address does: a module re-strapped, or a
+// floating SDO on another unit, would show there in the scan.
+#define BOARD_BME68X_I2C_ADDRESS 0x77u      // SDO high -- this module
 #define BOARD_BME68X_ALT_I2C_ADDRESS 0x76u  // SDO low
+
+// How long after EPDiy's init raises PWR_EN -- and with it the switched 3V3
+// the sensors run from -- before the firmware touches the bus. Until the rail
+// is up, the unpowered sensors hold both lines low, and touching the bus
+// then ended in a reboot loop (2026-10-15, docs/hardware/board_notes.md).
+// An ESTIMATE, now seen to be enough: the longest power-up time of a part on
+// that rail is the SCD4x's 30 ms (its datasheet, Table 7; the BME68x needs
+// 2 ms), and how fast the rail itself rises through Q4 and the modules'
+// regulators is not measured. The boot scan of 2026-10-16, 60 ms after the
+// display adapter's last log line, found every sensor on the first try. The
+// minimum is not measured; a scope on the rail would give it.
+#define BOARD_SWITCHED_3V3_SETTLE_MS 50u
 
 // --- button, battery -------------------------------------------------------
 // src/utilities.h:30,32 (CONFIG_IDF_TARGET_ESP32S3 block).
