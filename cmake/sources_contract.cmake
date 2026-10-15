@@ -19,11 +19,14 @@ set(HAC_CONTRACT_SOURCES
     ${HAC_ROOT}/tests/contract/port_clock_contract.c
     ${HAC_ROOT}/tests/contract/port_log_contract.c
     ${HAC_ROOT}/tests/contract/port_i2c_contract.c
+    ${HAC_ROOT}/tests/contract/port_sensor_contract.c
 )
 
 # Resolves "port_clock.h" from ports/, "contract_report.h" and
-# "port_clock_contract.h" from this directory.
+# "port_clock_contract.h" from this directory, and "domain/measurement.h" --
+# which port_sensor.h includes -- from core/.
 set(HAC_CONTRACT_INCLUDES
     ${HAC_ROOT}/ports
+    ${HAC_ROOT}/core
     ${HAC_ROOT}/tests/contract
 )

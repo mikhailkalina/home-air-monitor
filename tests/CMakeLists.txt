@@ -68,6 +68,19 @@ target_link_libraries(test_i2c_scan PRIVATE hac_platform_host hac_test_support)
 hac_apply_warnings(test_i2c_scan)
 add_test(NAME test_i2c_scan COMMAND test_i2c_scan)
 
+# The SCD41 command-level model against the datasheet, and the SCD4x driver --
+# Sensirion's code behind sensor_source_t -- against the model, over the fake
+# bus (docs/adr/0015-scd4x-driver.md).
+add_executable(test_scd41_model unit/test_scd41_model.c)
+target_link_libraries(test_scd41_model PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_scd41_model)
+add_test(NAME test_scd41_model COMMAND test_scd41_model)
+
+add_executable(test_scd4x_source unit/test_scd4x_source.c)
+target_link_libraries(test_scd4x_source PRIVATE hac_drivers hac_platform_host hac_test_support)
+hac_apply_warnings(test_scd4x_source)
+add_test(NAME test_scd4x_source COMMAND test_scd4x_source)
+
 # The pure half of the ESP32 I2C adapter -- deadline-to-driver-wait
 # arithmetic and failure classification -- compiled from where the firmware
 # compiles it, like duration_stats.c above. adp_i2c.c itself needs ESP-IDF

@@ -37,7 +37,11 @@ it does not exit on its own.
   Forbidden: `stdio.h`, `time.h`, `malloc`/`free`, `esp_*`, `freertos/*`, `SDL*`.
 - `ports/` is headers only — no `.c` files, no dependencies.
 - `platform/<name>/` implements the ports and contains no business logic.
-- `drivers/` depend only on `port_i2c.h` and `port_clock.h`, so they build on a PC.
+- `drivers/` depend only on `ports/*.h` (bus, clock, log, and `port_sensor.h` with the
+  `core/domain/measurement.h` types it brings), so they build on a PC. A driver's
+  `sensor_source_t` wrapper lives beside it in `drivers/`, not in `platform/` (ADR 0014).
+  First-party code there may not include `esp_*`, `freertos/`, `driver/`, `SDL` or `stdio`;
+  `scripts/check_sources.sh` enforces it. Vendored code under `drivers/*/vendor/` is exempt.
 - `apps/<name>/main.c` is the only place where dependencies are wired together.
 - The core never reads time from the system: only `port_clock->now_ms()`. This is what makes it testable.
 - No panel-specific or platform-specific constant may appear in `core/`. Panel limits reach
@@ -57,6 +61,7 @@ worth more than the task.
 # Static checks (no compiler needed — fastest signal, run this first)
 ./scripts/check_sources.sh
 bash scripts/tests/test_pin_literal_check.sh
+bash scripts/tests/test_driver_include_check.sh
 
 # Native build and tests
 cmake --preset host-debug && cmake --build build/host-debug
@@ -144,8 +149,12 @@ silent addition.
 ## Working rules
 
 - A new core file goes into `cmake/sources_core.cmake` and **nowhere else** — that list is shared
-  by the host and ESP-IDF builds. Never duplicate source lists in
+  by the host and ESP-IDF builds. A new driver file goes into `cmake/sources_drivers.cmake` the
+  same way, vendored files into its separate vendor list. Never duplicate source lists in
   `apps/firmware_esp32/components/*/CMakeLists.txt`.
+- Vendored third-party code lives in a `vendor/` directory, byte-for-byte as upstream, with a
+  `README.md` naming the tag, commit and file hashes. Never edit it; it builds with the relaxed
+  options of `cmake/sources_drivers.cmake` and is included as SYSTEM.
 - Every new port needs a suite in `tests/contract/` that runs against all of its implementations,
   on the host and on the device. The same source compiles into both — never a copy.
 - Include what you use. Do not rely on a header arriving transitively; this has broken the
@@ -215,8 +224,10 @@ Measured: full refresh 3.2–3.7 s (of which `epd_clear()` ~2.4 s), partial ~0.4
 Phase 2c complete and confirmed on hardware: refresh timings measured into
 `platform/host/epd_emulation.h`, partial-refresh budget set to 10 from observed ghosting,
 15 usable greys (ADR 0008); the on-target test app (ADR 0009); a regional full refresh
-tried and rejected (ADR 0010). Still open from it: residue in the greys, column stripes in
-white, and whether the panel's high-voltage rails are really off between refreshes.
+tried and rejected (ADR 0010). Still open from it: residue in the greys and column stripes
+in white. The high-voltage rails are not off between refreshes: on this revision `PWR_EN`,
+which EPDiy never clears, switches them, not `epd_poweroff()` (measured in phase 3a;
+`docs/hardware/board_notes.md`, "Power rails and connectors").
 
 Phase 2d complete and confirmed on hardware: `adp_i2c.c` drives the shared I²C bus through
 ESP-IDF's `i2c_master` behind `port_i2c` (ADR 0011). The boot scan finds the RTC at `0x51`
@@ -229,9 +240,18 @@ pipeline (`image_gen.py`), `gfx_blit_image()`, a slideshow test app and a photo 
 the panel's grey levels measured into one table the simulator and `prepare` share. Next is
 still phase 3.
 
-Next: phase 3 — sensors (SCD41, BME68x drivers over `port_i2c`, wrapped as
-`sensor_source_t`, with fake-i2c device models on the host). See the open items in
-`docs/hardware/board_notes.md`.
+Phase 3a on branch `phase-3a-scd4x-driver` (ADR 0014, 0015): Sensirion's SCD4x driver
+vendored under `drivers/scd4x/vendor/`, its HAL over `port_i2c`/`port_clock`, `scd4x_source`
+as a `sensor_source_t` in periodic and single-shot modes, the fake bus turned into a bus of
+device models with an SCD41 command-level model, the `port_sensor` contract as a shared body
+— all verified on the host. On the board: the sensors are wired and the boot scan finds the
+SCD4x at `0x62` and the BME68x at `0x77`, but only since the bus comes up after the display
+adapter — the sensors run from the switched `3V3` that EPDiy's init raises, and before it
+they hold the bus low. A software reset (`restart`) keeps them powered. Nothing composes
+`scd4x_source` in the firmware yet.
+
+Next: a composition that runs `scd4x_source` on the board, and phase 3b — the BME68x driver
+over `port_i2c`. See the open items in `docs/hardware/board_notes.md`.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

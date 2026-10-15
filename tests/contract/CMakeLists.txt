@@ -1,23 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Contract suites: one file per port, run against every implementation of it.
-# port_sensor is the first (see docs/architecture.md §5.3 and §9.2).
-
-add_executable(test_port_sensor_contract test_port_sensor_contract.c)
-target_link_libraries(test_port_sensor_contract PRIVATE hac_platform_host hac_test_support)
-target_compile_definitions(test_port_sensor_contract PRIVATE
-    HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
-)
-hac_apply_warnings(test_port_sensor_contract)
-add_test(NAME test_port_sensor_contract COMMAND test_port_sensor_contract)
-
-# port_clock and port_log: the contract bodies themselves
-# (port_clock_contract.c, port_log_contract.c) are NOT compiled directly by
+# Contract suites: one shared body per port, run against every implementation
+# of it (see docs/architecture.md §5.3 and §9.2).
+#
+# The contract bodies themselves (port_clock_contract.c, port_log_contract.c,
+# port_i2c_contract.c, port_sensor_contract.c) are NOT compiled directly by
 # this file. They come from cmake/sources_contract.cmake, the same list
 # apps/firmware_esp32/components/hac_contract/CMakeLists.txt includes, so the
-# object code exercised here is exactly what runs at device boot -- see
-# docs/adr/0005-contract-suites-run-at-boot.md. This CMakeLists.txt supplies
-# only the host runners that adapt the shared bodies to HAC_CHECK.
+# object code exercised here is exactly what the device runs -- at boot for
+# port_clock and port_log (docs/adr/0005-contract-suites-run-at-boot.md), in
+# the test app for port_i2c (docs/adr/0009, 0011). This CMakeLists.txt
+# supplies only the host runners that adapt the shared bodies to HAC_CHECK.
 include(${HAC_ROOT}/cmake/sources_contract.cmake)
 
 add_library(hac_contract_bodies STATIC ${HAC_CONTRACT_SOURCES})
@@ -44,3 +37,15 @@ target_link_libraries(test_port_i2c_contract PRIVATE
     hac_contract_bodies hac_platform_host hac_test_support)
 hac_apply_warnings(test_port_i2c_contract)
 add_test(NAME test_port_i2c_contract COMMAND test_port_i2c_contract)
+
+# port_sensor: the shared body against replay_source and against
+# scd4x_source over the fake bus and its SCD41 model, plus broken wrappers
+# that prove the body catches what it claims to.
+add_executable(test_port_sensor_contract test_port_sensor_contract.c)
+target_link_libraries(test_port_sensor_contract PRIVATE
+    hac_contract_bodies hac_drivers hac_platform_host hac_test_support)
+target_compile_definitions(test_port_sensor_contract PRIVATE
+    HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+)
+hac_apply_warnings(test_port_sensor_contract)
+add_test(NAME test_port_sensor_contract COMMAND test_port_sensor_contract)

@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// port_i2c on the host: a bus with register-level device models on it
-// (docs/architecture.md 5.4, the "fake-i2c" substitution point). Drivers in
-// drivers/ run against this on a PC exactly as they run against
-// platform/esp32_t5s3/adp_i2c.c on the board, and
-// tests/contract/port_i2c_contract.c holds the two to the same rules.
+// port_i2c on the host: a bus with device models on it (docs/architecture.md
+// 5.4, the "fake-i2c" substitution point). Drivers in drivers/ run against
+// this on a PC exactly as they run against platform/esp32_t5s3/adp_i2c.c on
+// the board, and tests/contract/port_i2c_contract.c holds the two to the same
+// rules.
 //
-// The device model is the commonest I2C register file -- the PCF8563, the
-// BME68x and most sensors work this way: the first byte of a write sets the
-// register pointer, every further byte is stored at the pointer, and reads
-// return bytes from the pointer; the pointer advances after each byte and
-// wraps at 256. Devices with a different protocol (Sensirion's 16-bit
-// commands, phase 3) will need a model of their own; this one is the
-// baseline the contract and the bus scan need.
+// The bus does what a bus does -- checks the arguments ports/port_i2c.h
+// requires, routes each transfer to whatever is attached at its address, and
+// reports an address nothing is attached to as HAL_ERR_NOT_FOUND. What a
+// device does with the bytes is its model's business (i2c_models/i2c_model.h):
+//
+//   * adp_i2c_fake_add_device() attaches a register file
+//     (i2c_models/regfile_model.h), the commonest protocol and the one the
+//     contract and the bus scan need;
+//   * adp_i2c_fake_attach() attaches any other model, such as the SCD41's
+//     command interpreter (i2c_models/scd41_model.h).
+//
+// Every model call gets the virtual clock's time, so models keep time without
+// a clock of their own.
 //
 // Two bus faults can be injected, the same two the contract needs on the
 // board:
@@ -32,6 +38,8 @@
 #include <stdint.h>
 
 #include "adp_clock_virtual.h"
+#include "i2c_models/i2c_model.h"
+#include "i2c_models/regfile_model.h"
 #include "port_i2c.h"
 
 #ifdef __cplusplus
@@ -40,26 +48,32 @@ extern "C" {
 
 // Enough for every device the board carries plus phase 3's sensors, twice.
 #define ADP_I2C_FAKE_MAX_DEVICES 8u
-#define ADP_I2C_FAKE_REGISTERS 256u
 
 // The bus-clear procedure's limit (UM10204 3.1.16): a slave that has not let
 // go of SDA after nine clocks is not going to.
 #define ADP_I2C_FAKE_RECOVERY_MAX_PULSES 9u
 
+// What adp_i2c_fake_add_device() attaches.
+typedef regfile_model_t adp_i2c_fake_device_t;
+
 typedef struct {
     uint8_t addr;
-    uint8_t regs[ADP_I2C_FAKE_REGISTERS];
-    uint8_t pointer;
-} adp_i2c_fake_device_t;
+    i2c_model_t *model;  // borrowed
+} adp_i2c_fake_slot_t;
 
 typedef struct {
     port_i2c_t port;
 
-    adp_i2c_fake_device_t devices[ADP_I2C_FAKE_MAX_DEVICES];
-    size_t device_count;
+    adp_i2c_fake_slot_t slots[ADP_I2C_FAKE_MAX_DEVICES];
+    size_t slot_count;
 
-    // Advanced by a stalled transfer's deadline; may be NULL, in which case
-    // a stall fails without time passing.
+    // Storage for the register files adp_i2c_fake_add_device() attaches.
+    regfile_model_t regfiles[ADP_I2C_FAKE_MAX_DEVICES];
+    size_t regfile_count;
+
+    // Gives the models their time, and is advanced by a stalled transfer's
+    // deadline. May be NULL: models then always see 0, and a stall fails
+    // without time passing.
     adp_clock_virtual_t *clock;
 
     // Injected faults.
@@ -81,6 +95,11 @@ port_i2c_t *adp_i2c_fake_port(adp_i2c_fake_t *f);
 // Attaches a register-file device, all registers zero, pointer at 0. Returns
 // NULL if `addr` is not a 7-bit address, already taken, or the bus is full.
 adp_i2c_fake_device_t *adp_i2c_fake_add_device(adp_i2c_fake_t *f, uint8_t addr);
+
+// Attaches `model` at `addr`. The model is borrowed and must outlive the bus.
+// Returns false, attaching nothing, if `addr` is not a 7-bit address, already
+// taken, or the bus is full.
+bool adp_i2c_fake_attach(adp_i2c_fake_t *f, uint8_t addr, i2c_model_t *model);
 
 // Leaves a slave holding SDA low. It lets go after `pulses_to_release` SCL
 // clocks of a recover() -- 1 to 9 is a slave recover() can free; anything

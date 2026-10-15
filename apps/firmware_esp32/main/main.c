@@ -10,9 +10,10 @@
 // i2c_scan / i2c_recover console commands. No sensors yet -- phase 3.
 //
 // What runs: adp_log and adp_clock, the port_clock and port_log contract
-// suites run once against the real adapters (docs/adr/0005), adp_i2c and the
-// boot-time bus scan, the real display adapter (or the null one,
-// CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), optionally the
+// suites run once against the real adapters (docs/adr/0005), the real display
+// adapter (or the null one, CONFIG_HAC_DISPLAY_NULL -- see
+// main/Kconfig.projbuild), adp_i2c and the boot-time bus scan -- after the
+// display, whose init powers the sensors (see bring_up_i2c()) -- optionally the
 // whole-panel bring-up diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
@@ -26,6 +27,8 @@
 #include <stdint.h>
 
 #include "esp_heap_caps.h"
+#include "esp_rom_sys.h"
+#include "esp_system.h"
 
 #include "adp_clock.h"
 #include "adp_display.h"
@@ -134,6 +137,62 @@ static void run_epd_test_pattern(port_display_t *display, const port_clock_t *cl
 }
 #endif  // CONFIG_HAC_EPD_TEST_PATTERN
 
+static const char *reset_reason_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON:
+            return "power_on";
+        case ESP_RST_EXT:
+            return "external_pin";
+        case ESP_RST_SW:
+            return "software";
+        case ESP_RST_PANIC:
+            return "panic";
+        case ESP_RST_INT_WDT:
+            return "interrupt_watchdog";
+        case ESP_RST_TASK_WDT:
+            return "task_watchdog";
+        case ESP_RST_WDT:
+            return "other_watchdog";
+        case ESP_RST_DEEPSLEEP:
+            return "deep_sleep";
+        case ESP_RST_BROWNOUT:
+            return "BROWNOUT";
+        case ESP_RST_SDIO:
+            return "sdio";
+        case ESP_RST_USB:
+            return "usb";
+        case ESP_RST_JTAG:
+            return "jtag";
+        case ESP_RST_EFUSE:
+            return "efuse";
+        case ESP_RST_PWR_GLITCH:
+            return "POWER_GLITCH";
+        case ESP_RST_CPU_LOCKUP:
+            return "cpu_lockup";
+        default:
+            return "unknown";
+    }
+}
+
+// Why the chip last reset, in the app's own log. The ROM prints the same as
+// its first line ("rst:0x.. (...)"), but over USB-Serial-JTAG that line is
+// usually lost: a chip reset drops the USB device, and the terminal is not
+// listening again until the ROM is long done -- every boot of the phase-3a
+// reboot loop (2026-10-15) arrived without it. `rom_code` is the ROM's own
+// number, as in that line: 1 power-on, 12 esp_restart(), 15 brownout, 21 a
+// reset from the USB host (DTR/RTS), 23 power glitch.
+static void log_reset_reason(const port_log_t *log)
+{
+    const esp_reset_reason_t reason = esp_reset_reason();
+    const log_field_t fields[] = {
+        log_str("reason", reset_reason_name(reason)),
+        log_i64("rom_code", (int64_t)esp_rom_get_reset_reason(0)),
+    };
+    port_log_write(log, LOG_LEVEL_INFO, "main", "previous reset", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+}
+
 // That memory budget is what every phase from 2b onward has to fit inside --
 // see the phase-2a plan's "Deliverable" section.
 static void log_memory_budget(const port_log_t *log)
@@ -183,11 +242,21 @@ static void run_contract_suites(const port_clock_t *clock, const port_log_t *log
 // phase 3 depends on it, and the console's i2c_recover is the way to retry
 // it.
 //
+// Called after the display adapter, not before: the sensors run from the
+// switched 3V3 that EPDiy's init raises (PWR_EN), and until then they sit on
+// the bus unpowered and hold both lines low -- the RTC and the touch
+// controller lose the bus with them, and the scan stops at its first
+// address. Seen on the board 2026-10-15 (docs/hardware/board_notes.md, open
+// item "A reboot loop when the switched 3V3 comes up"). A
+// CONFIG_HAC_DISPLAY_NULL build never raises the rail, so with the sensors
+// wired its scan finds nothing.
+//
 // The port_i2c contract suite is deliberately NOT run here, unlike port_clock
 // and port_log above: it hangs and stalls the shared bus on purpose, which
 // has no place in an ordinary boot. It runs in the test app (ADR 0011).
-static void bring_up_i2c(adp_i2c_t *i2c, const port_log_t *log)
+static void bring_up_i2c(adp_i2c_t *i2c, const port_clock_t *clock, const port_log_t *log)
 {
+    clock->delay_ms(clock, BOARD_SWITCHED_3V3_SETTLE_MS);
     const hal_status_t status = adp_i2c_init(i2c, log);
     if (status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)status)};
@@ -235,22 +304,24 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 2d: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), I2C bus, "
-                   "no sensors",
+                   "phase 3a: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), I2C bus, "
+                   "no sensor driver running",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop",
 #else
-                   "phase 2d: board bring-up -- EPDiy driving the panel, I2C bus, no sensors",
+                   "phase 3a: board bring-up -- EPDiy driving the panel, I2C bus, no sensor driver "
+                   "running",
 #endif
                    NULL, 0u);
 
+    log_reset_reason(log);
     log_memory_budget(log);
     run_contract_suites(clock, log);
-    bring_up_i2c(&s_i2c, log);
 
 #if CONFIG_HAC_DISPLAY_NULL
     const hal_status_t display_status =
         adp_display_null_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
+    bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_null_init failed", fields, 1u);
@@ -260,6 +331,7 @@ void app_main(void)
 #else
     const hal_status_t display_status =
         adp_display_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
+    bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_init failed", fields, 1u);

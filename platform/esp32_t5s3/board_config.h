@@ -74,10 +74,11 @@
 
 // --- e-paper control: 74HCT4094D shift register --------------------------
 //
-// src/ed047tc1.h:48-50 (CONFIG_IDF_TARGET_ESP32S3 block). Also drives panel
-// power (README.MD FAQ 1: "the voltage for the Molex connector is controlled
-// by Pin 13 of the 74HCT4094 ... software must call epd_poweron() to enable
-// it") and the board's one status LED -- there is no separate LED GPIO.
+// src/ed047tc1.h:48-50 (CONFIG_IDF_TARGET_ESP32S3 block). Its pin 13 (QP5,
+// PWR_EN) also switches the 3V3 rail behind the white 4-pin connector, the
+// blue LED and the panel's high-voltage boost -- which is where phase 3's
+// sensors take their power. EPDiy keeps it set, and a hardware reset clears
+// it: docs/hardware/board_notes.md "Power rails and connectors".
 //
 // CFG_STR is GPIO0, the boot-mode strapping pin: driving it is safe once the
 // system has booted, but adp_display_null.c never touches these pins at all
@@ -113,8 +114,15 @@
 // vendor's S3 examples run the bus at -- examples/demo/demo.ino:219 calls
 // Wire.begin() and nothing anywhere calls setClock(), so Arduino's default
 // applies -- and every device on the bus or planned for phase 3 supports it.
-// Raising it is a phase-3 decision, once the sensors and their wiring are on
-// the bus and can be checked at the higher rate.
+//
+// Kept in phase 3a, the decision this comment used to defer. Nothing needs
+// the speed: the SCD4x moves about a dozen bytes every 5 s. And nothing yet
+// shows the bus could take 400 kHz: the board's own pull-ups come to about
+// 20 kOhm per line (unconfirmed), the modules add theirs, of unknown value,
+// and the sensors hang on wires from the 40-pin header -- fast mode's 300 ns
+// rise time is not something to assume from that
+// (docs/hardware/board_notes.md, "Sensors on the bus"). Raise it only with
+// the pull-ups known and the rise time measured.
 #define BOARD_I2C_SCL_HZ 100000u
 
 // How long one address-only probe of a bus scan may take. A probe is ~0.1 ms
@@ -160,14 +168,47 @@
 #define BOARD_TOUCH_I2C_ADDRESS 0x5Du      // GT911, INT low at reset
 #define BOARD_TOUCH_ALT_I2C_ADDRESS 0x14u  // GT911, INT high at reset
 
+// --- sensors (phase 3) ------------------------------------------------------
+// On the bus through the 40-pin header, powered from the white 4-pin
+// connector's switched 3V3 (docs/hardware/board_notes.md, "Power rails and
+// connectors" and "Sensors on the bus").
+//
+// OBSERVED 2026-10-16 (boot scan, ELF SHA256 c59289da4...): both answer --
+// 0x62 and 0x77 found, 0x76 silent, nothing unexpected.
+//
+// SCD4x: 0x62 is also the only address the part has (Sensirion SCD4x
+// datasheet v1.7, Table 8); nothing on a module can change it.
+#define BOARD_SCD4X_I2C_ADDRESS 0x62u
+
+// BME68x: 0x76 with SDO to GND, 0x77 with SDO to VDDIO (Bosch BME680
+// datasheet, "I2C interface"), undefined with SDO left floating. This
+// CJMCU-680-style module answers at 0x77, so it straps SDO high. 0x76 stays
+// named, as the GT911's second address does: a module re-strapped, or a
+// floating SDO on another unit, would show there in the scan.
+#define BOARD_BME68X_I2C_ADDRESS 0x77u      // SDO high -- this module
+#define BOARD_BME68X_ALT_I2C_ADDRESS 0x76u  // SDO low
+
+// How long after EPDiy's init raises PWR_EN -- and with it the switched 3V3
+// the sensors run from -- before the firmware touches the bus. Until the rail
+// is up, the unpowered sensors hold both lines low, and touching the bus
+// then ended in a reboot loop (2026-10-15, docs/hardware/board_notes.md).
+// An ESTIMATE, now seen to be enough: the longest power-up time of a part on
+// that rail is the SCD4x's 30 ms (its datasheet, Table 7; the BME68x needs
+// 2 ms), and how fast the rail itself rises through Q4 and the modules'
+// regulators is not measured. The boot scan of 2026-10-16, 60 ms after the
+// display adapter's last log line, found every sensor on the first try. The
+// minimum is not measured; a scope on the rail would give it.
+#define BOARD_SWITCHED_3V3_SETTLE_MS 50u
+
 // --- button, battery -------------------------------------------------------
 // src/utilities.h:30,32 (CONFIG_IDF_TARGET_ESP32S3 block).
 //
 // There is no battery gauge IC on this board: BOARD_BATTERY_ADC_GPIO is a
 // plain resistor divider read through the ADC (examples/demo/demo.ino:331,
-// "battery_voltage = (v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0)"), and the
-// divider only carries a valid reading while EPD power is on, because it
-// hangs off the same 74HCT4094 rail (demo.ino:327-330). GPIO14 is an ADC2
+// "battery_voltage = (v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0)"). The demo
+// says the reading needs EPD power on (demo.ino:327-330), but the v2.4
+// schematic shows an unswitched divider to ground -- unconfirmed, see
+// docs/hardware/board_notes.md "Pin assignments". GPIO14 is an ADC2
 // input on the S3, which the IDF documents as unreliable while Wi-Fi is
 // active -- open item for phase 3/4 in docs/hardware/board_notes.md.
 #define BOARD_BUTTON_GPIO 21
