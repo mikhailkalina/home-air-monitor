@@ -18,6 +18,7 @@ add_library(hac_platform_host STATIC
     adp_log_console.c
     epd_model.c
     host_time.c
+    i2c_models/bme680_model.c
     i2c_models/regfile_model.c
     i2c_models/scd41_model.c
     png_write.c

@@ -149,6 +149,10 @@ home-air-monitor/
 │
 ├── drivers/                        # ★ Drivers over port_i2c — they build on a PC too
 │   ├── bme68x/
+│   │   ├── vendor/                 # Bosch BME68x Sensor API, unmodified (ADR 0016)
+│   │   ├── bme68x_hal.c            # Bosch's bus and delay callbacks over port_i2c + port_clock
+│   │   ├── bme68x_limits.h         # datasheet values, estimates, choices
+│   │   └── bme68x_source.c         # the BME68x as a sensor_source_t: T, RH, p, raw gas
 │   ├── scd4x/
 │   │   ├── vendor/                 # Sensirion embedded-i2c-scd4x, unmodified (ADR 0015)
 │   │   ├── scd4x_hal.c             # Sensirion's HAL over port_i2c + port_clock
@@ -175,7 +179,8 @@ home-air-monitor/
 │   ├── host/
 │   │   ├── adp_clock_virtual.c     # virtual clock with time acceleration
 │   │   ├── adp_i2c_fake.c          # a bus of I²C device models (for drivers)
-│   │   ├── i2c_models/             # register file; SCD41 command-level model (ADR 0015)
+│   │   ├── i2c_models/             # register file; SCD41 command-level model (ADR 0015);
+│   │   │                           #   BME680 register-level model (ADR 0016)
 │   │   ├── adp_display_sdl.c       # 960×540 window at 1:1 + e-paper emulation
 │   │   ├── adp_display_png.c       # headless: dump frames to PNG (for CI)
 │   │   ├── adp_input_sdl.c         # mouse/keyboard → touch events
@@ -439,7 +444,7 @@ struct port_i2c_s {
 | `sensor_source_t` | the whole sensor | business logic: thresholds, fault tolerance, UI, publishing |
 | `port_i2c_t` | the bus | the drivers themselves: Sensirion CRC, BME68x commands, NACK/timeout handling |
 
-Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against device models on the fake bus: a register file, or a command-level model where the protocol needs one, as the SCD41's does — ADR 0015). The second mode catches driver bugs without hardware.
+Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against device models on the fake bus: a register file, or a command-level model where the protocol needs one, as the SCD41's does — ADR 0015; the BME680's is a register map whose raw values invert the datasheet's compensation — ADR 0016). The second mode catches driver bugs without hardware.
 
 The sketch above is the shape; the precise promises — what a zero-length transfer does, how `to_ms` is honoured, which error points at the device and which at the bus — are written in `ports/port_i2c.h` and checked by `tests/contract/port_i2c_contract.c` against both implementations (ADR 0011).
 

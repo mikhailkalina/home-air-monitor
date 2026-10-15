@@ -181,6 +181,24 @@ static void build_field(vm_field_view_t *out, const measurement_f32_t *m, const 
     }
 }
 
+// Raw gas resistance, in kOhm, for the IAQ cell (view_model.h). Only the
+// number is rescaled; status, time and source are the measurement's own.
+static void build_gas_field(vm_field_view_t *out, const measurement_f32_t *gas)
+{
+    measurement_f32_t kohm = *gas;
+    kohm.value = gas->value / VM_OHM_PER_KOHM;
+    const unsigned decimals = (kohm.value < VM_GAS_ONE_DECIMAL_BELOW_KOHM) ? 1u : 0u;
+    build_field(out, &kohm, "Gas resistance", "kOhm", decimals);
+}
+
+// What the IAQ cell shows: IAQ wherever something provides it, else raw gas
+// resistance if something provides that (view_model.h, "The IAQ cell").
+static bool iaq_cell_shows_gas(const air_reading_t *reading)
+{
+    return reading->iaq.status == VAL_UNAVAILABLE &&
+           reading->gas_resistance_ohm.status != VAL_UNAVAILABLE;
+}
+
 // --- CO2 band --------------------------------------------------------------
 
 vm_level_t view_model_co2_level(const measurement_f32_t *co2)
@@ -297,8 +315,23 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
     build_field(&vm->fields[VM_FIELD_TEMPERATURE], &reading->temperature_c, "Temperature", "C", 1u);
     build_field(&vm->fields[VM_FIELD_HUMIDITY], &reading->humidity_rh, "Humidity", "%", 0u);
     build_field(&vm->fields[VM_FIELD_PRESSURE], &reading->pressure_hpa, "Pressure", "hPa", 0u);
-    build_field(&vm->fields[VM_FIELD_IAQ], &reading->iaq, "IAQ", "", 0u);
+    const bool gas_shown = iaq_cell_shows_gas(reading);
+    if (gas_shown) {
+        build_gas_field(&vm->fields[VM_FIELD_IAQ], &reading->gas_resistance_ohm);
+    } else {
+        build_field(&vm->fields[VM_FIELD_IAQ], &reading->iaq, "IAQ", "", 0u);
+    }
     build_field(&vm->battery, &reading->battery_percent, "Battery", "%", 0u);
+
+    // The measurement behind each cell, so that the "updated" line and the
+    // fault counts below follow the screen.
+    const measurement_f32_t *shown[VM_FIELD_COUNT] = {
+        [VM_FIELD_CO2] = &reading->co2_ppm,
+        [VM_FIELD_TEMPERATURE] = &reading->temperature_c,
+        [VM_FIELD_HUMIDITY] = &reading->humidity_rh,
+        [VM_FIELD_PRESSURE] = &reading->pressure_hpa,
+        [VM_FIELD_IAQ] = gas_shown ? &reading->gas_resistance_ohm : &reading->iaq,
+    };
 
     vm->co2_level = view_model_co2_level(&reading->co2_ppm);
     vm->co2_level_text = view_model_level_text(vm->co2_level);
@@ -314,30 +347,7 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
         if (!vm->fields[i].has_value) {
             continue;
         }
-        const measurement_f32_t *m = NULL;
-        switch ((vm_field_t)i) {
-            case VM_FIELD_CO2:
-                m = &reading->co2_ppm;
-                break;
-            case VM_FIELD_TEMPERATURE:
-                m = &reading->temperature_c;
-                break;
-            case VM_FIELD_HUMIDITY:
-                m = &reading->humidity_rh;
-                break;
-            case VM_FIELD_PRESSURE:
-                m = &reading->pressure_hpa;
-                break;
-            case VM_FIELD_IAQ:
-                m = &reading->iaq;
-                break;
-            case VM_FIELD_COUNT:
-                break;
-        }
-        if (m == NULL) {
-            continue;
-        }
-        const uint64_t age = measurement_age_ms(m, now_ms);
+        const uint64_t age = measurement_age_ms(shown[i], now_ms);
         if (age < youngest_ms) {
             youngest_ms = age;
         }
@@ -351,11 +361,9 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
         format_age(vm->updated_text, sizeof(vm->updated_text), youngest_ms);
     }
 
-    count_status(&reading->co2_ppm, &vm->error_count, &vm->stale_count, &vm->warmup_count);
-    count_status(&reading->temperature_c, &vm->error_count, &vm->stale_count, &vm->warmup_count);
-    count_status(&reading->humidity_rh, &vm->error_count, &vm->stale_count, &vm->warmup_count);
-    count_status(&reading->pressure_hpa, &vm->error_count, &vm->stale_count, &vm->warmup_count);
-    count_status(&reading->iaq, &vm->error_count, &vm->stale_count, &vm->warmup_count);
+    for (size_t i = 0u; i < (size_t)VM_FIELD_COUNT; ++i) {
+        count_status(shown[i], &vm->error_count, &vm->stale_count, &vm->warmup_count);
+    }
 
     build_status_text(vm);
 }

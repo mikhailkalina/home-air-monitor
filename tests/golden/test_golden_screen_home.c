@@ -3,13 +3,15 @@
 // The home screen at the panel's real 960x540, byte-compared against
 // tests/golden/screen_home_*.bin.
 //
-// Three readings, chosen because they are the three the requirements care
-// about and the three a rendering change is most likely to break:
+// Four readings, chosen because they are the four the requirements care
+// about and the four a rendering change is most likely to break:
 //
 //   normal   every quantity fresh -- the picture the device shows most of the time
 //   error    one sensor down, requirements 15.1: the fault must be on the glass
 //   warmup   a cold start, requirements 13.1: no garbage numbers before the
 //            SCD41 and the BME68x have settled
+//   no_bsec  no BSEC linked, requirements 17.2: raw gas resistance in the IAQ
+//            cell, under its own name
 //
 // Run with UPDATE_GOLDEN=1 to adopt an intentional rendering change:
 //   UPDATE_GOLDEN=1 ./build/host-debug/tests/golden/test_golden_screen_home
@@ -85,6 +87,18 @@ static void one_sensor_in_error(void)
     render_and_check(&r, "screen_home_sensor_error");
 }
 
+static void without_bsec(void)
+{
+    air_reading_t r = base_reading();
+
+    // The device as phase 3b builds it: no BSEC, so nothing provides IAQ,
+    // and the BME68x's raw gas resistance takes its cell
+    // (docs/requirements.md 17.2).
+    r.iaq = measurement_unavailable();
+    r.gas_resistance_ohm = measurement_ok(182000.0f, SAMPLE_TS_MS, 2u);
+    render_and_check(&r, "screen_home_no_bsec");
+}
+
 static void everything_warming_up(void)
 {
     air_reading_t r;
@@ -106,5 +120,6 @@ int main(void)
     HAC_RUN(normal_reading);
     HAC_RUN(one_sensor_in_error);
     HAC_RUN(everything_warming_up);
+    HAC_RUN(without_bsec);
     return hac_test_summary();
 }

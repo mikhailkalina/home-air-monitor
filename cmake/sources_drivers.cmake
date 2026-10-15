@@ -25,6 +25,8 @@ if(NOT DEFINED HAC_ROOT)
 endif()
 
 set(HAC_DRIVERS_SOURCES
+    ${HAC_ROOT}/drivers/bme68x/bme68x_hal.c
+    ${HAC_ROOT}/drivers/bme68x/bme68x_source.c
     ${HAC_ROOT}/drivers/scd4x/scd4x_hal.c
     ${HAC_ROOT}/drivers/scd4x/scd4x_source.c
 )
@@ -32,19 +34,25 @@ set(HAC_DRIVERS_SOURCES
 # Drivers resolve each other's headers as "scd4x/scd4x_source.h".
 set(HAC_DRIVERS_INCLUDES
     ${HAC_ROOT}/drivers
+    ${HAC_ROOT}/drivers/bme68x
     ${HAC_ROOT}/drivers/scd4x
 )
 
 # Sensirion embedded-i2c-scd4x 1.2.0 (drivers/scd4x/vendor/README.md). Its
 # sensirion_i2c_hal.c, a template of TODOs, is not vendored:
 # drivers/scd4x/scd4x_hal.c implements that header.
+#
+# Bosch BME68x Sensor API v4.4.8 (drivers/bme68x/vendor/README.md). Bosch
+# ships no HAL: drivers/bme68x/bme68x_hal.c supplies its callbacks.
 set(HAC_DRIVERS_VENDOR_SOURCES
+    ${HAC_ROOT}/drivers/bme68x/vendor/bme68x.c
     ${HAC_ROOT}/drivers/scd4x/vendor/scd4x_i2c.c
     ${HAC_ROOT}/drivers/scd4x/vendor/sensirion_common.c
     ${HAC_ROOT}/drivers/scd4x/vendor/sensirion_i2c.c
 )
 
 set(HAC_DRIVERS_VENDOR_INCLUDES
+    ${HAC_ROOT}/drivers/bme68x/vendor
     ${HAC_ROOT}/drivers/scd4x/vendor
 )
 
@@ -55,7 +63,9 @@ set(HAC_DRIVERS_VENDOR_INCLUDES
 # prototype: -Wstrict-prototypes at the declaration, and
 # -Wmissing-prototypes at the definition, which then has none before it (the
 # second is a host-only flag; on ESP-IDF the option is merely redundant).
-# And its framing code narrows integers implicitly (-Wconversion).
+# And its framing code narrows integers implicitly (-Wconversion). Bosch
+# v4.4.8 trips only the last: its bit-field macros (BME68X_SET_BITS and
+# friends) narrow int to uint8_t and convert signed to unsigned.
 set(HAC_DRIVERS_VENDOR_COMPILE_OPTIONS
     -Wno-conversion
     -Wno-strict-prototypes

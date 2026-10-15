@@ -17,6 +17,16 @@
 //   VAL_ERROR        "ERR"                     black,       cross mark
 //   VAL_WARMUP       "warm"                    light grey,  hourglass mark
 //   VAL_UNAVAILABLE  "n/a"                     lighter grey, dashes mark
+//
+// The IAQ cell. An index of air quality needs Bosch's BSEC library, which is
+// not linked (THIRD_PARTY_NOTICES.md); without it the BME68x still measures
+// its gas sensor's raw resistance, which docs/requirements.md 17.2 asks to
+// be shown in its place. So when IAQ is VAL_UNAVAILABLE -- nothing provides
+// it -- and gas resistance is anything else, the cell shows gas resistance,
+// in kOhm, under its own label and never as IAQ (13.3), with the gas's own
+// status treatment. An IAQ in any other status keeps the cell: warming up
+// or failing, it is provided. The "updated" line and the fault counts follow
+// whichever the cell shows.
 
 #ifndef HAC_CORE_UI_VIEW_MODEL_H
 #define HAC_CORE_UI_VIEW_MODEL_H
@@ -50,6 +60,14 @@ extern "C" {
 #define VM_CO2_MODERATE_MAX_PPM 1200.0f
 #define VM_CO2_POOR_MAX_PPM 2000.0f
 
+// Gas resistance in the IAQ cell is shown in kOhm: with one decimal below
+// 10 kOhm, where a whole number would drop most of what is left of the
+// signal, and whole numbers from there up. The switch sits at 9.95, so the
+// decision follows how the value rounds: 9.94 reads "9.9", 9.96 reads "10",
+// never "10.0".
+#define VM_OHM_PER_KOHM 1000.0f
+#define VM_GAS_ONE_DECIMAL_BELOW_KOHM 9.95f
+
 // The quantities the MVP screen shows (docs/requirements.md 14.4). Battery is
 // carried separately: it belongs to the status bar, not the reading grid.
 typedef enum {
@@ -80,8 +98,8 @@ typedef enum {
 } vm_level_t;
 
 typedef struct {
-    const char *label;  // "CO2", "Temperature", ...
-    const char *unit;   // "ppm", "C", "%", "hPa", ""; never NULL
+    const char *label;  // "CO2", "Temperature", ..., "IAQ" or "Gas resistance"
+    const char *unit;   // "ppm", "C", "%", "hPa", "kOhm", ""; never NULL
     char text[VM_TEXT_MAX];
     value_status_t status;
     vm_mark_t mark;

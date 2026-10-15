@@ -365,6 +365,16 @@ number, the variant and `found_measuring` -- whether the sensor was still
 measuring, which after a reset that dropped `PWR_EN` it cannot be. Nothing in
 the firmware runs it yet.
 
+**How the BME68x driver starts** (`drivers/bme68x/bme68x_source.h`,
+`docs/adr/0016-bme68x-driver.md`, phase 3b): it waits the sensor's 2 ms
+start-up time first, for the same reason; Bosch's `bme68x_init()` then
+soft-resets the sensor whatever the reset was, so one a software reset left
+configured or measuring starts from its power-on state; it checks the sensor
+is asleep before anything goes through Bosch's unbounded wait for sleep mode;
+and it logs the chip id, the variant (`BME680`, `BME688` or `unknown`, from
+register `0xF0`) and the measurement time, 143 ms by Bosch's estimate with
+the 100 ms heater. Nothing in the firmware runs it yet either.
+
 **Checks still to do on the board, in order:**
 
 1. ~~`restart` at the console, watching the blue LED.~~ Done 2026-10-16:
@@ -373,6 +383,13 @@ the firmware runs it yet.
 3. Run `scd4x_source` on the board, once a composition does: its first log
    line names the variant, and its first minutes of readings replace the
    warm-up estimate (`SCD4X_WARMUP_MS`).
+4. Run `bme68x_source` beside it: its first log line names the variant
+   (open item "Which sensor variants are fitted"); its first readings say
+   whether the gas is valid and heater-stable with the 100 ms profile, and
+   whether a measurement is ever later than Bosch's 143 ms; and its first
+   hour of readings, beside the SCD41's temperature and a reference
+   thermometer, gives the three estimates of the open item "The BME68x's
+   estimates" their first measured values.
 
 ## Per-row signal sequence (STH, CKH, CKV, LE)
 
@@ -629,8 +646,9 @@ layout settles, not before.
       was measuring is still measuring when the firmware comes back, and a
       BME68x keeps whatever configuration it had. Both drivers must reset or
       stop their part at init rather than assume a power-on state --
-      `scd4x_source` does (stop, reinit), and phase 3b's BME68x driver must
-      too (its soft reset). It matches the reading below. Still only read,
+      `scd4x_source` does (stop, reinit), and so does `bme68x_source` since
+      phase 3b (Bosch's soft reset, then a check that the sensor is asleep;
+      on the host only). It matches the reading below. Still only read,
       not seen: the panic and task/interrupt-watchdog reboots, which go
       through the same `esp_restart_noos()`; the RTC watchdog and brownout,
       which reset the whole digital system.
@@ -724,6 +742,25 @@ layout settles, not before.
       **SCD4x side done in phase 3a, on the host:** `scd4x_source`'s init
       logs `variant=SCD40|SCD41|SCD43|unknown` and the serial number, and
       refuses single-shot mode on an SCD40 (`docs/adr/0015-scd4x-driver.md`).
+      **BME68x side done in phase 3b, on the host:** `bme68x_source`'s init
+      logs `chip_id=0x61 variant=BME680|BME688|unknown variant_id=0x..`;
+      Bosch's code handles both parts, so the driver does not refuse either
+      (`docs/adr/0016-bme68x-driver.md`). The host's model is a BME680 only:
+      if the board says BME688, the driver's gas path (its own registers and
+      formula) has met no model, and its first readings are the check.
+- [ ] **The BME68x's estimates (phase 3c).** Five numbers in phase 3b's
+      driver and model are not measured, each marked at its definition:
+      the heater profile, 300 C for 100 ms (the datasheet's quick-start
+      example, `HAC_BME68X_HEATER_*`); the gas burn-in, 300 s of `warm`
+      (Pimoroni's example, `HAC_BME68X_GAS_BURN_IN_MS`); the self-heating
+      offset, 0.3 C (a back-of-envelope, `HAC_BME68X_SELF_HEATING_C`); the
+      heater's ambient temperature, 25 C (`HAC_BME68X_HEATER_AMBIENT_C`); and
+      the conversion time, which no datasheet gives and which the model
+      takes from Bosch's own estimate, so no host test can show it wrong.
+      The calibration the host model uses is a published one, not this
+      unit's: read this unit's out of the driver's `dev.calib` once it runs,
+      and give the model those. With BSEC linked, its own heater profile and
+      heat compensation replace the first and third.
 - [x] **Which addresses the sensors answer at.** **Resolved 2026-10-16**
       by the boot scan: the SCD4x at `0x62`, the BME68x at `0x77` (SDO high
       on this module), nothing at `0x76`, nothing unexpected ("Sensors on
