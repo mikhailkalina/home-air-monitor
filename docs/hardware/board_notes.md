@@ -303,6 +303,60 @@ modules from the seller's photographs:
   sells a purple SCD40, which has no single-shot mode and a narrower range,
   so the variant is read back from the sensor rather than assumed.
 
+## Sensors on the bus
+
+**Phase 3a, 2026-10-14: what the firmware expects, not yet what a scan has
+seen** -- the sensors are not wired yet. `platform/esp32_t5s3/board_config.h`
+names three addresses, and the console's `i2c_scan` (and the boot scan) lists
+all three beside what answers:
+
+| Device | Address | Where it comes from | Scan row |
+|---|---|---|---|
+| SCD4x | `0x62` | the part's only address (Sensirion SCD4x datasheet v1.7, Table 8); nothing on a module changes it | required |
+| BME68x, SDO high | `0x77` | Bosch BME680 datasheet, "I2C interface"; the more common strap on CJMCU-680-style breakouts -- **a guess** for this module | required |
+| BME68x, SDO low | `0x76` | the same; kept named, as the GT911's second address is | candidate |
+
+Until the sensors are wired, the scan prints two `MISSING` rows and
+`I2C_SCAN_RESULT ... missing=2`; that is expected. Once they are, correct
+`board_config.h` from what answers. A BME68x whose SDO is left floating has
+no defined address and may move between power-ups.
+
+**Bus speed: 100 kHz stays** (decided in phase 3a, the decision
+`BOARD_I2C_SCL_HZ`'s comment used to defer). Nothing needs more: the SCD4x
+moves about a dozen bytes every 5 s. And nothing yet shows the bus could take
+fast mode's 300 ns rise time: the board's pull-ups come to about 20 kOhm per
+line (the open item on pull-ups below, unconfirmed), each module adds its own
+to the switched `3V3`, and the sensors hang on wires from the 40-pin header.
+An estimate, not a measurement: 20 kOhm in parallel with a module's 10 kOhm
+(a common value, unconfirmed here) and 100 pF of wiring rise in about
+0.6 us -- inside standard mode's 1000 ns, twice fast mode's limit. Raise the
+rate only with the pull-ups read off the modules and the rise time seen on a
+scope.
+
+**How the SCD4x driver starts, given the power facts above**
+(`drivers/scd4x/scd4x_source.h`, `docs/adr/0015-scd4x-driver.md`): it waits
+the sensor's 30 ms power-up time first, because the switched `3V3` may have
+risen only when EPDiy's init wrote the register; it stops periodic
+measurement and reinitialises whatever the reset was; and it logs the serial
+number, the variant and `found_measuring` -- whether the sensor was still
+measuring, which after a reset that dropped `PWR_EN` it cannot be. Nothing in
+the firmware runs it yet.
+
+**Checks still to do on the board, in order:**
+
+1. Flash the phase-3a firmware and type `restart` at the console, watching
+   the blue LED: dark for a moment means a software reset drops the switched
+   `3V3` as RST does; lit throughout means it does not, and the SCD41 will be
+   found still measuring after such a reboot. The boot log's reset reason
+   should read `rst:0xc (RTC_SW_CPU_RST)`. Record the answer in the open item
+   "What a software reset does to `PWR_EN`" below, which also says why
+   "lit throughout" is the likelier outcome.
+2. Wire the sensors -- power from `P5`, the bus from the 40-pin header -- and
+   scan. Record the addresses here.
+3. Run `scd4x_source` on the board, once a composition does: its first log
+   line names the variant, and its first minutes of readings replace the
+   warm-up estimate (`SCD4X_WARMUP_MS`).
+
 ## Per-row signal sequence (STH, CKH, CKV, LE)
 
 **Established 2026-09-07, phase 2b.** Recorded here as a wiring fact in the
@@ -547,16 +601,47 @@ layout settles, not before.
       is 10 kOhm in series, each line sees about 20 kOhm. With the board
       unpowered, SDA to SCL (40-pin header pins 3 and 5) reads about 20 kOhm
       if `N6` and `N7` are fitted. The sensor modules add their own
-      pull-ups, to the switched `3V3`.
+      pull-ups, to the switched `3V3`. Phase 3a kept the bus at 100 kHz
+      until these values and a rise time are known ("Sensors on the bus").
 - [ ] **What a software reset does to `PWR_EN`.** Pressing RST drops the
       switched `3V3` and with it the sensors' power ("Power rails and
       connectors", "Measured"). Whether a panic, the watchdog or
       `esp_restart()` does the same is not observed, and it decides whether
       the SCD41 is found idle or still measuring after such a reboot. A
       console `restart` command and an eye on the blue LED answer it.
+      **The command exists since phase 3a** (`esp_restart()`, in
+      `apps/firmware_esp32/main/console.c`); "Sensors on the bus" says what
+      to watch. **Read from ESP-IDF 5.5, not observed:** `esp_restart()` --
+      and the reboot after a panic or a task/interrupt watchdog, which goes
+      through the same `esp_restart_noos()` -- resets the CPUs only
+      (`esp_rom_software_reset_cpu()`; reset reason 12, `RTC_SW_CPU_RST`),
+      plus a list of peripherals in
+      `components/esp_system/port/soc/esp32s3/system_internal.c` that does
+      not include GPIO. So GPIO0/12/13 may keep their levels across it, and
+      with them the 74HCT4094 and `PWR_EN`: the rail would stay up and the
+      SCD41 keep measuring -- unlike RST, a chip reset. A reset that reaches
+      the whole digital system (the RTC watchdog, brownout) is another case
+      again. Once a composition runs `scd4x_source`, its `found_measuring`
+      log field answers the same question from the sensor's side. The driver
+      stops periodic measurement at init either way.
 - [ ] **Which sensor variants are fitted.** BME680 or BME688 (the BME68x's
       `variant_id` register), and SCD40 or SCD41 (the seller lists both;
       read the variant back): the drivers log both, phase 3a/3b.
+      **SCD4x side done in phase 3a, on the host:** `scd4x_source`'s init
+      logs `variant=SCD40|SCD41|SCD43|unknown` and the serial number, and
+      refuses single-shot mode on an SCD40 (`docs/adr/0015-scd4x-driver.md`).
+- [ ] **Which addresses the sensors answer at.** Expected `0x62` for the
+      SCD4x and `0x77` or `0x76` for the BME68x ("Sensors on the bus"); no
+      scan has seen them yet.
+- [ ] **What the SCD41 does where its datasheet is silent.** The host model
+      (`platform/host/i2c_models/scd41_model.h`) assumes, and the driver relies
+      on, three behaviours the datasheet does not state: the address is
+      refused while a command executes; a command not allowed in the current
+      state is refused with a data NACK; a reading still buffered when
+      measurement stops is discarded. The first matters most -- it is how
+      `scd4x_source` tells "busy" from "gone". All three show in the first
+      logs of the driver on the board (and in the `i2c.master` driver's own
+      NACK lines); correct the model if the sensor disagrees.
 - [ ] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
       timestamps, or is only used for scheduling.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings

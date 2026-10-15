@@ -67,15 +67,19 @@ The core must be able to serialize its state before sleeping and restore it afte
 1. `core/` depends **only** on `ports/*.h` and a subset of the C standard library (`stdint`, `stdbool`, `string`, `math`). Forbidden: `stdio.h`, `time.h`, `malloc`, `esp_*`, `freertos/*`, `SDL*`.
 2. `ports/` is headers only. Not a single `.c` file. No dependencies at all.
 3. `platform/<name>/` implements the ports. It contains no business logic and calls no core functions other than publishing events.
-4. `drivers/` (BME68x, SCD4x, GT911, EPD) depend only on `port_i2c.h` and `port_clock.h`, and therefore build and test on a PC.
+4. `drivers/` (BME68x, SCD4x, GT911, EPD) depend only on `ports/*.h` — the bus, the clock, the log, and `port_sensor.h` with the domain types it brings (`core/domain/measurement.h`) — and therefore build and test on a PC. A driver's `sensor_source_t` wrapper lives beside it in `drivers/`, not in `platform/` (ADR 0014). Vendored code under `drivers/*/vendor/` keeps its own includes.
 5. `apps/<name>/` is the only place where **composition** (wiring) happens: adapters are constructed and handed to the core.
 
-Enforced in CI by a simple grep rule:
+Enforced in CI by a simple grep rule, in `scripts/check_sources.sh`:
 
 ```bash
 # the core must know nothing about platforms
 ! grep -rEn '#include\s+[<"](esp_|freertos/|driver/|SDL|stdio\.h|time\.h)' core/
 ```
+
+and its counterpart for first-party code under `drivers/` (outside
+`vendor/`): no `esp_*`, `freertos/`, `driver/`, `SDL` or `stdio.h`, with a
+fixture test that asserts the exact violation set.
 
 ### 2.2 Why C11 rather than C++
 
@@ -95,7 +99,8 @@ home-air-monitor/
 ├── CMakePresets.json               # host-debug, host-asan, host-release, ci
 ├── cmake/
 │   ├── sources_core.cmake          # THE source list for the core, shared by host and IDF
-│   ├── sources_drivers.cmake
+│   ├── sources_drivers.cmake       # the same for drivers/, vendored code listed apart
+│   ├── sources_contract.cmake      # the shared contract bodies of tests/contract/
 │   ├── image_gen.cmake             # PNG -> C at build time, shared by host and IDF
 │   └── warnings.cmake              # -Wall -Wextra -Werror -Wconversion ...
 │
@@ -145,6 +150,10 @@ home-air-monitor/
 ├── drivers/                        # ★ Drivers over port_i2c — they build on a PC too
 │   ├── bme68x/
 │   ├── scd4x/
+│   │   ├── vendor/                 # Sensirion embedded-i2c-scd4x, unmodified (ADR 0015)
+│   │   ├── scd4x_hal.c             # Sensirion's HAL over port_i2c + port_clock
+│   │   ├── scd4x_limits.h          # datasheet values, estimates, choices
+│   │   └── scd4x_source.c          # the SCD4x as a sensor_source_t (ADR 0014)
 │   ├── gt911/
 │   ├── epd_ed047tc1/
 │   └── bq27220/
@@ -160,12 +169,13 @@ home-air-monitor/
 │   │   ├── adp_telemetry_mqtt.c    # esp-mqtt
 │   │   ├── adp_storage.c           # NVS + LittleFS
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
-│   │   ├── adp_log.c               # ESP_LOG
-│   │   └── adp_sensors.c           # wraps drivers as sensor_source_t
+│   │   └── adp_log.c               # ESP_LOG
+│   │                               # (no adp_sensors.c: the wrappers are in drivers/, ADR 0014)
 │   │
 │   ├── host/
 │   │   ├── adp_clock_virtual.c     # virtual clock with time acceleration
-│   │   ├── adp_i2c_fake.c          # register-level model of I²C devices (for drivers)
+│   │   ├── adp_i2c_fake.c          # a bus of I²C device models (for drivers)
+│   │   ├── i2c_models/             # register file; SCD41 command-level model (ADR 0015)
 │   │   ├── adp_display_sdl.c       # 960×540 window at 1:1 + e-paper emulation
 │   │   ├── adp_display_png.c       # headless: dump frames to PNG (for CI)
 │   │   ├── adp_input_sdl.c         # mouse/keyboard → touch events
@@ -429,7 +439,7 @@ struct port_i2c_s {
 | `sensor_source_t` | the whole sensor | business logic: thresholds, fault tolerance, UI, publishing |
 | `port_i2c_t` | the bus | the drivers themselves: Sensirion CRC, BME68x commands, NACK/timeout handling |
 
-Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against a register-level device model). The second mode catches driver bugs without hardware.
+Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against device models on the fake bus: a register file, or a command-level model where the protocol needs one, as the SCD41's does — ADR 0015). The second mode catches driver bugs without hardware.
 
 The sketch above is the shape; the precise promises — what a zero-length transfer does, how `to_ms` is honoured, which error points at the device and which at the bus — are written in `ports/port_i2c.h` and checked by `tests/contract/port_i2c_contract.c` against both implementations (ADR 0011).
 

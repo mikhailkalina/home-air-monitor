@@ -12,7 +12,7 @@ whenever a dependency is added or removed.
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
-| Sensirion SCD4x embedded driver | — | BSD-3-Clause | `drivers/scd4x` | Vendored |
+| Sensirion `embedded-i2c-scd4x` (tag `1.2.0`, commit `d953712213957544b5429542381fd7629cbb3786`) | 1.2.0 | BSD-3-Clause | `drivers/scd4x/scd4x_source.c` (through `drivers/scd4x/scd4x_hal.c`) | Yes — vendored unmodified in `drivers/scd4x/vendor/`; see below |
 | Bosch BME68x Sensor API | — | BSD-3-Clause | `drivers/bme68x` | Vendored |
 | Bosch BSEC2 headers & config | 2.x | BSD-3-Clause | `drivers/bme68x/bsec` | Headers only |
 | Bosch BSEC2 library binary (`libalgobsec.a`) | 2.x | **Proprietary — Bosch Sensortec license agreement** | optional IAQ backend | **No — see below** |
@@ -21,6 +21,29 @@ whenever a dependency is added or removed.
 | Unity | 2.x | MIT | `tests/` | Vendored |
 | DejaVu Sans | 2.35 | Bitstream Vera (permissive; see below) | `core/ui/fonts/font_dejavu_sans_*.generated.c` | Vendored (source TTF under `third_party/fonts/dejavu-sans/`) |
 | Pillow | any recent | MIT-CMU (HPND) | `apps/tools/image_gen/image_gen.py prepare`, `apps/tools/font_gen/generate_fonts.py` — developer tools run by hand | No — not linked into anything; see below |
+
+## Notes on Sensirion's SCD4x driver
+
+Phase 3a (`docs/adr/0015-scd4x-driver.md`) vendors Sensirion's own C driver
+for the SCD4x CO2 sensors, `Sensirion/embedded-i2c-scd4x`, at tag `1.2.0`
+(commit `d953712213957544b5429542381fd7629cbb3786`, 2025-07-01), into
+`drivers/scd4x/vendor/`: `scd4x_i2c.c/.h`, `sensirion_common.c/.h`,
+`sensirion_config.h`, `sensirion_i2c.c/.h` and `sensirion_i2c_hal.h`, each
+byte-for-byte as upstream, with upstream's `LICENSE`. Its HAL template is not
+vendored; `drivers/scd4x/scd4x_hal.c`, this project's own (Apache-2.0),
+implements the header. `drivers/scd4x/vendor/README.md` lists the files and
+their SHA-256 hashes.
+
+The licence is **BSD-3-Clause** (Copyright (c) 2025, Sensirion AG; some
+files carry 2018 and 2019 notices of the same terms), which was checked in
+the repository at that commit. It is permissive: no copyleft term reaches the
+rest of the work. It adds two obligations. Source redistribution -- this
+repository -- must keep the notices, which the vendored files and `LICENSE`
+do untouched. Binary redistribution -- a firmware image given to someone
+else -- must reproduce the copyright notice, the conditions and the
+disclaimer in its documentation, as the console's linenoise and argtable3
+already require (below). The third clause forbids using Sensirion's name to
+promote this project.
 
 ## Notes on the console's linenoise and argtable3
 

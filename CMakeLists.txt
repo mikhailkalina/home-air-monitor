@@ -5,8 +5,9 @@
 # The ESP-IDF build lives in apps/firmware_esp32 and is driven by idf.py; it
 # reuses cmake/sources_core.cmake rather than repeating the file list.
 #
-# Phase 2c adds the display and input adapters and apps/simulator. drivers/
-# arrives with its own phase (see docs/architecture.md §10).
+# drivers/ arrived in phase 3a (docs/adr/0014-sensor-sources-live-in-drivers.md)
+# and builds from cmake/sources_drivers.cmake, the same list the firmware's
+# hac_drivers component uses.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -38,6 +39,19 @@ find_library(HAC_LIBM m)
 if(HAC_LIBM)
     target_link_libraries(hac_core PUBLIC ${HAC_LIBM})
 endif()
+
+# Drivers over port_i2c, with the vendored code they wrap. One library, as in
+# the ESP-IDF component: the vendor's code and the HAL glue call each other.
+include(cmake/sources_drivers.cmake)
+add_library(hac_drivers STATIC ${HAC_DRIVERS_SOURCES} ${HAC_DRIVERS_VENDOR_SOURCES})
+target_include_directories(hac_drivers PUBLIC ${HAC_DRIVERS_INCLUDES})
+target_include_directories(hac_drivers SYSTEM PUBLIC ${HAC_DRIVERS_VENDOR_INCLUDES})
+target_link_libraries(hac_drivers PUBLIC hac_core)
+hac_apply_warnings(hac_drivers)
+# Source-file options come after the target's on the command line, so these
+# win over the -W flags hac_apply_warnings() just set.
+set_source_files_properties(${HAC_DRIVERS_VENDOR_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "${HAC_DRIVERS_VENDOR_COMPILE_OPTIONS}")
 
 add_subdirectory(platform/host)
 add_subdirectory(apps/simulator)

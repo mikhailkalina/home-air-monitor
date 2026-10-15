@@ -6,10 +6,13 @@
 #   2. core/ contains no platform-specific includes
 #   3. no pin or I2C-address literal is hardcoded outside a platform's own
 #      board_config.h
+#   4. first-party code under drivers/ includes nothing platform-specific
 #
 # Run locally with: ./scripts/check_sources.sh
-# The pin-literal check (section 3) has its own fixture-driven test:
+# The pin-literal check (section 3) and the driver-include check (section 4)
+# each have their own fixture-driven test:
 #   ./scripts/tests/test_pin_literal_check.sh
+#   ./scripts/tests/test_driver_include_check.sh
 
 set -uo pipefail
 
@@ -115,6 +118,31 @@ pin_literal_violations() {
     done
 }
 
+# Reads a NUL-delimited file list from stdin (as hac_find_source_files
+# produces) and prints one "<file>: <line>" per platform-specific include in
+# a first-party file under drivers/. Drivers build and are tested on a PC
+# (docs/adr/0014-sensor-sources-live-in-drivers.md), so ESP-IDF, FreeRTOS,
+# ESP-IDF's driver/ headers, SDL and stdio are all off limits; they reach the
+# hardware only through ports/. Vendored code under drivers/*/vendor/ never
+# arrives here: hac_find_source_files excludes vendor/ for every check.
+#
+# scripts/tests/fixtures/driver_includes/ carries one violation per rule,
+# near-misses that must stay clean, a vendored file and a platform file --
+# see scripts/tests/test_driver_include_check.sh.
+driver_include_violations() {
+    local pattern
+    pattern='#[[:space:]]*include[[:space:]]*[<"](esp_|freertos/|driver/|SDL|stdio\.h)'
+
+    local f hit line
+    while IFS= read -r -d '' f; do
+        [[ "$f" =~ (^|/)drivers/ ]] || continue
+        hit=$(grep -En "$pattern" "$f") || continue
+        while IFS= read -r line; do
+            printf '%s: %s\n' "$f" "$line"
+        done <<< "$hit"
+    done
+}
+
 run_checks() {
     local STATUS=0
 
@@ -182,13 +210,37 @@ run_checks() {
         fi
     fi
 
+    # -----------------------------------------------------------------------
+    # 4. Layering: drivers know ports/, never a platform
+    # -----------------------------------------------------------------------
+    if [ -d drivers ]; then
+        local driver_leaks=()
+        local line
+        while IFS= read -r line; do
+            driver_leaks+=("$line")
+        done < <(hac_find_source_files | driver_include_violations)
+
+        if [ ${#driver_leaks[@]} -gt 0 ]; then
+            red "Platform-specific includes found in drivers/ (outside vendor/):"
+            printf '  %s\n' "${driver_leaks[@]}"
+            echo
+            echo "A driver reaches the hardware through ports/ (port_i2c.h, port_clock.h,"
+            echo "port_log.h) and reports through port_sensor.h -- see CLAUDE.md's"
+            echo "layering rules and docs/adr/0014-sensor-sources-live-in-drivers.md."
+            STATUS=1
+        else
+            green "Driver layering: OK"
+        fi
+    fi
+
     return $STATUS
 }
 
 # Guards direct execution vs. being sourced: scripts/tests/test_pin_literal_check.sh
-# sources this file to reuse hac_populate_dirs / hac_find_source_files /
-# pin_literal_violations against its own fixture tree, without running the
-# real checks against the repository or exiting the test's own shell.
+# and test_driver_include_check.sh source this file to reuse hac_populate_dirs /
+# hac_find_source_files / pin_literal_violations / driver_include_violations
+# against their own fixture trees, without running the real checks against
+# the repository or exiting the test's own shell.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     cd "$(dirname "$0")/.."
     hac_populate_dirs "."

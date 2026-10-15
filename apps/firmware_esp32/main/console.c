@@ -6,9 +6,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "esp_console.h"
 #include "esp_err.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 
 #include "board_config.h"
@@ -17,11 +19,18 @@
 // No trailing space: esp_console_setup_prompt() appends one itself.
 #define CONSOLE_PROMPT "hac>"
 
+// How long `restart` lets its last line drain to USB-Serial-JTAG before the
+// reset cuts the port off. A line takes well under a millisecond at USB full
+// speed; usleep() sleeps whole 10 ms ticks, so this is five of them.
+#define RESTART_DRAIN_US 50000u
+
 // What board_config.h says is on the bus, each entry printed with the name of
 // the constant it came from so a surprise in the scan points straight at the
 // line to correct. The GT911's second address is a candidate: it latches one
 // of the two at power-up, and only 0x5D has been seen (board_config.h,
-// "touch panel").
+// "touch panel"). So is the BME68x's: SDO picks one of two, and which one is
+// not yet seen (board_config.h, "sensors"). The sensors are required, so a
+// board without them wired says MISSING -- which is the point of the scan.
 //
 // EXPECT() expands to the fields only; the braces stay at the use site. A
 // braced initializer as a macro body is laid out differently by clang-format
@@ -34,6 +43,9 @@ static const i2c_expected_t EXPECTED[] = {
     {EXPECT(BOARD_TOUCH_I2C_ADDRESS, I2C_EXPECT_REQUIRED, "touch: GT911, INT low at reset")},
     {EXPECT(BOARD_TOUCH_ALT_I2C_ADDRESS, I2C_EXPECT_CANDIDATE,
             "touch: GT911, if INT was high at reset")},
+    {EXPECT(BOARD_SCD4X_I2C_ADDRESS, I2C_EXPECT_REQUIRED, "co2: SCD4x, its only address")},
+    {EXPECT(BOARD_BME68X_I2C_ADDRESS, I2C_EXPECT_REQUIRED, "env: BME68x, SDO high")},
+    {EXPECT(BOARD_BME68X_ALT_I2C_ADDRESS, I2C_EXPECT_CANDIDATE, "env: BME68x, if SDO is low")},
 };
 #define EXPECTED_COUNT (sizeof EXPECTED / sizeof EXPECTED[0])
 
@@ -136,6 +148,25 @@ static int cmd_i2c_recover(void *context, int argc, char **argv)
     return status == HAL_OK ? 0 : 1;
 }
 
+// A software reset on demand: what a panic or the watchdog would do, minus
+// the fault. It exists to answer one question by eye -- does a software
+// reset drop the switched 3V3 that powers the sensors, as pressing RST does?
+// The blue LED sits on that rail (docs/hardware/board_notes.md, "Power rails
+// and connectors"), and the answer decides whether the SCD41 is found idle
+// or still measuring after such a reboot.
+static int cmd_restart(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    printf("RESTART esp_restart() now -- watch the blue LED: dark for a moment = the sensors' "
+           "3V3 drops as with RST; lit throughout = it stays up\n");
+    fflush(stdout);
+    usleep(RESTART_DRAIN_US);
+    esp_restart();
+    return 0;  // not reached
+}
+
 static esp_err_t register_commands(adp_i2c_t *bus)
 {
     const esp_console_cmd_t scan = {
@@ -150,9 +181,18 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_i2c_recover,
         .context = bus,
     };
+    const esp_console_cmd_t restart = {
+        .command = "restart",
+        .help = "Software reset (esp_restart): does the sensors' 3V3 drop, as with RST?",
+        .func_w_context = cmd_restart,
+        .context = NULL,
+    };
     esp_err_t err = esp_console_cmd_register(&scan);
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&recover);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&restart);
     }
     return err;
 }
@@ -178,7 +218,7 @@ hal_status_t console_start(adp_i2c_t *bus, const port_log_t *log)
 
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
-        log_str("commands", "help i2c_scan i2c_recover"),
+        log_str("commands", "help i2c_scan i2c_recover restart"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

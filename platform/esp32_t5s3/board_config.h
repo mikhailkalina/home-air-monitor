@@ -114,8 +114,15 @@
 // vendor's S3 examples run the bus at -- examples/demo/demo.ino:219 calls
 // Wire.begin() and nothing anywhere calls setClock(), so Arduino's default
 // applies -- and every device on the bus or planned for phase 3 supports it.
-// Raising it is a phase-3 decision, once the sensors and their wiring are on
-// the bus and can be checked at the higher rate.
+//
+// Kept in phase 3a, the decision this comment used to defer. Nothing needs
+// the speed: the SCD4x moves about a dozen bytes every 5 s. And nothing yet
+// shows the bus could take 400 kHz: the board's own pull-ups come to about
+// 20 kOhm per line (unconfirmed), the modules add theirs, of unknown value,
+// and the sensors hang on wires from the 40-pin header -- fast mode's 300 ns
+// rise time is not something to assume from that
+// (docs/hardware/board_notes.md, "Sensors on the bus"). Raise it only with
+// the pull-ups known and the rise time measured.
 #define BOARD_I2C_SCL_HZ 100000u
 
 // How long one address-only probe of a bus scan may take. A probe is ~0.1 ms
@@ -160,6 +167,28 @@
 #define BOARD_TOUCH_IRQ_GPIO 47
 #define BOARD_TOUCH_I2C_ADDRESS 0x5Du      // GT911, INT low at reset
 #define BOARD_TOUCH_ALT_I2C_ADDRESS 0x14u  // GT911, INT high at reset
+
+// --- sensors (phase 3) ------------------------------------------------------
+// On the bus through the 40-pin header, powered from the white 4-pin
+// connector's switched 3V3 (docs/hardware/board_notes.md, "Power rails and
+// connectors" and "Sensors on the bus"). No bus scan has seen them yet: the
+// console's i2c_scan lists all three addresses below, so the first scan with
+// the sensors wired confirms or corrects these lines.
+//
+// SCD4x: from the DATASHEET, not the wiring. 0x62 is the only address the
+// part has (Sensirion SCD4x datasheet v1.7, Table 8), and nothing on a
+// module can change it.
+#define BOARD_SCD4X_I2C_ADDRESS 0x62u
+
+// BME68x: 0x76 with SDO to GND, 0x77 with SDO to VDDIO (Bosch BME680
+// datasheet, "I2C interface"), and undefined with SDO left floating. A GUESS,
+// not an observation: the CJMCU-680-style module brings SDO out to a pad,
+// and how the module straps it is not visible in the seller's photographs.
+// 0x77 is the more common default on such breakouts (SDO pulled up on the
+// module); 0x76 stays named, as the GT911's second address does, so the scan
+// reports whichever answers.
+#define BOARD_BME68X_I2C_ADDRESS 0x77u      // SDO high
+#define BOARD_BME68X_ALT_I2C_ADDRESS 0x76u  // SDO low
 
 // --- button, battery -------------------------------------------------------
 // src/utilities.h:30,32 (CONFIG_IDF_TARGET_ESP32S3 block).

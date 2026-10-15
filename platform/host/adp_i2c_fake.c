@@ -4,14 +4,19 @@
 
 #include <string.h>
 
-static adp_i2c_fake_device_t *find_device(adp_i2c_fake_t *f, uint8_t addr)
+static i2c_model_t *find_model(adp_i2c_fake_t *f, uint8_t addr)
 {
-    for (size_t i = 0; i < f->device_count; i++) {
-        if (f->devices[i].addr == addr) {
-            return &f->devices[i];
+    for (size_t i = 0; i < f->slot_count; i++) {
+        if (f->slots[i].addr == addr) {
+            return f->slots[i].model;
         }
     }
     return NULL;
+}
+
+static uint64_t now_ms(const adp_i2c_fake_t *f)
+{
+    return f->clock != NULL ? f->clock->now_ms : 0u;
 }
 
 // The checks ports/port_i2c.h requires before anything reaches the bus.
@@ -41,26 +46,6 @@ static hal_status_t bus_gate(adp_i2c_fake_t *f, uint32_t to_ms)
     return HAL_OK;
 }
 
-static void device_write(adp_i2c_fake_device_t *dev, const uint8_t *d, size_t n)
-{
-    if (n == 0u) {
-        return;
-    }
-    dev->pointer = d[0];
-    for (size_t i = 1; i < n; i++) {
-        dev->regs[dev->pointer] = d[i];
-        dev->pointer = (uint8_t)(dev->pointer + 1u);
-    }
-}
-
-static void device_read(adp_i2c_fake_device_t *dev, uint8_t *d, size_t n)
-{
-    for (size_t i = 0; i < n; i++) {
-        d[i] = dev->regs[dev->pointer];
-        dev->pointer = (uint8_t)(dev->pointer + 1u);
-    }
-}
-
 static hal_status_t fake_write(port_i2c_t *port, uint8_t addr, const uint8_t *d, size_t n,
                                uint32_t to_ms)
 {
@@ -72,12 +57,11 @@ static hal_status_t fake_write(port_i2c_t *port, uint8_t addr, const uint8_t *d,
     if (gate != HAL_OK) {
         return gate;
     }
-    adp_i2c_fake_device_t *dev = find_device(f, addr);
-    if (dev == NULL) {
+    i2c_model_t *model = find_model(f, addr);
+    if (model == NULL) {
         return HAL_ERR_NOT_FOUND;
     }
-    device_write(dev, d, n);
-    return HAL_OK;
+    return model->write(model, n > 0u ? d : NULL, n, now_ms(f));
 }
 
 static hal_status_t fake_read(port_i2c_t *port, uint8_t addr, uint8_t *d, size_t n, uint32_t to_ms)
@@ -90,12 +74,11 @@ static hal_status_t fake_read(port_i2c_t *port, uint8_t addr, uint8_t *d, size_t
     if (gate != HAL_OK) {
         return gate;
     }
-    adp_i2c_fake_device_t *dev = find_device(f, addr);
-    if (dev == NULL) {
+    i2c_model_t *model = find_model(f, addr);
+    if (model == NULL) {
         return HAL_ERR_NOT_FOUND;
     }
-    device_read(dev, d, n);
-    return HAL_OK;
+    return model->read(model, d, n, now_ms(f));
 }
 
 static hal_status_t fake_write_read(port_i2c_t *port, uint8_t addr, const uint8_t *w, size_t wn,
@@ -109,13 +92,16 @@ static hal_status_t fake_write_read(port_i2c_t *port, uint8_t addr, const uint8_
     if (gate != HAL_OK) {
         return gate;
     }
-    adp_i2c_fake_device_t *dev = find_device(f, addr);
-    if (dev == NULL) {
+    i2c_model_t *model = find_model(f, addr);
+    if (model == NULL) {
         return HAL_ERR_NOT_FOUND;
     }
-    device_write(dev, w, wn);
-    device_read(dev, r, rn);
-    return HAL_OK;
+    // One transaction: the write, a repeated START, the read.
+    const hal_status_t written = model->write(model, w, wn, now_ms(f));
+    if (written != HAL_OK) {
+        return written;
+    }
+    return model->read(model, r, rn, now_ms(f));
 }
 
 static hal_status_t fake_recover(port_i2c_t *port)
@@ -156,15 +142,29 @@ port_i2c_t *adp_i2c_fake_port(adp_i2c_fake_t *f)
     return &f->port;
 }
 
+bool adp_i2c_fake_attach(adp_i2c_fake_t *f, uint8_t addr, i2c_model_t *model)
+{
+    if (addr > PORT_I2C_ADDR_MAX || model == NULL || find_model(f, addr) != NULL ||
+        f->slot_count >= ADP_I2C_FAKE_MAX_DEVICES) {
+        return false;
+    }
+    f->slots[f->slot_count].addr = addr;
+    f->slots[f->slot_count].model = model;
+    f->slot_count++;
+    return true;
+}
+
 adp_i2c_fake_device_t *adp_i2c_fake_add_device(adp_i2c_fake_t *f, uint8_t addr)
 {
-    if (addr > PORT_I2C_ADDR_MAX || find_device(f, addr) != NULL ||
-        f->device_count >= ADP_I2C_FAKE_MAX_DEVICES) {
+    if (f->regfile_count >= ADP_I2C_FAKE_MAX_DEVICES) {
         return NULL;
     }
-    adp_i2c_fake_device_t *dev = &f->devices[f->device_count++];
-    memset(dev, 0, sizeof *dev);
-    dev->addr = addr;
+    regfile_model_t *dev = &f->regfiles[f->regfile_count];
+    regfile_model_init(dev);
+    if (!adp_i2c_fake_attach(f, addr, regfile_model_port(dev))) {
+        return NULL;
+    }
+    f->regfile_count++;
     return dev;
 }
 
