@@ -113,7 +113,7 @@ two never disagree. Carried forward as named constants in
 | Touch I2C address | **`0x5D`** (GT911; `0x14` is its other latch address) | observed by the phase-2d bus scan; `examples/touch/touch.ino:109,113` |
 | Button | 21 | `src/utilities.h:30` |
 | Battery ADC | 14 | `src/utilities.h:32` |
-| SD `MISO`/`MOSI`/`SCLK`/`CS` (free if no card fitted) | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
+| microSD `MISO`/`MOSI`/`SCLK`/`CS` -- the card's since phase 3f ("The microSD slot") | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
 | Genuinely free | 45, 10 (analog-in only), 48, 39 | `README.MD` "GPIO List" |
 
 Four findings worth carrying forward, because each one corrects or narrows an
@@ -245,7 +245,7 @@ free, as the pin table above says.
 |---|---|---|
 | `P2` | 6-pin 0.5 mm FPC socket beside the RST button: **the touch panel's**, occupied by its flex | 1 GND, 2 INT (IO47), 3 SCL (IO17), 4 SDA (IO18), 5 `VDD3V3`, 6 NC. The only connector carrying `VDD3V3`. Pull-ups beside it: see the open item on pull-ups |
 | `P6` | 8-pin FPC footprint with a `T_RST` line, in a dashed option box | not fitted on this revision (absent from LilyGO's photographs) |
-| `P5` | the white 4-pin connector, fitted | 1 `3V3` (switched), 2 IO15, 3 IO16, 4 GND -- LilyGO's "G 16 15 V". IO15/IO16 are the SD card's MOSI/MISO |
+| `P5` | the white 4-pin connector, fitted | 1 `3V3` (switched), 2 IO15, 3 IO16, 4 GND -- LilyGO's "G 16 15 V". IO15/IO16 are the microSD card's MOSI/MISO, and **from phase 3f the card's**: the sensors use only pins 1 and 4 ("The microSD slot") |
 | `P4` | a 4-hole footprint beside `P5`, not fitted | 1 `3V3` (switched), 2 IO48, 3 IO45, 4 GND. **IO45 is a strapping pin** (it selects the flash supply voltage at reset): never put a pull-up on it |
 | `P8` | the 40-pin header, "Raspberry Pi compatible" (`P3` is a second footprint for the same signals) | 1 NC; 2, 4 `VBUS`; 3 IO18 (SDA); 5 IO17 (SCL); 6, 9 GND; 7 IO47; 8, 10 UART0 RX/TX; 19, 21, 23, 24 MOSI/MISO/SCLK/CS; 33, 35, 37 `NEG_CTRL`/`POS_CTRL`/`SMPS_CTRL` (undriven, above); the rest NC or GND. **No 3.3 V pin** |
 
@@ -345,6 +345,38 @@ after the bus is up, and sets the system time from it when it is valid --
 answering, VL clear, running, decodable, and no earlier than 2026
 (`apps/firmware_esp32/main/wall_clock.c`, ADR 0023). The console's `time`
 says what it holds; `time_set` writes it.
+
+### The microSD slot
+
+**From the v2.4 schematic, the owner's reading of it, 2026-10-16** (phase
+3f, `docs/adr/0024-sd-card-recordings-and-debug-log.md`); not measured:
+
+- **SPI mode only.** The slot's DAT1 and DAT2 are not connected, so the
+  card's 4-bit SD mode is out of reach; it runs over SPI. CS is IO42,
+  MOSI/CMD IO15, CLK IO11, MISO/DAT0 IO16 -- the `BOARD_SD_*` constants, as
+  recorded since phase 2a, unchanged.
+- **Supply**: the card's VDD is `VDD3V3`, so it is powered whenever the
+  board is -- **not switched by `PWR_EN`**. The card can be mounted before
+  EPDiy's init, a reset does not power-cycle it, and phase 5's clearing of
+  `PWR_EN` would not either.
+- **Pull-ups**: 10 kOhm on three of the four lines; the one on MISO, `R14`,
+  is printed NC. `platform/esp32_t5s3/adp_sd.c` enables the S3's internal
+  pull-up (~45 kOhm) on IO16 instead, so MISO does not float with no card
+  driving it.
+- **Card-detect** (CD#) goes only to test pad `TP72`: nothing the firmware
+  can read. A card's arrival or removal is not seen; the firmware tries to
+  mount at boot, every minute while none is mounted, and at the console's
+  `sd_mount`, and finds a card pulled out at its next access.
+- **IO15 and IO16 are also `P5`'s pins 2 and 3** ("Connectors" above).
+  From phase 3f they belong to the card; the sensors take only `P5`'s V and
+  G, as they always have.
+
+The controller is SPI2 (`BOARD_SD_SPI_HOST`; SPI0/1 run the flash and the
+PSRAM, the panel is on LCD_CAM), at 20 MHz (`BOARD_SD_SPI_MAX_KHZ`, ESP-IDF's
+default for SD over SPI, a choice). The filesystem is FAT12/16/32: ESP-IDF
+builds FatFs without exFAT, so a card sold exFAT-formatted -- every SDXC, 64
+GB and up -- must be formatted FAT32 on a PC first. The firmware never
+formats a card.
 
 ## Sensors on the bus
 
@@ -858,6 +890,71 @@ layout settles, not before.
       cheap mitigations to weigh, in phase 5's power work at the latest: a
       slower rise of the switched rail, or more bulk capacitance on
       `VDD3V3`.
+      **Worse with the microSD card, 2026-10-16 22:36** (ELF `f19605034...`,
+      the first phase-3f BSEC image, the owner's YAT log, a 16 GB card in
+      the slot): six boots in a row reset themselves at the same point --
+      each after `epdiy-i80: i80 row output ready`, about 0.9 s later -- before
+      the seventh ran. Five were the interrupt watchdog (`rst:0x8
+      (TG1WDT_SYS_RST)`, "PRO/APP CPU has been reset by WDT", `previous reset
+      reason=interrupt_watchdog`) with no panic printed, the saved PC in
+      `panic_enable_cache` (`panic_handler.c:285`) or `xt_highint4`: the
+      watchdog's interrupt entered the panic handler, which then stalled
+      re-enabling the cache until the second stage reset the chip. One was a
+      brownout (`BOD: Brownout detector was triggered`, saved PC in
+      `rtc_brownout_isr_handler`). **On the battery as well as USB, the same**
+      (the owner): "a couple of resets, then it boots". What was new at that
+      point: the card's task, started at the top of `app_main()`, was
+      initialising the card and then reading its whole FAT to count the free
+      space -- `card mounted` came at 5,780 ms in the boot that ran -- across
+      the moment `PWR_EN` rose. The reading, not measured: the switched
+      rail's inrush through `Q4` dips `VDD3V3` itself, behind the LDO, which
+      is why the battery does not help; the card's current on the same rail
+      deepens the dip, sometimes past the brownout threshold and more often
+      to a level the octal PSRAM -- a 3 V part on `VDD3V3` -- does not ride
+      out, while the detector stays quiet: a CPU stalled on a cache access is
+      what the stuck PC shows. **Changed the same evening**: the card's task
+      starts only after `PWR_EN` is up, `BOARD_SWITCHED_3V3_SETTLE_MS` has
+      passed and the RTC has been read (`start_card()` in `main.c`), and a
+      mount no longer counts the free space (`sd` does, on demand). To see on
+      the board: several boots of the new image with the card in, and one
+      without -- and if the resets persist with no card at all, the card's
+      timing was not the cause.
+      **That was not it, 23:32 the same evening** (ELF `f2929013f...`, the
+      card started after the rail, battery and USB both connected, the card
+      in): the board never got through -- some twenty boots in under 40 s,
+      every one reset at the same point, interrupt watchdog (saved PC
+      `xt_highint4` each time) or brownout (four), and in none of them had
+      anything of the card run: the `adp_sd` line comes later in the boot. So
+      the card's mount was not the cause. What the two phase-3f images share,
+      and phase 3e did not, at that point: `log_tee.c`'s hook. EPDiy raises
+      `PWR_EN` in `epd_control_reg_init()` and logs `epd: Space used for
+      waveform LUT` in the next statement (`render.c:245-266` in the pinned
+      component); in phase 3e that line went to the USB console alone, its
+      LUT in internal RAM, while in 3f the hook writes it into the ring in the
+      octal PSRAM -- within microseconds of the rail switching on, in the
+      inrush. The reading, not measured: a PSRAM transaction in that dip
+      hangs the memory interface and the CPU with it, short of the brownout
+      detector's threshold; the brownouts are the same dip going deeper, as
+      in phase 3e. **Changed**: `main.c` holds the hook off PSRAM
+      (`log_tee_hold()`) from before the display adapter's init until the
+      rail has settled, after the bus comes up; the lines of that window go to
+      the console only, and the file says how many it missed. To see on the
+      board: boots with the card in, on USB alone and with the battery. If
+      the interrupt-watchdog resets go and only the occasional brownout of
+      phase 3e is left, the reading holds; if they stay, it does not, and a
+      scope on `VDD3V3` at `PWR_EN`'s rise is the next step. In any case the
+      octal PSRAM not riding out that dip is a hardware weakness firmware can
+      only step around: anything that touches PSRAM in the first moments
+      after `PWR_EN` rises is exposed (EPDiy's own framebuffers are
+      allocated some 20 ms later), and phase 5's raising of `PWR_EN` after a
+      deep sleep inherits the same rule.
+      **And with that the resets are gone, 23:45** (ELF `7acd662da...`, the
+      BSEC image, the card in): the boot after flashing ran through at the
+      first attempt -- `epd: Space used for waveform LUT` straight after
+      `epdiy-i80: i80 row output ready`, as in phase 3e -- and the owner saw
+      no reset since. One boot in the log; the reading holds for now, not
+      proven. The four lines held off the file in that window are counted in
+      `rec`'s `4 dropped`.
       **What follows, until the mechanism is known:** nothing may drive the
       bus while `PWR_EN` is low and the sensors are on the switched rail.
       That binds phase 5 above all: clearing `PWR_EN` for deep sleep, or
@@ -1248,6 +1345,92 @@ layout settles, not before.
       cell's charge after days unpowered; `restart` itself (`esp_restart()`);
       the autumn change. A tip for these: YAT's own time stamps on each line
       give the log an outside clock.
+- [ ] **The microSD card on the board (phase 3f).** Built 2026-10-16,
+      verified on the host only (`docs/adr/0024-sd-card-recordings-and-debug-log.md`).
+      What each check is to show, and the lines that show it:
+      - *Boot without a card*: one `card_writer: no card: recording and the
+        log file are off until one is mounted state=no_card` line, and
+        nothing about the card after it -- no ESP-IDF `sdmmc_*` or
+        `vfs_fat_sdmmc` lines, though a quiet mount is tried every minute.
+        Everything else as before; `sd` says `SD no_card`, `rec` says
+        `REC off (no_medium)` with rows dropped and counted.
+      - *Insert a card and `sd_mount`* (FAT32): `SD_MOUNT ok`, then `card
+        mounted card=... capacity_mb=... spi_khz=... free_internal=...
+        free_psram=...`; `recorder: recording
+        path=data/<day>_scd4x.csv` and `..._bme68x.csv` at the next rows;
+        `rec` shows both files growing. The log file gets the boot's lines,
+        kept in the ring since boot, unless more than 1024 were logged
+        meanwhile -- then a `log: N lines lost before this one` line. Without
+        `sd_mount` the automatic attempt finds it within a minute.
+      - *The cost*, from the `card mounted` line and `adp_display: memory
+        budget ... free_internal_after_epd_init=`: internal RAM against
+        217,247 (phase 3e's BSEC image, the last measured) and PSRAM against
+        7,347,640 after EPD init (phase 2d) minus the ring's 327,680 bytes;
+        the event loop's stack low-water mark against 3,476 bytes free; the
+        card's task's own (`card_writer: stack low-water mark`, of 6,144).
+      - *No stall on the loop*: `rec`'s `the longest post` (microseconds,
+        expected tens) beside `slowest write` and `slowest flush` (the
+        card's milliseconds the event loop did not wait); the hourly
+        `recording stats` line carries both.
+      - *Hours unattended*: the bytes per day (`rec`, `sd`), for the caps
+        (`RECORD_DATA_DIR_CAP_BYTES`, `RECORD_LOG_DIR_CAP_BYTES`, estimates)
+        and the log's volume, which nothing has measured.
+      - *A power cut in the middle of a write*: the card mounts at the next
+        boot, every file opens on a PC and in the simulator, and at most one
+        flush interval (`RECORD_FLUSH_INTERVAL_MS`, 10 s, an estimate) is
+        missing before the cut; the new boot writes the day's next file
+        (`_2`).
+      - *A card pulled without `sd_eject`*: `the card stopped answering:
+        unmounted, recording off state=lost`, and recording resumes when it
+        is back and mounted.
+      - *On a PC*: a day's `data/<day>_scd4x.csv` opens in a spreadsheet,
+        and `simulator --recording` with both of a day's files plays it,
+        `[sim] recording ... plays source id 1` and `2`, the wall clock at
+        the first row.
+      - *The supply*: an SD card draws tens of milliamps while it writes, on
+        `VDD3V3` -- the rail behind the brownouts of the open item "A reboot
+        loop when the switched 3V3 comes up". A brownout at a flush, or at
+        boot with a card inserted, belongs there.
+      - *The test app*: `idf.py -T hac_platform build` with a card in the
+        slot adds `contract port_files adp_sd` lines; without one the case
+        is IGNORED and says why.
+      **First run 2026-10-16 22:36** (ELF `f19605034...`, the BSEC image,
+      a 16 GB card, `SD16G`, 14,772 MB, at 20 MHz): six boots reset
+      themselves when `PWR_EN` rose -- read first as the card's mount, then,
+      after a second image (23:32) that never booted at all, as the log's
+      hook writing PSRAM in the rail's inrush; the open item "A reboot loop
+      when the switched 3V3 comes up" has both and the change made for
+      each. The seventh ran: `card mounted` at
+      5,780 ms -- the mount had spent about 5 s counting the free space, a
+      whole-FAT scan, since dropped from the mount -- `free_internal=184043
+      free_psram=6711076`; both recordings opened at 6.9 s
+      (`data/2026-10-16_bme68x.csv`, `..._scd4x.csv`), the card's task's
+      stack low-water mark 2,664 bytes free of 6,144, the event loop's 3,412
+      (3,476 before this phase). `free_internal_after_epd_init=195983`,
+      21,264 under phase 3e's 217,247: the 12.8 KB of static RAM this phase
+      adds, the card's task's stack and queues -- then allocated before the
+      display -- and the SPI bus.
+      **Second run, 23:45** (ELF `7acd662da...`, the BSEC image with the
+      log held off PSRAM while the rail rises; no reset): `card mounted` at
+      973 ms, with no free-space count; `free_internal_after_epd_init=204327`,
+      12,920 under phase 3e's 217,247 -- the 12.8 KB of static RAM this phase
+      adds, as the build said -- and `free_psram_after_epd_init=7021416`;
+      after the mount `free_internal=184551 free_psram=6711432`, the event
+      loop's 8 KB stack and its 253 KB diff buffer included. The card's task's
+      stack low-water mark 2,688 bytes free of 6,144; the event loop's 3,412.
+      Recording into `data/2026-10-16_scd4x_5.csv` and `..._bme68x_5.csv` --
+      the day's fifth files, the boots before having each started their own,
+      as designed. `rec` after four minutes: 44 SCD41 rows, 2,316 bytes (53 a
+      row, about 0.9 MB a day at 5 s), 75 BSEC rows, 6,195 bytes (83 a row,
+      about 2.4 MB a day at 3 s), nothing dropped; the log 85 lines, 10,424
+      bytes, the 4 held lines its only loss; the ring 16 lines at most, never
+      full. **The event loop's longest post into the card's queue: 33 us;
+      the card's slowest write 102.6 ms and slowest flush 87.8 ms** -- what
+      the loop would have waited had it written itself. `sd`: 14,763 MB
+      free, answered within a quarter second (the card's FSINFO held the
+      count this time); `data/` 10 files, 122 KB, `log/` one file, 112 KB.
+      Still to see: hours unattended, a power cut in a write, a day on a PC
+      and in the simulator, the test app.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings
       while Wi-Fi is active. The ESP32-S3 TRM documents ADC2 as unreliable
       under Wi-Fi; confirm on this board before phase 3/4 tries to read

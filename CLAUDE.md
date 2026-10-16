@@ -80,6 +80,13 @@ HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC
     --scenario-co2 scenarios/co2_spike_meeting.csv \
     --scenario-env scenarios/normal_day.csv --time-scale 60
 
+# Record what the sources report, as the board records to its card (ADR 0024), and replay
+# a recording -- the board's, from its card's data/, or this one -- through the same merge
+./build/host-debug/apps/simulator/simulator --headless --duration 3600 --record out/card \
+    --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv
+./build/host-debug/apps/simulator/simulator --recording out/card/data/<day>_scd4x.csv \
+    --recording out/card/data/<day>_bme68x.csv --time-scale 60
+
 # Headless run (CI path; --duration is required or it never stops)
 ./build/host-debug/apps/simulator/simulator --headless --frames out/ \
     --scenario-co2 scenarios/co2_spike_meeting.csv \
@@ -128,7 +135,10 @@ out of `sdkconfig` (and, for anything that must be in the image, out of
 The same trap applies to `sdkconfig.defaults` and overlays: defaults only fill symbols an
 existing `sdkconfig` does not already hold, so a value added to an overlay never reaches a
 build directory configured before it. Observed in phase 2c with
-`CONFIG_ESP_MAIN_TASK_STACK_SIZE`; delete that build's `sdkconfig` and grep again.
+`CONFIG_ESP_MAIN_TASK_STACK_SIZE`; delete that build's `sdkconfig` and grep again. Phase 3f's
+`CONFIG_FATFS_LFN_HEAP` (long file names for the card) is guarded: `adp_sd.c` refuses to
+build with an `sdkconfig` that predates it. Its own build directories were regenerated when
+the phase landed (the old files kept as `sdkconfig.old`); any other one needs the same.
 
 ## Never commit
 
@@ -373,8 +383,41 @@ a power cut is not in the terminal's log: the terminal reopening the port resets
 reference, longer outages, the drift. Two logs caught brownouts at the moment `PWR_EN` rises
 (open item "A reboot loop when the switched 3V3 comes up").
 
-Next: the board run of phases 3d and 3e, the rest of phase 3c's measurements, and this unit's
-own figures for the remaining estimates.
+Phase 3f on branch `phase-3f-sd-recordings` (ADR 0024): the microSD card. The slot, from the
+v2.4 schematic (`board_notes.md`, "The microSD slot"): SPI only, `VDD3V3` not `PWR_EN`, no
+pull-up on MISO (the S3's internal one), card-detect only on a test pad; IO15/IO16, `P5`'s pins 2
+and 3, are the card's now. `ports/port_files.h` -- open to append, append, flush (fsync), close,
+list with sizes, remove; no medium `HAL_ERR_NOT_READY`, full `HAL_ERR_NO_MEM`; no read, the
+contract reading back through its runner -- with `adp_sd.c` (SD over SPI2 + FATFS, never
+formats, FAT32 only, long names) and `adp_files_dir.c` (a host directory), and a contract on
+both, five broken wrappers caught. The scenario format grows optional columns -- `utc`,
+`<field>_status` (interpolation per field), `<field>_acc` -- and the word `unavailable`; a torn
+last line and a NUL tail are forgiven; every old file plays as before. `core/recording/`: the
+row format, file names by Vilnius day (`data/<day>_scd4x.csv`, `_2` for the next file of a day --
+a recording is never reopened -- `undated-NNNN` before the clock), the bound (1 GiB data, 512 MiB
+log, estimates; the oldest day removed first), the recorder (a watch on the event loop, the
+writing on the card's task, flushed every 10 s, an estimate) and the log's files. On the board
+`card_writer.c` owns the card: mounts at start, every minute quietly and at `sd_mount`, records,
+drains `log_tee.c`'s ring (1024 lines in PSRAM, filled by an `esp_log_set_vprintf` hook that
+never touches the card) into `log/<day>.log` with UTC; console `sd`, `sd_mount`, `sd_eject`,
+`rec`. Simulator: `--record <dir>`, `--recording <file>` (source by the name's tag, wall clock
+from the first row). Verified on the host (unit, contract, the round trip value for value and
+through the CLI redraw for redraw); the firmware, its BSEC variant and the test app build.
+Measured in the build: image +113 KB, static internal RAM +12.8 KB (7 KB of it the SPI driver's
+code ESP-IDF puts in IRAM). On the board, 2026-10-16: the first image reset itself at boot five
+or six times in a row when `PWR_EN` rose -- interrupt watchdog with the CPU stuck on a cache
+access, once a brownout -- then ran, mounted a 16 GB card and recorded; a second, with the card's
+task moved after the rail, never booted. What both did there and 3e did not: `log_tee`'s hook
+writing EPDiy's next log line into the octal PSRAM within microseconds of the rail switching on.
+The hook is now held off PSRAM while the rail comes up (`log_tee_hold()`), and the third image
+booted at the first attempt and recorded: ~53 bytes a row for the SCD41, ~83 for BSEC, the event
+loop's longest post 33 us against the card's slowest write of 103 ms (`board_notes.md`, open
+items "A reboot loop when the switched 3V3 comes up" and "The microSD card on the board (phase
+3f)", which lists what is still to see). The lesson for phase 5: nothing touches PSRAM in the
+first moments after `PWR_EN` rises.
+
+Next: the board run of phases 3d, 3e and 3f, the rest of phase 3c's measurements -- now
+recordable unattended -- and this unit's own figures for the remaining estimates.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

@@ -124,15 +124,17 @@ static void every_status_word_is_recognized(void)
                        "20,600,stale\n"
                        "30,0,error\n"
                        "40,0,nan\n"
-                       "50,9999,out_of_range\n";
+                       "50,9999,out_of_range\n"
+                       "60,,unavailable\n";
     HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
-    HAC_CHECK_EQ_U64(tl.row_count, 6u);
+    HAC_CHECK_EQ_U64(tl.row_count, 7u);
     HAC_CHECK_EQ_INT(tl.rows[0].status, REPLAY_ROW_OK);
     HAC_CHECK_EQ_INT(tl.rows[1].status, REPLAY_ROW_WARMUP);
     HAC_CHECK_EQ_INT(tl.rows[2].status, REPLAY_ROW_STALE);
     HAC_CHECK_EQ_INT(tl.rows[3].status, REPLAY_ROW_ERROR);
     HAC_CHECK_EQ_INT(tl.rows[4].status, REPLAY_ROW_NAN);
     HAC_CHECK_EQ_INT(tl.rows[5].status, REPLAY_ROW_OUT_OF_RANGE);
+    HAC_CHECK_EQ_INT(tl.rows[6].status, REPLAY_ROW_UNAVAILABLE);
 
     replay_timeline_dispose(&tl);
 }
@@ -183,6 +185,254 @@ static void a_file_without_a_status_column_defaults_every_row_to_ok(void)
     HAC_CHECK_EQ_INT(tl.rows[1].status, REPLAY_ROW_OK);
 
     replay_timeline_dispose(&tl);
+}
+
+// --- the optional columns of phase 3f (docs/adr/0024) -------------------------
+
+// The recordings' column names are core/recording/record_format.h's; a file
+// written before them must still name the same fields.
+static void the_value_columns_keep_their_names(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,temperature_c,humidity_rh,pressure_hpa,co2_ppm,iaq,voc_index,"
+                       "gas_res_ohm\n0,1,2,3,4,5,6,7\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    for (unsigned f = 0u; f < (unsigned)REPLAY_FIELD_COUNT; ++f) {
+        HAC_CHECK(tl.field_present[f]);
+        HAC_CHECK(tl.rows[0].value[f] == (double)(f + 1u));
+    }
+    HAC_CHECK_EQ_INT((int)replay_timeline_caps(&tl),
+                     (int)(SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY | SENS_CAP_PRESSURE |
+                           SENS_CAP_CO2 | SENS_CAP_IAQ | SENS_CAP_VOC | SENS_CAP_GAS_RES));
+    HAC_CHECK_EQ_INT((int)replay_timeline_accuracy_caps(&tl), 0);
+    HAC_CHECK(!tl.utc_present);
+    HAC_CHECK_EQ_U64(tl.first_utc_ms, 0u);
+    replay_timeline_dispose(&tl);
+}
+
+// What the recorder writes for a source with every field: 24 columns.
+static void a_full_recording_header_parses(void)
+{
+    replay_timeline_t tl;
+    const char *text =
+        "# home-air-monitor recording: source all, id 3\n"
+        "t_offset_s,utc,temperature_c,humidity_rh,pressure_hpa,co2_ppm,iaq,voc_index,gas_res_ohm,"
+        "status,temperature_c_status,humidity_rh_status,pressure_hpa_status,co2_ppm_status,"
+        "iaq_status,voc_index_status,gas_res_ohm_status,temperature_c_acc,humidity_rh_acc,"
+        "pressure_hpa_acc,co2_ppm_acc,iaq_acc,voc_index_acc,gas_res_ohm_acc\n"
+        "0.000,2026-10-16T12:00:00Z,21.50,45.00,1006.123,612,,,153000,ok,,,,,warmup,unavailable,,"
+        ",,,,unreliable,,\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    HAC_CHECK_EQ_U64(tl.row_count, 1u);
+    HAC_CHECK_EQ_INT(tl.rows[0].field_status[REPLAY_FIELD_IAQ], REPLAY_ROW_WARMUP);
+    HAC_CHECK_EQ_INT(tl.rows[0].field_status[REPLAY_FIELD_VOC_INDEX], REPLAY_ROW_UNAVAILABLE);
+    HAC_CHECK_EQ_INT(tl.rows[0].accuracy[REPLAY_FIELD_IAQ], ACC_UNRELIABLE);
+    HAC_CHECK_EQ_INT((int)replay_timeline_accuracy_caps(&tl),
+                     (int)(SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY | SENS_CAP_PRESSURE |
+                           SENS_CAP_CO2 | SENS_CAP_IAQ | SENS_CAP_VOC | SENS_CAP_GAS_RES));
+    replay_timeline_dispose(&tl);
+}
+
+static void a_utc_column_is_read_and_may_be_empty(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,utc,co2_ppm\n"
+                       "0,2026-10-16T12:00:00Z,600\n"
+                       "5,,610\n"
+                       "10,2026-10-16T12:00:10Z,620\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    HAC_CHECK(tl.utc_present);
+    HAC_CHECK_EQ_U64(tl.rows[0].utc_ms, 1792152000000ull);  // 2026-10-16T12:00:00Z
+    HAC_CHECK_EQ_U64(tl.rows[1].utc_ms, 0u);
+    HAC_CHECK_EQ_U64(tl.rows[2].utc_ms, 1792152010000ull);
+    HAC_CHECK_EQ_U64(tl.first_utc_ms, 1792152000000ull);
+    replay_timeline_dispose(&tl);
+
+    // An undated recording: the column is there, every cell empty.
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,utc,co2_ppm\n0,,600\n", &tl), HAL_OK);
+    HAC_CHECK(tl.utc_present);
+    HAC_CHECK_EQ_U64(tl.first_utc_ms, 0u);
+    replay_timeline_dispose(&tl);
+}
+
+static void a_malformed_utc_is_rejected(void)
+{
+    replay_timeline_t tl;
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,utc,co2_ppm\n0,2026-10-16 12:00:00,600\n", &tl),
+                     HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,utc,co2_ppm\n0,2026-02-29T12:00:00Z,600\n", &tl),
+                     HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,utc,co2_ppm\n0,2026-10-16T12:00:00+02:00,600\n", &tl),
+                     HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,utc,utc,co2_ppm\n0,,,600\n", &tl),
+                     HAL_ERR_INVALID_ARG);  // twice
+}
+
+static void a_field_status_overrides_the_row_for_that_field_alone(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,temperature_c,gas_res_ohm,status,gas_res_ohm_status\n"
+                       "0,21.5,,ok,warmup\n"   // a warming gas reading beside a valid temperature
+                       "5,21.6,150000,ok,\n";  // empty: the row's
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    HAC_CHECK_EQ_INT(tl.rows[0].field_status[REPLAY_FIELD_TEMPERATURE_C], REPLAY_ROW_OK);
+    HAC_CHECK_EQ_INT(tl.rows[0].field_status[REPLAY_FIELD_GAS_RESISTANCE_OHM], REPLAY_ROW_WARMUP);
+    HAC_CHECK_EQ_INT(tl.rows[1].field_status[REPLAY_FIELD_GAS_RESISTANCE_OHM], REPLAY_ROW_OK);
+
+    sensor_sample_t s;
+    replay_timeline_sample(&tl, 0u, true, 100u, SRC_ID, &s);
+    HAC_CHECK_EQ_INT(s.temperature_c.status, VAL_OK);
+    HAC_CHECK_EQ_F32(s.temperature_c.value, 21.5f, 0.001f);
+    HAC_CHECK_EQ_INT(s.gas_resistance_ohm.status, VAL_WARMUP);
+    replay_timeline_dispose(&tl);
+
+    // ...and the other way: a fault row with one field still ok.
+    text = "t_offset_s,temperature_c,co2_ppm,status,temperature_c_status\n0,21.5,,error,ok\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    replay_timeline_sample(&tl, 0u, true, 100u, SRC_ID, &s);
+    HAC_CHECK_EQ_INT(s.temperature_c.status, VAL_OK);
+    HAC_CHECK_EQ_INT(s.co2_ppm.status, VAL_ERROR);
+    replay_timeline_dispose(&tl);
+}
+
+static void a_blank_value_is_rejected_where_its_field_is_ok(void)
+{
+    replay_timeline_t tl;
+    // The row says error, but the field's own status says ok: it needs a value.
+    const char *text = "t_offset_s,co2_ppm,status,co2_ppm_status\n0,,error,ok\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_ERR_INVALID_ARG);
+}
+
+static void a_field_status_or_accuracy_without_its_field_is_rejected(void)
+{
+    replay_timeline_t tl;
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,gas_res_ohm_status\n0,600,ok\n", &tl),
+                     HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,iaq_acc\n0,600,low\n", &tl),
+                     HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,co2_ppm_status,co2_ppm_status\n0,600,,\n", &tl),
+                     HAL_ERR_INVALID_ARG);  // twice
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,co2_ppm_status\n0,600,degraded\n", &tl),
+                     HAL_ERR_INVALID_ARG);  // not a status word
+}
+
+static void every_accuracy_word_is_recognized(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,iaq,status,iaq_acc\n"
+                       "0,,warmup,unreliable\n"
+                       "3,50,ok,low\n"
+                       "6,51,ok,medium\n"
+                       "9,52,ok,high\n"
+                       "12,53,ok,\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    HAC_CHECK_EQ_INT(tl.rows[0].accuracy[REPLAY_FIELD_IAQ], ACC_UNRELIABLE);
+    HAC_CHECK_EQ_INT(tl.rows[1].accuracy[REPLAY_FIELD_IAQ], ACC_LOW);
+    HAC_CHECK_EQ_INT(tl.rows[2].accuracy[REPLAY_FIELD_IAQ], ACC_MEDIUM);
+    HAC_CHECK_EQ_INT(tl.rows[3].accuracy[REPLAY_FIELD_IAQ], ACC_HIGH);
+    HAC_CHECK_EQ_INT(tl.rows[4].accuracy[REPLAY_FIELD_IAQ], ACC_NOT_REPORTED);
+    HAC_CHECK_EQ_INT((int)replay_timeline_accuracy_caps(&tl), (int)SENS_CAP_IAQ);
+    replay_timeline_dispose(&tl);
+
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,iaq,iaq_acc\n0,50,good\n", &tl), HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,iaq,iaq_acc\n0,50,LOW\n", &tl), HAL_ERR_INVALID_ARG);
+}
+
+// Accuracy is the earlier row's, never interpolated; it comes with a warm-up
+// too, where BSEC's "unreliable" belongs (docs/adr/0021).
+static void accuracy_travels_with_the_sample(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,iaq,status,iaq_acc\n"
+                       "0,,warmup,unreliable\n"
+                       "10,50,ok,low\n"
+                       "20,70,ok,high\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+
+    sensor_sample_t s;
+    replay_timeline_sample(&tl, 5000u, true, 1u, SRC_ID, &s);
+    HAC_CHECK_EQ_INT(s.iaq.status, VAL_WARMUP);
+    HAC_CHECK_EQ_INT(s.iaq.accuracy, ACC_UNRELIABLE);
+
+    replay_timeline_sample(&tl, 15000u, true, 1u, SRC_ID, &s);
+    HAC_CHECK_EQ_INT(s.iaq.status, VAL_OK);
+    HAC_CHECK_EQ_F32(s.iaq.value, 60.0f, 0.001f);  // interpolated
+    HAC_CHECK_EQ_INT(s.iaq.accuracy, ACC_LOW);     // not interpolated
+    replay_timeline_dispose(&tl);
+}
+
+// Per field: the temperature is interpolated across a row where only the gas
+// is warming up, and the gas is held, not drawn towards a value it lacks.
+static void interpolation_works_field_by_field(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,temperature_c,gas_res_ohm,status,gas_res_ohm_status\n"
+                       "0,20.0,100000,ok,\n"
+                       "10,21.0,,ok,warmup\n"
+                       "20,22.0,120000,ok,\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+
+    sensor_sample_t s;
+    replay_timeline_sample(&tl, 5000u, true, 1u, SRC_ID, &s);
+    HAC_CHECK_EQ_F32(s.temperature_c.value, 20.5f, 0.001f);
+    HAC_CHECK_EQ_INT(s.gas_resistance_ohm.status, VAL_OK);
+    HAC_CHECK_EQ_F32(s.gas_resistance_ohm.value, 100000.0f, 0.5f);  // held: the next row warms up
+
+    replay_timeline_sample(&tl, 15000u, true, 1u, SRC_ID, &s);
+    HAC_CHECK_EQ_F32(s.temperature_c.value, 21.5f, 0.001f);
+    HAC_CHECK_EQ_INT(s.gas_resistance_ohm.status, VAL_WARMUP);
+    replay_timeline_dispose(&tl);
+}
+
+static void an_unavailable_field_reads_back_unavailable(void)
+{
+    replay_timeline_t tl;
+    const char *text = "t_offset_s,co2_ppm,temperature_c,status,temperature_c_status\n"
+                       "0,600,,ok,unavailable\n";
+    HAC_CHECK_EQ_INT(parse_text(text, &tl), HAL_OK);
+    sensor_sample_t s;
+    replay_timeline_sample(&tl, 0u, true, 1u, SRC_ID, &s);
+    HAC_CHECK_EQ_INT(s.co2_ppm.status, VAL_OK);
+    HAC_CHECK_EQ_INT(s.temperature_c.status, VAL_UNAVAILABLE);
+    replay_timeline_dispose(&tl);
+}
+
+// A card that lost power in the middle of a row: the row is dropped, the
+// rest of the file kept.
+static void a_last_line_cut_short_is_dropped(void)
+{
+    replay_timeline_t tl;
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,status\n0,600,ok\n5,61", &tl), HAL_OK);
+    HAC_CHECK_EQ_U64(tl.row_count, 1u);
+    replay_timeline_dispose(&tl);
+
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,status\n0,600,ok\n5,610,wa", &tl), HAL_OK);
+    HAC_CHECK_EQ_U64(tl.row_count, 1u);
+    replay_timeline_dispose(&tl);
+
+    // A complete last row without its line end is still a row.
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,status\n0,600,ok\n5,610,ok", &tl), HAL_OK);
+    HAC_CHECK_EQ_U64(tl.row_count, 2u);
+    replay_timeline_dispose(&tl);
+
+    // A short row that does end its line is a malformed file, as before.
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,status\n0,600,ok\n5,61\n", &tl),
+                     HAL_ERR_INVALID_ARG);
+    // And a cut-short row that is the only one leaves no data.
+    HAC_CHECK_EQ_INT(parse_text("t_offset_s,co2_ppm,status\n0,6", &tl), HAL_ERR_INVALID_ARG);
+}
+
+static void nul_bytes_at_the_end_are_ignored(void)
+{
+    replay_timeline_t tl;
+    static const char text[] = "t_offset_s,co2_ppm\n0,600\n\0\0\0\0";
+    HAC_CHECK_EQ_INT(replay_parse_buffer(text, sizeof(text) - 1u, &tl), HAL_OK);
+    HAC_CHECK_EQ_U64(tl.row_count, 1u);
+    replay_timeline_dispose(&tl);
+
+    // Inside the data they are not a power cut's: rejected.
+    static const char inside[] = "t_offset_s,co2_ppm\n0,6\0\0\n5,610\n";
+    HAC_CHECK_EQ_INT(replay_parse_buffer(inside, sizeof(inside) - 1u, &tl), HAL_ERR_INVALID_ARG);
 }
 
 // --- replay_source_init() / playback ---------------------------------------
@@ -509,6 +759,19 @@ int main(void)
     HAC_RUN(comments_and_blank_lines_are_skipped_around_real_rows);
     HAC_RUN(a_missing_column_is_unavailable_for_the_whole_file);
     HAC_RUN(a_file_without_a_status_column_defaults_every_row_to_ok);
+    HAC_RUN(the_value_columns_keep_their_names);
+    HAC_RUN(a_full_recording_header_parses);
+    HAC_RUN(a_utc_column_is_read_and_may_be_empty);
+    HAC_RUN(a_malformed_utc_is_rejected);
+    HAC_RUN(a_field_status_overrides_the_row_for_that_field_alone);
+    HAC_RUN(a_blank_value_is_rejected_where_its_field_is_ok);
+    HAC_RUN(a_field_status_or_accuracy_without_its_field_is_rejected);
+    HAC_RUN(every_accuracy_word_is_recognized);
+    HAC_RUN(accuracy_travels_with_the_sample);
+    HAC_RUN(interpolation_works_field_by_field);
+    HAC_RUN(an_unavailable_field_reads_back_unavailable);
+    HAC_RUN(a_last_line_cut_short_is_dropped);
+    HAC_RUN(nul_bytes_at_the_end_are_ignored);
 
     HAC_RUN(loading_a_missing_file_fails_with_not_found);
     HAC_RUN(interpolation_at_the_midpoint);

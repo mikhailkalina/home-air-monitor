@@ -44,3 +44,10 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 # docs/adr/0007-epaper-backend.md and the dependency pin in
 # components/hac_platform/idf_component.yml.
 CONFIG_EPD_ESP32S3_I80_ROW_OUTPUT=y
+
+# The microSD card's files have long names ("2026-10-16_bme68x_2.csv",
+# docs/adr/0024): FATFS's long file names, their buffer on the heap rather
+# than on the calling task's stack. platform/esp32_t5s3/adp_sd.c refuses to
+# build without them -- a default added here does not reach an sdkconfig
+# that already exists (CLAUDE.md).
+CONFIG_FATFS_LFN_HEAP=y

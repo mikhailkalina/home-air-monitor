@@ -115,6 +115,7 @@ home-air-monitor/
 │   ├── port_net.h
 │   ├── port_telemetry.h
 │   ├── port_storage.h
+│   ├── port_files.h                # append-only files on a medium that may not be there (ADR 0024)
 │   ├── port_power.h
 │   └── port_sensor.h               # sensor_source_t — abstraction ABOVE the drivers
 │
@@ -144,6 +145,12 @@ home-air-monitor/
 │   │   ├── reporter.h              # reporter interface (internal, not a port)
 │   │   ├── mqtt_payload.c          # JSON assembly — a pure function, tested in isolation
 │   │   └── ha_discovery.c          # Home Assistant Discovery — pure generation
+│   ├── recording/                  # sensor recordings and the debug log's files (ADR 0024)
+│   │   ├── record_format.h/.c      # a source's sample → one row of the scenario format (§7.1)
+│   │   ├── record_files.h/.c       # file names by local day, the bound, oldest day first
+│   │   ├── recorder.h/.c           # the watch over the sensor manager; rows to files
+│   │   ├── log_file.h/.c           # log lines to log/<day>.log with their UTC time
+│   │   └── record_limits.h         # the flush interval and the caps, estimates
 │   └── config/
 │       ├── app_config.h/.c         # defaults + overrides from storage
 │       └── config_parse.c
@@ -182,6 +189,7 @@ home-air-monitor/
 │   │   ├── adp_storage.c           # NVS + LittleFS
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
 │   │   ├── adp_log.c               # ESP_LOG
+│   │   ├── adp_sd.c                # the microSD card: SD over SPI + FATFS behind port_files (ADR 0024)
 │   │   └── board_power.c           # PWR_EN without EPDiy: the sensors' rail (null display, test app)
 │   │                               # (no adp_sensors.c: the wrappers are in drivers/, ADR 0014)
 │   │
@@ -193,6 +201,7 @@ home-air-monitor/
 │   │   ├── scenario_world.c        # the room the models measure, from the scenario CSVs (ADR 0017)
 │   │   ├── adp_display_sdl.c       # 960×540 window at 1:1 + e-paper emulation
 │   │   ├── adp_display_png.c       # headless: dump frames to PNG (for CI)
+│   │   ├── adp_files_dir.c         # port_files over a directory: --record, the contract
 │   │   ├── adp_input_sdl.c         # mouse/keyboard → touch events
 │   │   ├── adp_net_sim.c           # controllable link quality and availability
 │   │   ├── adp_telemetry_mqtt.c    # libmosquitto → a real broker
@@ -215,7 +224,11 @@ home-air-monitor/
 │   │   ├── partitions.csv
 │   │   ├── main/
 │   │   │   ├── CMakeLists.txt
-│   │   │   └── main.c              # composition: adapters → app_core
+│   │   │   ├── main.c              # composition: adapters → app_core
+│   │   │   ├── event_loop.c        # the FreeRTOS pump
+│   │   │   ├── card_writer.c       # the task that owns the card: recordings, log, mount (ADR 0024)
+│   │   │   ├── log_tee.c           # everything ESP_LOG prints, also into a ring for the card
+│   │   │   └── console.c           # the serial console's commands
 │   │   ├── components/             # thin wrappers over core/ drivers/ platform/
 │   │   │   ├── hac_core/CMakeLists.txt
 │   │   │   ├── hac_contract/CMakeLists.txt  # the shared contract bodies
@@ -570,6 +583,24 @@ struct port_power_s {
 
 `deep_sleep_ms` is marked as non-returning, which forces the logic to be written correctly: anything that must be preserved is saved before the call. The simulator behaves identically — it destroys the core object and recreates it from the retained block.
 
+**Files on a removable medium are a port of their own** (phase 3f, ADR 0024), not `port_storage`'s `log_append`: the sensor recordings and the debug log are streams of rows on a microSD card that may be absent, pulled out or full, where `port_storage` holds small values written whole into NVS and RTC memory.
+
+```c
+/* ports/port_files.h -- the full promises are in the header */
+typedef struct port_files_s port_files_t;
+struct port_files_s {
+    hal_status_t (*open_append)(port_files_t*, const char *path, port_file_t **out);
+    hal_status_t (*append)(port_files_t*, port_file_t*, const void *data, size_t len);
+    hal_status_t (*flush)(port_files_t*, port_file_t*);   /* fsync */
+    hal_status_t (*close)(port_files_t*, port_file_t*);   /* always releases */
+    hal_status_t (*list)(port_files_t*, const char *dir, port_files_visit_fn, void *ctx);
+    hal_status_t (*remove)(port_files_t*, const char *path);
+    void *impl;
+};
+```
+
+No medium is `HAL_ERR_NOT_READY`, a full one `HAL_ERR_NO_MEM`. There is no `read`: nothing in the core reads a file back yet, and the contract reads back through its runner, independently of the implementation under test. FAT on the card (`adp_sd.c`) and a directory on the PC (`adp_files_dir.c`) are the two implementations.
+
 ---
 
 ## 6. The core: execution model
@@ -728,9 +759,11 @@ Playback engine rules:
 
 - **Looping** — after the last row, time resets to the start; an eight-minute scenario runs indefinitely, portraying a "meeting then ventilation" cycle.
 - **Interpolation** between rows (linear, disableable by flag) — a full day can be described in twenty rows rather than 1440.
-- **The `status` column** drives faults: `ok`, `error`, `stale`, `warmup`, `nan`, `out_of_range`. A row with `co2_ppm=0,status=error` exercises the §15.1 requirement.
+- **The `status` column** drives faults: `ok`, `error`, `stale`, `warmup`, `unavailable`, `nan`, `out_of_range`. A row with `co2_ppm=0,status=error` exercises the §15.1 requirement.
 - **A missing column** means `VAL_UNAVAILABLE`, modelling a sensor that is not installed.
-- **Alternative sources**: JSONL (for recordings from a real device), generators (`--generator sine:co2:400:2000:900s`), and **recording live data from the device** over MQTT into the same CSV format, so a real-world episode can be replayed on a PC.
+- **Optional columns** (phase 3f, ADR 0024), for what the device records: `utc`, the row's wall time, empty before the clock is set; `<field>_status`, a field's own status where it differs from the row's, so a row can carry a warming gas reading beside a valid temperature -- interpolation then works field by field; `<field>_acc`, the source's accuracy verdict (ADR 0021). A file without them plays exactly as before.
+- **Recordings from the device**: the board writes each sensor source's rows to its microSD card in this format (`data/<day>_scd4x.csv`, `data/<day>_bme68x.csv`, ADR 0024), and `simulator --recording <file>` replays one as the source that recorded it, with its id and priority, so a real day replays through the same merge; `--record <dir>` writes the same files from the simulator. Recording over MQTT, planned here for phase 4 at first, is not needed for that any more.
+- **Alternative sources**: JSONL, and generators (`--generator sine:co2:400:2000:900s`).
 
 Multiple files are supported: `--scenario-co2 a.csv --scenario-env b.csv`. The sources run independently, with their own intervals and their own loop points, which is closer to reality than a single combined file.
 
@@ -905,6 +938,8 @@ The same file runs:
 
 This is what makes "it works in the simulator" mean "it will work on hardware". Without contract tests, abstractions inevitably diverge at the edges — NVS key length limits, behaviour on a full partition, I²C error codes.
 
+The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, and `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
+
 ### 9.3 Scenario tests
 
 ```c
@@ -987,6 +1022,7 @@ Realistic reuse candidates: the ESP32-C6 (Thread/Matter), a different e-paper bo
 | **BSEC unavailable for the host architecture** | IAQ cannot be computed on a PC | Narrower than feared: BSEC 2.6.1.0 ships an x86-64 Linux library, so with the archive the BSEC source and its tests build on such a host (`HAC_BSEC`, ADR 0020) -- never in CI, which has no archive. No `iaq_engine` interface: there is one real implementation. The simulator replays IAQ from the CSV; without BSEC the firmware shows raw gas resistance, as §17.2 of the requirements suggests |
 | **vtable overhead** | an indirect call instead of a direct one | Negligible at a measurement rate of 0.03–0.2 Hz. In hot paths (`gfx` primitives) the calls are direct; the port is only crossed at `flush` |
 | **Drift between the two builds** | a file added to only one of them | The shared `sources_core.cmake`; the firmware build runs in CI on every PR |
+| **The card in the device's way** | an SD write that takes a quarter second stalls the event loop; logging waits on the card; a pulled card or a power cut corrupts what was being written | One task owns the card; the event loop only copies events into its queue, the log's hook only into a ring in PSRAM. A recording file is never reopened, so a write cut short stays its last line, which the parser forgives; flushes every few seconds bound what a power cut costs (ADR 0024) |
 
 ---
 

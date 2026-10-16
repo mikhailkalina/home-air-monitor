@@ -16,6 +16,7 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/adp_display.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c_pure.c
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_sd.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_power.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
@@ -25,6 +26,13 @@ idf_component_register(
         esp_timer
         esp_driver_i2c
         esp_driver_gpio
+        # The microSD card (adp_sd.c): ESP-IDF's FATFS, which links ChaN's
+        # FatFs (THIRD_PARTY_NOTICES.md), the SD protocol and SD over SPI.
+        fatfs
+        sdmmc
+        esp_driver_sdspi
+        esp_driver_spi
+        vfs
         esp_psram
         esp_hw_support
         esp_rom

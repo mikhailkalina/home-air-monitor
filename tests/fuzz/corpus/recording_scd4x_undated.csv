@@ -1,0 +1,6 @@
+# home-air-monitor recording: source scd4x, id 1
+t_offset_s,utc,temperature_c,humidity_rh,co2_ppm,status,temperature_c_status,humidity_rh_status,co2_ppm_status
+0.000,,,,,warmup,,,
+5.000,,24.12,47.03,812,ok,,,
+10.000,,24.13,47.01,815,ok,,,
+15.000,,,,,unavailable,,,

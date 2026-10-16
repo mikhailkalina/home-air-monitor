@@ -19,8 +19,14 @@ idf_component_register(
         # from this location (tests/unit/test_wall_clock.c).
         wall_clock.c
         console.c
+        # The microSD card's task and the log's tee into it (phase 3f,
+        # docs/adr/0024). log_ring.c is pure, and tested on the host from
+        # this location (tests/unit/test_log_ring.c).
+        card_writer.c
+        log_ring.c
+        log_tee.c
     INCLUDE_DIRS .
-    REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console
+    REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console heap log
 )
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)

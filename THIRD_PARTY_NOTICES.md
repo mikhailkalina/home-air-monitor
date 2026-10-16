@@ -9,6 +9,7 @@ whenever a dependency is added or removed.
 | ESP-IDF | 5.x | Apache-2.0 | `apps/firmware_esp32`, `platform/esp32_t5s3` | No (external toolchain) |
 | linenoise (inside ESP-IDF's `console` component) | ESP-IDF 5.5's copy | BSD-2-Clause | `apps/firmware_esp32/main/console.c` (the REPL's line editor) | No — part of ESP-IDF; see below |
 | argtable3 (inside ESP-IDF's `console` component) | 3.2.2 | BSD-3-Clause, plus the BSD/Tcl-style notices of code it bundles | `apps/firmware_esp32/main/console.c` (command parsing, `help`) | No — part of ESP-IDF; see below |
+| FatFs (ChaN, inside ESP-IDF's `fatfs` component) | R0.15 w/patch2, ESP-IDF 5.5's copy | FatFs licence (one-clause BSD-style) | `platform/esp32_t5s3/adp_sd.c` (the microSD card's filesystem, phase 3f) | No — part of ESP-IDF; see below |
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
@@ -90,6 +91,22 @@ Nothing is vendored here and the source obligations are ESP-IDF's. What they
 add is a **binary** one: a firmware image given to someone else must carry
 these copyright notices and disclaimers, as the ESP-IDF image already must for
 the rest of ESP-IDF's third-party code. No copyleft term is involved.
+
+## Notes on FatFs, the microSD card's filesystem
+
+Phase 3f (`docs/adr/0024-sd-card-recordings-and-debug-log.md`) mounts the
+board's microSD card through ESP-IDF's `fatfs` component, which links **FatFs**
+by ChaN (`components/fatfs/src/`, "FatFs - Generic FAT Filesystem Module R0.15
+w/patch2", Copyright (C) 2022, ChaN) into the firmware for the first time --
+confirmed in `home_air_monitor.bin`'s size-components (`libfatfs.a`). Checked
+in `~/esp/esp-idf/components/fatfs/src/ff.h`: its licence permits
+redistribution and use in source and binary forms, with or without
+modification, on one condition -- that **redistributions of source code**
+retain the copyright notice, the condition and the disclaimer. A binary
+carries no obligation under it, and nothing of FatFs is vendored here. No
+copyleft term is involved. The rest of what the card pulls in -- the SD
+protocol (`sdmmc`), SD over SPI (`esp_driver_sdspi`), the SPI master driver
+and the VFS -- is ESP-IDF's own, under its Apache-2.0 (the first row).
 
 ## Notes on the EPDiy display backend, and its LGPL-3.0 obligations
 

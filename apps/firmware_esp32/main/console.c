@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 
 #include "board_config.h"
+#include "card_writer.h"
 #include "domain/civil_time.h"
 #include "i2c_scan.h"
 #include "pcf8563.h"
@@ -254,6 +255,125 @@ static int cmd_time_set(void *context, int argc, char **argv)
     return (rtc == HAL_OK && system == HAL_OK) ? 0 : 1;
 }
 
+// --- the card ------------------------------------------------------------------------
+
+// How long a console command waits for the card's task: the slowest thing it
+// does is `sd`'s first count of the free space after a mount, a scan of the
+// whole FAT on a card whose FSINFO does not hold it -- about 5 s on a 16 GB
+// card (adp_sd_card_info()).
+#define CARD_REQUEST_TIMEOUT_MS 30000u
+
+#define BYTES_PER_KB 1024u
+#define BYTES_PER_MB (1024u * 1024u)
+
+// Static: the card's task fills it after the request returns, should it time
+// out (card_writer_request()).
+static card_writer_status_t s_card;
+
+static bool ask_card(card_writer_cmd_t cmd, const char *prefix)
+{
+    const hal_status_t status = card_writer_request(cmd, &s_card, CARD_REQUEST_TIMEOUT_MS);
+    if (status != HAL_OK) {
+        printf("%s the card's task did not answer: %s\n", prefix, hal_status_text(status));
+        return false;
+    }
+    return true;
+}
+
+static void print_card(void)
+{
+    if (!s_card.have_card) {
+        printf("SD %s, last mount esp_err=0x%x, %lu attempts, %lu mounts since boot\n",
+               adp_sd_state_name(s_card.sd_state), (unsigned)s_card.last_mount_err,
+               (unsigned long)s_card.mount_attempts, (unsigned long)s_card.mounts);
+        return;
+    }
+    printf("SD mounted card=%s %s %llu MB, spi %lu kHz\n", s_card.card.name,
+           s_card.card.sdhc ? "SDHC/SDXC" : "SDSC",
+           (unsigned long long)(s_card.card.capacity_bytes / BYTES_PER_MB),
+           (unsigned long)s_card.card.freq_khz);
+    if (s_card.card.free_known) {
+        printf("SD %llu MB free\n", (unsigned long long)(s_card.card.free_bytes / BYTES_PER_MB));
+    }
+    for (size_t i = 0u; i < CARD_WRITER_DIRS; ++i) {
+        printf("SD %s/ %lu files, %llu KB\n", s_card.dirs[i].dir,
+               (unsigned long)s_card.dirs[i].files,
+               (unsigned long long)(s_card.dirs[i].bytes / BYTES_PER_KB));
+    }
+}
+
+static int cmd_sd(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (!ask_card(CARD_WRITER_SPACE, "SD")) {
+        return 1;
+    }
+    print_card();
+    return 0;
+}
+
+static int cmd_sd_mount(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (!ask_card(CARD_WRITER_MOUNT, "SD_MOUNT")) {
+        return 1;
+    }
+    printf("SD_MOUNT %s\n", hal_status_text(s_card.result));
+    print_card();
+    return (s_card.result == HAL_OK) ? 0 : 1;
+}
+
+static int cmd_sd_eject(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (!ask_card(CARD_WRITER_EJECT, "SD_EJECT")) {
+        return 1;
+    }
+    printf("SD_EJECT done: every file flushed and closed, the card unmounted -- safe to remove. "
+           "sd_mount to use it again\n");
+    return 0;
+}
+
+static int cmd_rec(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (!ask_card(CARD_WRITER_STATUS, "REC")) {
+        return 1;
+    }
+    printf("REC %s (%s), card %s, %lu old files removed by the bound\n",
+           (s_card.rec_state == RECORDER_ON) ? "on" : "off", recorder_state_name(s_card.rec_state),
+           adp_sd_state_name(s_card.sd_state), (unsigned long)s_card.rec_files_removed);
+    for (size_t i = 0u; i < s_card.source_count; ++i) {
+        printf("REC source %u %s: %s, %lu rows, %llu bytes, %lu dropped since boot\n",
+               (unsigned)s_card.sources[i].id, s_card.sources[i].tag,
+               (s_card.sources[i].path[0] != '\0') ? s_card.sources[i].path : "no file open",
+               (unsigned long)s_card.sources[i].rows_written,
+               (unsigned long long)s_card.sources[i].bytes_written,
+               (unsigned long)s_card.sources[i].rows_dropped);
+    }
+    printf("REC log %s: %s, %lu lines, %llu bytes, %lu dropped since boot; ring %lu in use, "
+           "%lu at most, %lu overflowed\n",
+           recorder_state_name(s_card.log_state),
+           (s_card.log_path[0] != '\0') ? s_card.log_path : "no file open",
+           (unsigned long)s_card.log_lines_written, (unsigned long long)s_card.log_bytes_written,
+           (unsigned long)s_card.log_lines_dropped, (unsigned long)s_card.ring_used,
+           (unsigned long)s_card.ring_high_water, (unsigned long)s_card.ring_dropped_total);
+    printf("REC event loop: %lu events posted, %lu dropped, the longest post %lu us; the card: "
+           "slowest write %lu us, slowest flush %lu us; writer stack %lu bytes free at least\n",
+           (unsigned long)s_card.events_posted, (unsigned long)s_card.events_dropped,
+           (unsigned long)s_card.post_max_us, (unsigned long)s_card.slowest_write_us,
+           (unsigned long)s_card.slowest_flush_us, (unsigned long)s_card.stack_free_min_bytes);
+    return 0;
+}
+
 // --- i2c ----------------------------------------------------------------------------
 
 static int cmd_i2c_scan(void *context, int argc, char **argv)
@@ -333,6 +453,30 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_time_set,
         .context = NULL,
     };
+    const esp_console_cmd_t sd_cmd = {
+        .command = "sd",
+        .help = "The microSD card: mounted or not and why, its size and free space, the files",
+        .func_w_context = cmd_sd,
+        .context = NULL,
+    };
+    const esp_console_cmd_t sd_mount_cmd = {
+        .command = "sd_mount",
+        .help = "Mount the card now, showing ESP-IDF's SD lines if it fails",
+        .func_w_context = cmd_sd_mount,
+        .context = NULL,
+    };
+    const esp_console_cmd_t sd_eject_cmd = {
+        .command = "sd_eject",
+        .help = "Flush and close every file and unmount the card: safe to remove",
+        .func_w_context = cmd_sd_eject,
+        .context = NULL,
+    };
+    const esp_console_cmd_t rec_cmd = {
+        .command = "rec",
+        .help = "Recording: on or off, the files, rows and bytes since boot, the log file",
+        .func_w_context = cmd_rec,
+        .context = NULL,
+    };
     esp_err_t err = esp_console_cmd_register(&scan);
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&recover);
@@ -345,6 +489,18 @@ static esp_err_t register_commands(adp_i2c_t *bus)
     }
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&time_set_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&sd_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&sd_mount_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&sd_eject_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&rec_cmd);
     }
     return err;
 }
@@ -374,7 +530,8 @@ hal_status_t console_start(const console_deps_t *deps)
 
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
-        log_str("commands", "help i2c_scan i2c_recover restart time time_set"),
+        log_str("commands", "help i2c_scan i2c_recover restart time time_set sd sd_mount "
+                            "sd_eject rec"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

@@ -1,0 +1,5 @@
+# home-air-monitor recording: source bme68x, id 2
+t_offset_s,utc,temperature_c,humidity_rh,pressure_hpa,iaq,gas_res_ohm,status,temperature_c_status,humidity_rh_status,pressure_hpa_status,iaq_status,gas_res_ohm_status,iaq_acc
+0.000,2026-10-16T12:00:03Z,23.41,48.20,1006.214,,153204,ok,,,,warmup,,unreliable
+3.002,2026-10-16T12:00:06Z,23.42,48.18,1006.211,50.00,153310,ok,,,,,,low
+6.004,2026-10-16T12:00:09Z,,,,,,error,,,,,,
