@@ -4,7 +4,13 @@ Date: 2026-09-06
 
 ## Status
 
-Accepted.
+Accepted; **superseded in part by ADR 0019** (2026-10-16). The policy no
+longer defers when it has a partial mode: past the budget it keeps refreshing
+partially until the minimum interval allows a full refresh, and the next
+redraw due after that is full. The emulated panel rescues past the 40 partial
+refreshes this panel was tested with, not past the budget. Deferral remains
+for a panel with no partial mode. The reasoning below is the record of why it
+deferred.
 
 ## Context
 

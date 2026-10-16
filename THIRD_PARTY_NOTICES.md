@@ -238,9 +238,9 @@ any modified font is renamed away from "Bitstream" or "Vera" — DejaVu already
 satisfies that by construction. The full text is vendored at
 `third_party/fonts/dejavu-sans/LICENSE`.
 
-`core/ui/fonts/font_dejavu_sans_16.generated.c`, `_32.generated.c` and
-`_64.generated.c` are a rasterized subset (the printable ASCII range only, at
-three fixed pixel sizes) produced from the vendored TTF by
+`core/ui/fonts/font_dejavu_sans_<size>.generated.c` -- 16, 32, 40, 48, 72 and
+160 px -- are a rasterized subset (the printable ASCII range only, at fixed
+pixel sizes) produced from the vendored TTF by
 `apps/tools/font_gen/generate_fonts.py`; regenerate and commit the result if the
 sizes, the covered range, or the source font change.
 

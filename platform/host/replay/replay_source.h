@@ -96,6 +96,16 @@ hal_status_t replay_parse_file(const char *path, replay_timeline_t *out);
 // Frees the row array. Safe to call on a zeroed or already-disposed timeline.
 void replay_timeline_dispose(replay_timeline_t *timeline);
 
+// The scenario `elapsed_ms` after its start, looping as playback does: each
+// field as a replay source reports it -- the value of an "ok" row
+// (interpolated towards the next "ok" row when `interpolate` is set), the
+// row's own status otherwise, VAL_UNAVAILABLE for a column the file lacks --
+// stamped `ts_ms` and `id`. What replay_source's read() returns, and what
+// the fake bus's sensor models measure in the simulator's fake-i2c mode
+// (platform/host/scenario_world.h).
+void replay_timeline_sample(const replay_timeline_t *tl, uint64_t elapsed_ms, bool interpolate,
+                            uint64_t ts_ms, uint8_t id, sensor_sample_t *out);
+
 // A source backed by an already-parsed timeline plus the sensor_source_t
 // state (start time, playback position) layered on top of it.
 typedef struct {
@@ -104,7 +114,8 @@ typedef struct {
     replay_timeline_t timeline;
     const port_clock_t *clock;
     uint64_t start_ms;
-    bool started;
+    bool started;    // the scenario's clock runs from start_ms
+    bool measuring;  // start() since the last init(): read() returns data
     bool interpolate;
     char name[64];
 } replay_source_t;

@@ -6,7 +6,6 @@ idf_component_register(
     SRCS
         main.c
         event_loop.c
-        bringup_reading.c
         # Compiled into every build, called only under
         # CONFIG_HAC_EPD_CALIBRATION: an unused mode that is never compiled
         # rots unnoticed, and the linker drops it from images that do not

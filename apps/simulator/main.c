@@ -12,12 +12,20 @@
 //   simulator --scenario-co2 scenarios/co2_spike_meeting.csv
 //             --scenario-env scenarios/normal_day.csv --time-scale 60
 //   simulator --headless --frames out/ --duration 600
+//   simulator --sensors fake-i2c --scenario-co2 ... --scenario-env ...
+//
+// Two ways to the same sensor_source_t (architecture 5.4): replay sources
+// that play the scenario files straight into the core, or the real drivers
+// -- the SCD4x and BME68x code the board runs -- over the fake I2C bus,
+// whose device models measure a room played from the same files
+// (platform/host/scenario_world.h). Either way core/app/sensor_manager.c
+// drives them, with the ids and priorities given below, as
+// apps/firmware_esp32/main/main.c gives them on the board.
 //
 // Not yet wired, and deliberately: the control panel, the remaining screens,
-// deep-sleep emulation, networking and telemetry. app_core and sensor_manager
-// do not exist yet either, so the loop below reads the sources and merges
-// their samples itself; that merge moves into core/app/sensor_manager.c in
-// phase 3, together with the source priorities of architecture 6.3.
+// deep-sleep emulation, networking and telemetry. There is no app_core yet
+// either: the loop below runs the sensor manager and the update policy
+// itself, and sleeps until the earlier of their deadlines.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,13 +33,24 @@
 
 #include "adp_clock_virtual.h"
 #include "adp_display_png.h"
+#include "adp_i2c_fake.h"
+#include "adp_log_console.h"
+#include "app/sensor_manager.h"
 #include "app/update_policy.h"
+#include "bme68x_limits.h"
+#include "bme68x_source.h"
+#include "board_config.h"  // plain data: where the board's sensors answer
 #include "domain/measurement.h"
 #include "epd_model.h"
 #include "host_time.h"
+#include "i2c_models/bme680_model.h"
+#include "i2c_models/scd41_model.h"
 #include "port_display.h"
 #include "port_input.h"
+#include "port_log.h"
 #include "replay/replay_source.h"
+#include "scd4x_source.h"
+#include "scenario_world.h"
 #include "ui/screen_home.h"
 #include "ui/view_model.h"
 
@@ -45,28 +64,35 @@
 #define SIM_PANEL_WIDTH 960u
 #define SIM_PANEL_HEIGHT 540u
 
-// How often the loop reads the sources. Requirements 11.2, USB mode: a sensor
-// read every 5 to 30 seconds.
-#define SIM_SENSOR_INTERVAL_MS 5000u
-
-// A reading older than this is shown as stale (requirements 9.2). Six sample
-// intervals: long enough that one missed read is not an alarm.
-#define SIM_MAX_READING_AGE_MS 30000u
+// The sources' ids, which every measurement carries as its source_id, and
+// which the priorities below are written in -- the same two the firmware
+// gives the same two sensors.
+#define SIM_CO2_SOURCE_ID 1u  // the SCD41, or its replay stand-in
+#define SIM_ENV_SOURCE_ID 2u  // the BME68x, or its replay stand-in
 
 // Windowed: how long one loop iteration waits before looking again. Small
 // enough that the window stays responsive, large enough not to spin a core.
 #define SIM_TICK_MS 20u
 
-// Headless: virtual time per iteration. There is nothing to wait for, so the
-// run goes as fast as the machine allows.
+// Headless with no deadline at all (no sources, no timer pending): how far
+// virtual time moves per iteration.
 #define SIM_HEADLESS_STEP_MS 1000u
+
+// How soon to try again after a redraw that did not reach the panel.
+#define SIM_REDRAW_RETRY_MS 1000u
 
 // Headless runs must terminate on their own, or CI hangs.
 #define SIM_DEFAULT_HEADLESS_DURATION_S 600u
 
+typedef enum {
+    SIM_SENSORS_REPLAY = 0,
+    SIM_SENSORS_FAKE_I2C,
+} sim_sensors_t;
+
 typedef struct {
     const char *scenario_co2;
     const char *scenario_env;
+    sim_sensors_t sensors;
     const char *frames_dir;
     double time_scale;
     float zoom;
@@ -79,8 +105,12 @@ static void usage(const char *argv0)
 {
     printf("usage: %s [options]\n"
            "\n"
-           "  --scenario-co2 <file>  CSV replayed as the CO2 source (SCD41 stand-in)\n"
-           "  --scenario-env <file>  CSV replayed as the environment source (BME68x stand-in)\n"
+           "  --scenario-co2 <file>  CSV of what the SCD41 measures: CO2, temperature, humidity\n"
+           "  --scenario-env <file>  CSV of what the BME68x measures: temperature, humidity,\n"
+           "                         pressure, gas resistance\n"
+           "  --sensors <mode>       replay (default): the files feed the core directly;\n"
+           "                         fake-i2c: the real SCD4x and BME68x drivers read device\n"
+           "                         models on a fake I2C bus, which measure the files\n"
            "  --time-scale <n>       virtual seconds per real second (default 1)\n"
            "  --headless             no window: write frames instead (implies a duration)\n"
            "  --frames <dir>         directory for the headless PNG frames\n"
@@ -120,6 +150,17 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
         } else if (strcmp(arg, "--scenario-env") == 0) {
             TAKE_VALUE("--scenario-env");
             out->scenario_env = argv[++i];
+        } else if (strcmp(arg, "--sensors") == 0) {
+            TAKE_VALUE("--sensors");
+            const char *mode = argv[++i];
+            if (strcmp(mode, "replay") == 0) {
+                out->sensors = SIM_SENSORS_REPLAY;
+            } else if (strcmp(mode, "fake-i2c") == 0) {
+                out->sensors = SIM_SENSORS_FAKE_I2C;
+            } else {
+                fprintf(stderr, "--sensors must be replay or fake-i2c, not %s\n", mode);
+                return false;
+            }
         } else if (strcmp(arg, "--frames") == 0) {
             TAKE_VALUE("--frames");
             out->frames_dir = argv[++i];
@@ -164,84 +205,134 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
 
 // --- sensors ---------------------------------------------------------------
 
-// Copies the quantities a source actually claims. Anything else it happens to
-// have filled in is ignored: a source that does not advertise CO2 must not be
-// able to put a number in the CO2 field, however plausible.
-//
-// This is the placeholder for core/app/sensor_manager.c (architecture 6.3),
-// which adds the source priorities and the fallback behaviour of
-// requirements 4.3. Until then, one source per quantity, last write wins.
-static void merge_sample(air_reading_t *reading, const sensor_source_t *src,
-                         const sensor_sample_t *sample)
+// Everything either mode builds. One of each, static in main(): the
+// drivers' state and the device models are too large for comfort on the
+// stack, and the SCD4x driver allows one instance per image anyway.
+typedef struct {
+    // replay mode
+    replay_source_t co2_replay;
+    replay_source_t env_replay;
+
+    // fake-i2c mode
+    adp_i2c_fake_t bus;
+    scd41_model_t scd41;
+    bme680_model_t bme680;
+    scenario_world_t world;
+    bool world_loaded;
+    scd4x_source_t scd4x;
+    bme68x_source_t bme68x;
+
+    sensor_source_t *sources[2];
+    size_t count;
+} sim_sensors_rig_t;
+
+static const sensor_caps_t CO2_CAPS =
+    (sensor_caps_t)(SENS_CAP_CO2 | SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY);
+static const sensor_caps_t ENV_CAPS = (sensor_caps_t)(SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY |
+                                                      SENS_CAP_PRESSURE | SENS_CAP_GAS_RES);
+
+// Replay: the CO2 file stands in for the SCD41, with the SCD41's three
+// quantities, so the fallback of architecture 6.3 has something to fall back
+// on; a column the file lacks is simply VAL_UNAVAILABLE.
+static bool build_replay(sim_sensors_rig_t *r, const sim_args_t *args, const port_clock_t *clock)
 {
-    if ((src->caps & SENS_CAP_TEMPERATURE) != 0u) {
-        reading->temperature_c = sample->temperature_c;
-    }
-    if ((src->caps & SENS_CAP_HUMIDITY) != 0u) {
-        reading->humidity_rh = sample->humidity_rh;
-    }
-    if ((src->caps & SENS_CAP_PRESSURE) != 0u) {
-        reading->pressure_hpa = sample->pressure_hpa;
-    }
-    if ((src->caps & SENS_CAP_CO2) != 0u) {
-        reading->co2_ppm = sample->co2_ppm;
-    }
-    if ((src->caps & SENS_CAP_IAQ) != 0u) {
-        reading->iaq = sample->iaq;
-    }
-    if ((src->caps & SENS_CAP_VOC) != 0u) {
-        reading->voc_index = sample->voc_index;
-    }
-    if ((src->caps & SENS_CAP_GAS_RES) != 0u) {
-        reading->gas_resistance_ohm = sample->gas_resistance_ohm;
-    }
-}
-
-// A source that fails to read leaves its quantities marked, not stale-looking:
-// requirements 15.1 wants the failure on the screen, not a plausible old
-// number pretending to be current.
-static void mark_source_failed(air_reading_t *reading, const sensor_source_t *src, uint64_t now_ms)
-{
-    sensor_sample_t failed;
-    memset(&failed, 0, sizeof(failed));
-
-    const measurement_f32_t err = measurement_status(VAL_ERROR, now_ms, src->id);
-    failed.temperature_c = err;
-    failed.humidity_rh = err;
-    failed.pressure_hpa = err;
-    failed.co2_ppm = err;
-    failed.iaq = err;
-    failed.voc_index = err;
-    failed.gas_resistance_ohm = err;
-
-    merge_sample(reading, src, &failed);
-}
-
-static void sample_sources(air_reading_t *reading, sensor_source_t **sources, size_t count,
-                           uint64_t now_ms)
-{
-    for (size_t i = 0u; i < count; ++i) {
-        sensor_source_t *src = sources[i];
-        sensor_sample_t sample;
-
-        memset(&sample, 0, sizeof(sample));
-        if (src->read(src, &sample) == HAL_OK) {
-            merge_sample(reading, src, &sample);
-        } else {
-            mark_source_failed(reading, src, now_ms);
+    if (args->scenario_co2 != NULL) {
+        const hal_status_t st = replay_source_init(&r->co2_replay, args->scenario_co2, CO2_CAPS,
+                                                   SIM_CO2_SOURCE_ID, clock, true);
+        if (st != HAL_OK) {
+            fprintf(stderr, "cannot load %s (status %d)\n", args->scenario_co2, (int)st);
+            return false;
         }
+        r->sources[r->count++] = &r->co2_replay.port;
     }
+    if (args->scenario_env != NULL) {
+        const hal_status_t st = replay_source_init(&r->env_replay, args->scenario_env, ENV_CAPS,
+                                                   SIM_ENV_SOURCE_ID, clock, true);
+        if (st != HAL_OK) {
+            fprintf(stderr, "cannot load %s (status %d)\n", args->scenario_env, (int)st);
+            return false;
+        }
+        r->sources[r->count++] = &r->env_replay.port;
+    }
+    return true;
+}
+
+// Fake I2C: a model on the bus for each scenario given, at the address its
+// sensor answers at on the board (board_config.h), measuring the room the
+// files describe, and the board's own driver reading it. The BME680's
+// die runs warmer than the room by exactly what its driver takes off, so the
+// screen shows the room in both modes.
+static bool build_fake_i2c(sim_sensors_rig_t *r, const sim_args_t *args,
+                           adp_clock_virtual_t *vclock, const port_log_t *log)
+{
+    const port_clock_t *clock = adp_clock_virtual_port(vclock);
+    const hal_status_t st = scenario_world_init(&r->world, args->scenario_co2, args->scenario_env,
+                                                true, HAC_BME68X_SELF_HEATING_C);
+    if (st != HAL_OK) {
+        fprintf(stderr, "cannot load the scenario files (status %d)\n", (int)st);
+        return false;
+    }
+    r->world_loaded = true;
+    adp_i2c_fake_init(&r->bus, vclock);
+
+    if (args->scenario_co2 != NULL) {
+        scd41_model_init(&r->scd41, vclock->now_ms);
+        (void)adp_i2c_fake_attach(&r->bus, BOARD_SCD4X_I2C_ADDRESS, scd41_model_port(&r->scd41));
+        const scd4x_source_config_t cfg = {
+            .bus = adp_i2c_fake_port(&r->bus),
+            .clock = clock,
+            .log = log,
+            .address = BOARD_SCD4X_I2C_ADDRESS,
+            .id = SIM_CO2_SOURCE_ID,
+            .mode = SCD4X_MODE_PERIODIC,
+        };
+        (void)scd4x_source_setup(&r->scd4x, &cfg);
+        r->sources[r->count++] = &r->scd4x.port;
+    }
+    if (args->scenario_env != NULL) {
+        bme680_model_init(&r->bme680, vclock->now_ms);
+        (void)adp_i2c_fake_attach(&r->bus, BOARD_BME68X_I2C_ADDRESS, bme680_model_port(&r->bme680));
+        const bme68x_source_config_t cfg = {
+            .bus = adp_i2c_fake_port(&r->bus),
+            .clock = clock,
+            .log = log,
+            .address = BOARD_BME68X_I2C_ADDRESS,
+            .id = SIM_ENV_SOURCE_ID,
+        };
+        (void)bme68x_source_setup(&r->bme68x, &cfg);
+        r->sources[r->count++] = &r->bme68x.port;
+    }
+    scenario_world_attach(&r->world, (args->scenario_co2 != NULL) ? &r->scd41 : NULL,
+                          (args->scenario_env != NULL) ? &r->bme680 : NULL);
+    return true;
+}
+
+// The priorities of architecture 6.3: temperature and humidity from the
+// BME68x, the SCD41 as fallback; CO2 from the SCD41 alone; pressure and gas
+// from the BME68x alone. Same as the firmware's.
+static void set_priorities(sensor_manager_t *m)
+{
+    static const uint8_t prefer_env[] = {SIM_ENV_SOURCE_ID, SIM_CO2_SOURCE_ID};
+    static const uint8_t only_env[] = {SIM_ENV_SOURCE_ID};
+    static const uint8_t only_co2[] = {SIM_CO2_SOURCE_ID};
+    (void)sensor_manager_set_priority(m, SENSOR_FIELD_TEMPERATURE, prefer_env, 2u);
+    (void)sensor_manager_set_priority(m, SENSOR_FIELD_HUMIDITY, prefer_env, 2u);
+    (void)sensor_manager_set_priority(m, SENSOR_FIELD_PRESSURE, only_env, 1u);
+    (void)sensor_manager_set_priority(m, SENSOR_FIELD_CO2, only_co2, 1u);
+    (void)sensor_manager_set_priority(m, SENSOR_FIELD_GAS_RESISTANCE, only_env, 1u);
 }
 
 // --- the loop --------------------------------------------------------------
 
-// What drawing a frame needs, and nothing else: the loop keeps its own local
-// state, so this does not become a second, shadow composition root.
+// What one step of the loop needs, and nothing else: the loop keeps its own
+// local state, so this does not become a second, shadow composition root.
 typedef struct {
     port_display_t *display;
     const port_clock_t *clock;
+    sensor_manager_t sensors;
     update_policy_t policy;
     air_reading_t reading;
+    bool deferral_logged;
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
@@ -251,9 +342,14 @@ typedef struct {
 
 static void log_decision(const update_decision_t *d, const update_policy_t *policy)
 {
+    const char *note = "";
+    if (d->full_forced_by_budget) {
+        note = "  (partial budget spent: full refresh required)";
+    } else if (d->partial_past_budget) {
+        note = "  (past the budget: the full refresh waits for the panel's minimum interval)";
+    }
     printf("[policy] %-8s reason=%-12s partials=%u%s\n", update_policy_action_name(d->action),
-           update_policy_reason_name(d->reason), update_policy_partials_since_full(policy),
-           d->full_forced_by_budget ? "  (partial budget spent: full refresh required)" : "");
+           update_policy_reason_name(d->reason), update_policy_partials_since_full(policy), note);
 }
 
 static void redraw(sim_t *sim, const update_decision_t *d)
@@ -293,6 +389,49 @@ static void redraw(sim_t *sim, const update_decision_t *d)
     }
 }
 
+// One pass: whatever the sensors have due, then whatever the panel has due.
+// Returns when the loop should next look -- the earlier of the sensor
+// manager's deadline and the policy's.
+static uint64_t step(sim_t *sim)
+{
+    const uint64_t sensors_due = sensor_manager_poll(&sim->sensors, &sim->reading);
+
+    // The time after the poll, not before it: a poll takes time -- the
+    // drivers wait out their sensors' command times on this clock -- and a
+    // reading stamped later than the "now" it is aged against has no age at
+    // all, which measurement_age_ms() rightly calls stale.
+    const uint64_t now_ms = sim->clock->now_ms(sim->clock);
+    sim->reading.uptime_s = (uint32_t)(now_ms / 1000u);
+    air_reading_apply_age(&sim->reading, now_ms, sim->sensors.cfg.max_age_ms);
+
+    update_decision_t decision;
+    update_policy_evaluate(&sim->policy, &sim->reading, &decision);
+
+    if (decision.action != UPDATE_NONE) {
+        log_decision(&decision, &sim->policy);
+        redraw(sim, &decision);
+        sim->deferral_logged = false;
+        // What is due after this redraw: the deadline above was "now".
+        update_policy_evaluate(&sim->policy, &sim->reading, &decision);
+    } else if (decision.deferred_by_min_interval && !sim->deferral_logged) {
+        // Only a panel with no partial mode gets here (ADR 0019). Said once
+        // per episode: repeating it every tick would bury the flush log it is
+        // meant to explain.
+        printf("[policy] deferred: a full refresh is due (%s) but the panel's minimum "
+               "full-refresh interval has not elapsed; waiting until t=%llu ms\n",
+               update_policy_reason_name(decision.reason),
+               (unsigned long long)decision.next_deadline_ms);
+        sim->deferral_logged = true;
+    }
+
+    uint64_t next =
+        (sensors_due < decision.next_deadline_ms) ? sensors_due : decision.next_deadline_ms;
+    if (next <= now_ms) {
+        next = now_ms + SIM_REDRAW_RETRY_MS;  // a redraw that did not reach the panel
+    }
+    return next;
+}
+
 int main(int argc, char **argv)
 {
     sim_args_t args;
@@ -310,31 +449,17 @@ int main(int argc, char **argv)
     adp_clock_virtual_init(&vclock, args.time_scale);
     const port_clock_t *clock = adp_clock_virtual_port(&vclock);
 
-    // --- sensors ---
-    replay_source_t co2_source;
-    replay_source_t env_source;
-    sensor_source_t *sources[2];
-    size_t source_count = 0u;
+    adp_log_console_t console_log;
+    adp_log_console_init(&console_log);
+    const port_log_t *log = adp_log_console_port(&console_log);
 
-    if (args.scenario_co2 != NULL) {
-        const hal_status_t st =
-            replay_source_init(&co2_source, args.scenario_co2, SENS_CAP_CO2, 1u, clock, true);
-        if (st != HAL_OK) {
-            fprintf(stderr, "cannot load %s (status %d)\n", args.scenario_co2, (int)st);
-            return 1;
-        }
-        sources[source_count++] = &co2_source.port;
-    }
-    if (args.scenario_env != NULL) {
-        const sensor_caps_t env_caps = (sensor_caps_t)(SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY |
-                                                       SENS_CAP_PRESSURE | SENS_CAP_GAS_RES);
-        const hal_status_t st =
-            replay_source_init(&env_source, args.scenario_env, env_caps, 2u, clock, true);
-        if (st != HAL_OK) {
-            fprintf(stderr, "cannot load %s (status %d)\n", args.scenario_env, (int)st);
-            return 1;
-        }
-        sources[source_count++] = &env_source.port;
+    // --- sensors ---
+    static sim_sensors_rig_t rig;
+    const bool built = (args.sensors == SIM_SENSORS_FAKE_I2C)
+                           ? build_fake_i2c(&rig, &args, &vclock, log)
+                           : build_replay(&rig, &args, clock);
+    if (!built) {
+        return 1;
     }
 
     // --- display and input ---
@@ -392,12 +517,19 @@ int main(int argc, char **argv)
     }
 
     // --- logic ---
-    sim_t sim;
+    static sim_t sim;
     memset(&sim, 0, sizeof(sim));
     sim.display = display;
     sim.clock = clock;
     framebuffer_init(&sim.previous_fb, previous_fb_pixels, previous_fb_size, display->width,
                      display->height, display->format);
+
+    const sensor_manager_config_t sensors_cfg = sensor_manager_config_default();
+    sensor_manager_init(&sim.sensors, clock, log, &sensors_cfg);
+    for (size_t i = 0u; i < rig.count; ++i) {
+        (void)sensor_manager_add(&sim.sensors, rig.sources[i], SENSOR_MANAGER_DEFAULT_INTERVAL_MS);
+    }
+    set_priorities(&sim.sensors);
 
     const uint64_t stop_at_ms = (args.duration_s == 0u) ? 0u : (uint64_t)args.duration_s * 1000u;
 
@@ -409,28 +541,35 @@ int main(int argc, char **argv)
            "%u partial refreshes before a full one\n",
            display->width, display->height, 16u, limits.min_full_refresh_interval_ms,
            limits.max_partial_refreshes_before_full);
-    printf("[sim] time scale x%.4g, %s\n", args.time_scale,
-           args.headless ? "headless" : "windowed");
+    printf("[sim] time scale x%.4g, %s, sensors: %s\n", args.time_scale,
+           args.headless ? "headless" : "windowed",
+           (args.sensors == SIM_SENSORS_FAKE_I2C) ? "fake-i2c (drivers over device models)"
+                                                  : "replay");
 
     air_reading_init(&sim.reading);
 
-    for (size_t i = 0u; i < source_count; ++i) {
-        (void)sources[i]->init(sources[i]);
-        (void)sources[i]->start(sources[i]);
-    }
-
     // --- the wait loop ---
     //
-    // Windowed, virtual time follows real time through the configured scale;
-    // headless, it simply jumps, because there is nothing to watch.
+    // Windowed, virtual time follows real time through the configured scale
+    // and the loop looks every SIM_TICK_MS; headless, there is nothing to
+    // watch, so the clock jumps straight to the next deadline.
     uint64_t last_real_ms = host_monotonic_ms();
-    uint64_t next_sample_ms = 0u;
-    bool deferral_logged = false;
+    uint64_t next_wake_ms = 0u;
     bool running = true;
 
     while (running) {
         if (args.headless) {
-            adp_clock_virtual_advance(&vclock, SIM_HEADLESS_STEP_MS);
+            const uint64_t now = clock->now_ms(clock);
+            uint64_t target = next_wake_ms;
+            if (target == SENSOR_MANAGER_NO_DEADLINE) {
+                target = now + SIM_HEADLESS_STEP_MS;
+            }
+            if (stop_at_ms != 0u && target > stop_at_ms) {
+                target = stop_at_ms;
+            }
+            if (target > now) {
+                adp_clock_virtual_advance(&vclock, target - now);
+            }
         } else {
             const uint64_t now_real = host_monotonic_ms();
             const uint64_t elapsed_real = (now_real >= last_real_ms) ? now_real - last_real_ms : 0u;
@@ -439,29 +578,8 @@ int main(int argc, char **argv)
         }
 
         const uint64_t now_ms = clock->now_ms(clock);
-
-        if (now_ms >= next_sample_ms) {
-            sample_sources(&sim.reading, sources, source_count, now_ms);
-            next_sample_ms = now_ms + SIM_SENSOR_INTERVAL_MS;
-        }
-        sim.reading.uptime_s = (uint32_t)(now_ms / 1000u);
-        air_reading_apply_age(&sim.reading, now_ms, SIM_MAX_READING_AGE_MS);
-
-        update_decision_t decision;
-        update_policy_evaluate(&sim.policy, &sim.reading, &decision);
-
-        if (decision.action != UPDATE_NONE) {
-            log_decision(&decision, &sim.policy);
-            redraw(&sim, &decision);
-            deferral_logged = false;
-        } else if (decision.deferred_by_min_interval && !deferral_logged) {
-            // Said once per episode: repeating it every tick would bury the
-            // flush log it is meant to explain.
-            printf("[policy] deferred: a full refresh is due (%s) but the panel's minimum "
-                   "full-refresh interval has not elapsed; waiting until t=%llu ms\n",
-                   update_policy_reason_name(decision.reason),
-                   (unsigned long long)decision.next_deadline_ms);
-            deferral_logged = true;
+        if (now_ms >= next_wake_ms) {
+            next_wake_ms = step(&sim);
         }
 
         if (input != NULL) {
@@ -504,8 +622,11 @@ int main(int argc, char **argv)
     if (args.headless) {
         adp_display_png_deinit(&png_display);
     }
-    for (size_t i = 0u; i < source_count; ++i) {
-        sources[i]->deinit(sources[i]);
+    for (size_t i = 0u; i < rig.count; ++i) {
+        rig.sources[i]->deinit(rig.sources[i]);
+    }
+    if (rig.world_loaded) {
+        scenario_world_dispose(&rig.world);
     }
     free(previous_fb_pixels);
 

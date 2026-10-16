@@ -9,6 +9,14 @@ board yet. The board's boot scan has seen the sensor answer at `0x77`
 (2026-10-16, `docs/hardware/board_notes.md`, "Sensors on the bus"), nothing
 more.
 
+**Update 2026-10-16, phase 3c:** the driver met the board's sensor in the
+test app's `port_sensor` contract (ELF `6ab6ea91b...`) and passed every
+check. It is a BME680 (`variant_id=0x00`), its calibration is now the host
+model's default, and its first two measurements after init reported the gas
+valid but the heater not stable -- the first evidence against the 100 ms
+heater ESTIMATE (`docs/hardware/board_notes.md`, "Checks still to do on the
+board", item 5).
+
 ## Context
 
 Phase 3b brings the second sensor, the BME68x: temperature, humidity,
@@ -180,7 +188,9 @@ keeps the cell. The "updated" line and the fault counts follow what the cell
 shows. The three existing golden frames are unchanged; a fourth,
 `screen_home_no_bsec`, differs from `screen_home_normal` in that cell only.
 The simulator, whose scenarios carry `gas_res_ohm` and no IAQ, now shows it
-too.
+too. Since 2026-10-16 the label is "Gas": at the home screen's larger type
+(ADR 0019's branch, `core/ui/screen_home.h`) "Gas resistance" no longer fits
+a quarter of the panel, and the kOhm under the number says the rest.
 
 ## Consequences
 

@@ -22,6 +22,7 @@ add_library(hac_platform_host STATIC
     i2c_models/regfile_model.c
     i2c_models/scd41_model.c
     png_write.c
+    scenario_world.c
     replay/replay_source.c
     replay/fault_inject.c
 )

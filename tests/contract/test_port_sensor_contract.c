@@ -3,7 +3,8 @@
 // Host runner for port_sensor_contract.c, the shared body, against every
 // sensor_source_t this build has: replay_source (CSV playback);
 // scd4x_source -- Sensirion's own driver -- over the fake I2C bus with the
-// SCD41 command-level model on it, in both of its modes; and bme68x_source
+// SCD41 command-level model on it, in both of its modes, and its
+// set_ambient(); and bme68x_source
 // -- Bosch's own driver -- over the same bus with the BME680 register-level
 // model. Each prints one "contract port_sensor <implementation> <check>
 // PASS|FAIL" line per check.
@@ -135,10 +136,40 @@ static void scd4x_source_satisfies_the_sensor_source_contract_in_periodic_mode(v
     scd4x_rig_init(&rig, SCD4X_MODE_PERIODIC);
     run(&rig.source.port, &rig.clock, "scd4x_source(periodic)+scd41_model");
 
-    // Over the real protocol: nothing was refused along the way.
-    HAC_CHECK_EQ_INT((int)rig.sensor.stats.rejected, 0);
+    // Over the real protocol, one refusal and no more: the suite's second
+    // init() met the sensor still measuring, and the serial-number request
+    // init() sends before its stop -- to find out exactly that -- was
+    // refused, as a measuring SCD4x refuses it (scd4x_source.h, "Resets").
+    HAC_CHECK_EQ_INT((int)rig.sensor.stats.rejected, 1);
+    HAC_CHECK(rig.source.found_measuring);
     HAC_CHECK_EQ_INT((int)rig.sensor.stats.nacked_while_busy, 0);
     HAC_CHECK(rig.sensor.state == SCD41_MODEL_IDLE);  // suspend() stopped it
+    // The second init()'s reinit put the pressure back to its default
+    // (datasheet 3.7.5), so this is what the sensor holds afterwards, not
+    // the 1013.25 the suite handed it before -- which reached it as 1013 too.
+    HAC_CHECK_EQ_INT((int)rig.sensor.ambient_pressure_hpa, 1013);
+}
+
+static void scd4x_set_ambient_reaches_the_sensor_as_whole_hectopascals(void)
+{
+    static scd4x_rig_t rig;
+    scd4x_rig_init(&rig, SCD4X_MODE_PERIODIC);
+    adp_clock_virtual_advance(&rig.clock, SCD41_MODEL_POWER_UP_MS);
+    sensor_source_t *src = &rig.source.port;
+    HAC_CHECK_EQ_INT(src->init(src), HAL_OK);
+    HAC_CHECK_EQ_INT(src->start(src), HAL_OK);
+
+    sensor_ambient_t ambient = {.pressure_hpa = measurement_ok(951.6f, 0u, 2u)};
+    HAC_CHECK_EQ_INT(src->set_ambient(src, &ambient), HAL_OK);  // while it measures
+    HAC_CHECK_EQ_INT((int)rig.sensor.ambient_pressure_hpa, 952);
+
+    // Outside 700-1200 hPa (datasheet 3.7.5): refused, and the sensor keeps
+    // what it had.
+    ambient.pressure_hpa = measurement_ok(1300.0f, 0u, 2u);
+    HAC_CHECK_EQ_INT(src->set_ambient(src, &ambient), HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT((int)rig.sensor.ambient_pressure_hpa, 952);
+    HAC_CHECK_EQ_INT((int)rig.sensor.stats.rejected, 0);
+    src->deinit(src);  // one SCD4x per image (scd4x_hal.h): let the next rig claim it
 }
 
 static void scd4x_source_satisfies_the_sensor_source_contract_in_single_shot_mode(void)
@@ -173,8 +204,9 @@ static void bme68x_source_satisfies_the_sensor_source_contract(void)
     run(&source.port, &clock, "bme68x_source+bme680_model");
 
     // Over the real register protocol: nothing read early, nothing written
-    // that the sensor dropped, nothing refused.
-    HAC_CHECK_EQ_INT((int)sensor.stats.completed, 1);
+    // that the sensor dropped, nothing refused. Two measurements: one before
+    // the suite's second init(), one after.
+    HAC_CHECK_EQ_INT((int)sensor.stats.completed, 2);
     HAC_CHECK_EQ_INT((int)sensor.stats.early_reads, 0);
     HAC_CHECK_EQ_INT((int)sensor.stats.ignored_writes, 0);
     HAC_CHECK_EQ_INT((int)sensor.stats.read_only_writes, 0);
@@ -188,20 +220,42 @@ static void bme68x_source_satisfies_the_sensor_source_contract(void)
 // that check -- fails.
 
 typedef enum {
-    MUTANT_REPORTS_OUTSIDE_CAPS,  // fills a field it has no capability for
-    MUTANT_READS_BEFORE_START,    // returns data before start()
+    MUTANT_REPORTS_OUTSIDE_CAPS,      // fills a field it has no capability for
+    MUTANT_READS_BEFORE_START,        // returns data before start()
+    MUTANT_INIT_ONLY_ONCE,            // a second init() reports a failure
+    MUTANT_AMBIENT_WANTS_EVERYTHING,  // set_ambient() refuses a pressure nobody measured
+    MUTANT_AMBIENT_REFUSES_PRESSURE,  // set_ambient() refuses a plausible pressure
 } mutant_kind_t;
 
 typedef struct {
     sensor_source_t port;
     sensor_source_t *inner;
     mutant_kind_t kind;
+    unsigned inits;
 } mutant_t;
 
 static hal_status_t mutant_init(sensor_source_t *self)
 {
     mutant_t *m = (mutant_t *)self->impl;
-    return m->inner->init(m->inner);
+    const hal_status_t status = m->inner->init(m->inner);
+    m->inits++;
+    if (m->kind == MUTANT_INIT_ONLY_ONCE && m->inits > 1u) {
+        return HAL_ERR_IO;  // the inner source did start over; only the answer lies
+    }
+    return status;
+}
+
+static hal_status_t mutant_set_ambient(sensor_source_t *self, const sensor_ambient_t *ambient)
+{
+    mutant_t *m = (mutant_t *)self->impl;
+    const bool measured = ambient->pressure_hpa.status == VAL_OK;
+    if (m->kind == MUTANT_AMBIENT_WANTS_EVERYTHING && !measured) {
+        return HAL_ERR_INVALID_ARG;
+    }
+    if (m->kind == MUTANT_AMBIENT_REFUSES_PRESSURE && measured) {
+        return HAL_ERR_INVALID_ARG;
+    }
+    return m->inner->set_ambient(m->inner, ambient);
 }
 
 static hal_status_t mutant_start(sensor_source_t *self)
@@ -287,7 +341,9 @@ static failure_log_t run_against_mutant(mutant_kind_t kind)
             },
         .inner = &rig.source.port,
         .kind = kind,
+        .inits = 0u,
     };
+    m.port.set_ambient = mutant_set_ambient;
     m.port.impl = &m;
 
     const port_sensor_contract_env_t env = {.advance = advance_virtual_clock, .ctx = &rig.clock};
@@ -303,10 +359,34 @@ static void the_contract_catches_a_source_reporting_outside_its_capabilities(voi
     HAC_CHECK_EQ_INT((int)log.count, 1);
 }
 
+// Data with no measurement asked for breaks the rule twice in the suite:
+// before the first start(), and right after the second init().
 static void the_contract_catches_a_source_reading_before_start(void)
 {
     const failure_log_t log = run_against_mutant(MUTANT_READS_BEFORE_START);
     HAC_CHECK(failed(&log, "sensor.read_before_start_not_ready"));
+    HAC_CHECK(failed(&log, "sensor.init_again_forgets_the_measurement"));
+    HAC_CHECK_EQ_INT((int)log.count, 2);
+}
+
+static void the_contract_catches_a_source_that_cannot_start_over(void)
+{
+    const failure_log_t log = run_against_mutant(MUTANT_INIT_ONLY_ONCE);
+    HAC_CHECK(failed(&log, "sensor.init_again_ok"));
+    HAC_CHECK_EQ_INT((int)log.count, 1);
+}
+
+static void the_contract_catches_set_ambient_refusing_an_unmeasured_pressure(void)
+{
+    const failure_log_t log = run_against_mutant(MUTANT_AMBIENT_WANTS_EVERYTHING);
+    HAC_CHECK(failed(&log, "sensor.set_ambient_ignores_what_is_not_ok"));
+    HAC_CHECK_EQ_INT((int)log.count, 1);
+}
+
+static void the_contract_catches_set_ambient_refusing_a_plausible_pressure(void)
+{
+    const failure_log_t log = run_against_mutant(MUTANT_AMBIENT_REFUSES_PRESSURE);
+    HAC_CHECK(failed(&log, "sensor.set_ambient_takes_a_plausible_pressure"));
     HAC_CHECK_EQ_INT((int)log.count, 1);
 }
 
@@ -316,8 +396,12 @@ int main(void)
     HAC_RUN(a_co2_only_replay_source_reports_nothing_outside_its_capability);
     HAC_RUN(scd4x_source_satisfies_the_sensor_source_contract_in_periodic_mode);
     HAC_RUN(scd4x_source_satisfies_the_sensor_source_contract_in_single_shot_mode);
+    HAC_RUN(scd4x_set_ambient_reaches_the_sensor_as_whole_hectopascals);
     HAC_RUN(bme68x_source_satisfies_the_sensor_source_contract);
     HAC_RUN(the_contract_catches_a_source_reporting_outside_its_capabilities);
     HAC_RUN(the_contract_catches_a_source_reading_before_start);
+    HAC_RUN(the_contract_catches_a_source_that_cannot_start_over);
+    HAC_RUN(the_contract_catches_set_ambient_refusing_an_unmeasured_pressure);
+    HAC_RUN(the_contract_catches_set_ambient_refusing_a_plausible_pressure);
     return hac_test_summary();
 }

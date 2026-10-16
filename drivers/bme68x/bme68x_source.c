@@ -218,6 +218,50 @@ static hal_status_t fail(bme68x_source_t *s, sensor_sample_t *out, hal_status_t 
     return status;
 }
 
+// This unit's calibration, once per source, in the fake model's own field
+// names (platform/host/i2c_models/bme680_model.h), so the lines can become
+// the model's calibration for this board: the model ships a published set,
+// not this sensor's (docs/hardware/board_notes.md, open item "The BME68x's
+// estimates"). Five lines, as a log line carries six fields at most.
+static void log_calibration(const bme68x_source_t *s)
+{
+    const struct bme68x_calib_data *c = &s->dev.calib;
+    const log_field_t t_heat[] = {
+        log_u64("par_t1", c->par_t1),
+        log_i64("par_t2", c->par_t2),
+        log_i64("par_t3", c->par_t3),
+        log_u64("res_heat_range", c->res_heat_range),
+        log_i64("res_heat_val", c->res_heat_val),
+        log_i64("range_switching_error", c->range_sw_err),
+    };
+    const log_field_t p_low[] = {
+        log_u64("par_p1", c->par_p1), log_i64("par_p2", c->par_p2), log_i64("par_p3", c->par_p3),
+        log_i64("par_p4", c->par_p4), log_i64("par_p5", c->par_p5),
+    };
+    const log_field_t p_high[] = {
+        log_i64("par_p6", c->par_p6), log_i64("par_p7", c->par_p7),   log_i64("par_p8", c->par_p8),
+        log_i64("par_p9", c->par_p9), log_u64("par_p10", c->par_p10),
+    };
+    const log_field_t h_low[] = {
+        log_u64("par_h1", c->par_h1), log_u64("par_h2", c->par_h2), log_i64("par_h3", c->par_h3),
+        log_i64("par_h4", c->par_h4), log_i64("par_h5", c->par_h5),
+    };
+    const log_field_t h_gas[] = {
+        log_u64("par_h6", c->par_h6),  log_i64("par_h7", c->par_h7),  log_i64("par_g1", c->par_gh1),
+        log_i64("par_g2", c->par_gh2), log_i64("par_g3", c->par_gh3),
+    };
+    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (1/5)", t_heat,
+                   sizeof t_heat / sizeof t_heat[0]);
+    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (2/5)", p_low,
+                   sizeof p_low / sizeof p_low[0]);
+    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (3/5)", p_high,
+                   sizeof p_high / sizeof p_high[0]);
+    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (4/5)", h_low,
+                   sizeof h_low / sizeof h_low[0]);
+    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (5/5)", h_gas,
+                   sizeof h_gas / sizeof h_gas[0]);
+}
+
 static hal_status_t src_init(sensor_source_t *self)
 {
     bme68x_source_t *s = self_of(self);
@@ -315,6 +359,10 @@ static hal_status_t src_init(sensor_source_t *self)
     };
     port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "sensor ready", fields,
                    sizeof fields / sizeof fields[0]);
+    if (!s->calibration_logged) {
+        log_calibration(s);
+        s->calibration_logged = true;
+    }
     s->initialized = true;
     return HAL_OK;
 }

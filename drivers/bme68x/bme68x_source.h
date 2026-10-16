@@ -49,7 +49,10 @@
 // software reset leaves it powered and configured as the last firmware left
 // it (docs/hardware/board_notes.md, the open item on software resets).
 // init() soft-resets it either way -- bme68x_init() begins with that -- so
-// both continue from the sensor's power-on defaults.
+// both continue from the sensor's power-on defaults. The first init() also
+// logs the sensor's calibration NVM, in five INFO lines named as the host's
+// BME680 model names them, so this unit's set can replace the model's
+// published one.
 //
 // Bosch's bme68x_set_op_mode(), which every configuration call goes
 // through, waits for the sensor to report sleep mode with no bound on how
@@ -103,8 +106,9 @@ typedef struct {
     uint64_t next_read_ms;    // what ready_in_ms() counts down to
     bool burn_in_started;
     uint64_t burn_in_until_ms;
-    bool failing;      // the last read failed; logged once per streak
-    bool gas_failing;  // the last gas value was not valid; likewise
+    bool failing;             // the last read failed; logged once per streak
+    bool gas_failing;         // the last gas value was not valid; likewise
+    bool calibration_logged;  // the first init() logs the sensor's calibration
 
     uint8_t chip_id;     // BME68X_CHIP_ID (0x61) for any BME68x
     uint8_t variant_id;  // 0x00 a BME680, 0x01 a BME688

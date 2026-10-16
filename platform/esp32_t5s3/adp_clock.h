@@ -14,7 +14,8 @@
 // docs/hardware/board_notes.md for the phase that actually exercises deep
 // sleep; nothing here assumes an answer either way.
 //
-// wall_ms() returns 0 (unsynchronized) until phase 3 wires up SNTP.
+// wall_ms() returns 0 (unsynchronized) until phase 4 brings Wi-Fi and, with
+// it, SNTP (docs/architecture.md 10).
 
 #ifndef HAC_PLATFORM_ESP32_T5S3_ADP_CLOCK_H
 #define HAC_PLATFORM_ESP32_T5S3_ADP_CLOCK_H

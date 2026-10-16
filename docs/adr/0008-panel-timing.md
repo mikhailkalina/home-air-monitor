@@ -180,6 +180,13 @@ shown one grey step lighter, and a full refresh resets it. With a budget of
 10, a policy that respects the panel shows no outlines in the window, exactly
 as on the glass; one that does not shows them from the eleventh.
 
+**Since ADR 0019** (2026-10-16) the budget is **20**, the owner's choice --
+the "half of what is invisible at 50 cm" this section passed over -- and it is
+where a full refresh becomes due, not a wall: if the panel's minimum interval
+has not elapsed by then, the policy keeps refreshing partially until it has,
+and the next redraw after that is full. The close-up outlines this section
+describes are the accepted price.
+
 **Cost.** In `scenarios/co2_spike_meeting.csv`, whose CO2 climbs about
 300 ppm a minute, `update_policy` issues a partial refresh roughly every 11 s,
 so a full refresh -- 3.7 s, mostly flashing -- comes about every 2 minutes. A

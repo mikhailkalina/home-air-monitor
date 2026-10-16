@@ -59,8 +59,15 @@ int32_t gfx_draw_text(framebuffer_t *fb, int32_t x, int32_t y, const font_t *fon
                       uint8_t value);
 
 // The width in pixels gfx_draw_text() would advance the cursor by; does not
-// touch `fb`. Used to right-align or centre text before drawing it.
+// touch `fb`. Used to centre text, or to place something after it.
 int32_t gfx_measure_text(const font_t *font, const char *text);
+
+// How far right of the starting x the text's ink reaches: the rightmost
+// column any glyph paints, plus one; 0 for text with no ink. It differs from
+// gfx_measure_text() by the last glyphs' side bearings -- a "K" paints a
+// pixel past its own advance -- and is what to right-align text by, so its
+// ink, not its advance, ends at the edge.
+int32_t gfx_measure_text_ink(const font_t *font, const char *text);
 
 #ifdef __cplusplus
 }

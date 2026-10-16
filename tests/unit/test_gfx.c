@@ -402,6 +402,20 @@ static void measure_text_matches_where_draw_text_leaves_the_cursor(void)
     HAC_CHECK_EQ_INT(gfx_measure_text(&k_test_font, ""), 0);
 }
 
+// 'A' paints columns 0-1 and advances 3; 'B' paints column 1 of its own cell
+// and advances 2. The ink ends short of the advance, and where the last
+// glyph -- or any earlier one -- puts it.
+static void measure_text_ink_is_where_the_ink_ends(void)
+{
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(&k_test_font, "A"), 2);
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(&k_test_font, "AB"), 5);
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(&k_test_font, "BA"), 4);
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(&k_test_font, "AxB"), 5);
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(&k_test_font, "xyz"), 0);
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(NULL, "AB"), 0);
+    HAC_CHECK_EQ_INT(gfx_measure_text_ink(&k_test_font, NULL), 0);
+}
+
 static void a_null_font_or_text_is_handled_without_crashing(void)
 {
     uint8_t storage[30] = {0};  // 10x6 GRAY4
@@ -435,6 +449,7 @@ int main(void)
     HAC_RUN(draw_text_places_each_glyph_and_advances_the_cursor);
     HAC_RUN(an_unsupported_codepoint_is_skipped_without_advancing);
     HAC_RUN(measure_text_matches_where_draw_text_leaves_the_cursor);
+    HAC_RUN(measure_text_ink_is_where_the_ink_ends);
     HAC_RUN(a_null_font_or_text_is_handled_without_crashing);
 
     return hac_test_summary();

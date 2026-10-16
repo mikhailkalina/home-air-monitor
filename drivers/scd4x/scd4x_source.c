@@ -458,6 +458,22 @@ static void src_deinit(sensor_source_t *self)
     scd4x_hal_release(s);
 }
 
+// The pressure, for the CO2 compensation; nothing else in `ambient` concerns
+// this sensor. reinit() in init() puts the sensor back on its EEPROM's
+// altitude setting, which is why the sensor manager hands this over again
+// after every init() (docs/adr/0018-ambient-compensation-through-port-sensor.md).
+static hal_status_t src_set_ambient(sensor_source_t *self, const sensor_ambient_t *ambient)
+{
+    scd4x_source_t *s = self_of(self);
+    if (!s->initialized) {
+        return HAL_ERR_NOT_READY;
+    }
+    if (ambient->pressure_hpa.status != VAL_OK) {
+        return HAL_OK;
+    }
+    return scd4x_source_set_ambient_pressure(s, ambient->pressure_hpa.value);
+}
+
 hal_status_t scd4x_source_setup(scd4x_source_t *s, const scd4x_source_config_t *cfg)
 {
     if (s == NULL || cfg == NULL || cfg->bus == NULL || cfg->clock == NULL) {
@@ -476,6 +492,7 @@ hal_status_t scd4x_source_setup(scd4x_source_t *s, const scd4x_source_config_t *
     s->port.read = src_read;
     s->port.suspend = src_suspend;
     s->port.deinit = src_deinit;
+    s->port.set_ambient = src_set_ambient;
     s->port.impl = s;
     return HAL_OK;
 }

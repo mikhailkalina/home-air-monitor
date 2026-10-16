@@ -215,13 +215,13 @@ static void a_bme688_is_named_as_one(void)
 }
 
 // The byte order and nibble packing of every parameter, through Bosch's own
-// reader: what it holds is the published set the model was given.
-static void init_reads_the_calibration_back_through_bosch(void)
+// reader: what it holds is the set the model was given -- this board's by
+// default, then the published one, two independent sets of numbers.
+static void check_read_back(rig_t *r, const bme680_model_calibration_t *p)
 {
-    rig_t *r = rig_make(true);
+    r->sensor.calibration = *p;
     HAC_CHECK_EQ_INT(r->src->init(r->src), HAL_OK);
     const struct bme68x_calib_data *k = &r->source.dev.calib;
-    const bme680_model_calibration_t *p = &BME680_MODEL_PUBLISHED_CALIBRATION;
     HAC_CHECK_EQ_INT(k->par_t1, p->par_t1);
     HAC_CHECK_EQ_INT(k->par_t2, p->par_t2);
     HAC_CHECK_EQ_INT(k->par_t3, p->par_t3);
@@ -248,6 +248,13 @@ static void init_reads_the_calibration_back_through_bosch(void)
     HAC_CHECK_EQ_INT(k->res_heat_range, p->res_heat_range);
     HAC_CHECK_EQ_INT(k->res_heat_val, p->res_heat_val);
     HAC_CHECK_EQ_INT(k->range_sw_err, p->range_switching_error);
+}
+
+static void init_reads_the_calibration_back_through_bosch(void)
+{
+    rig_t *r = rig_make(true);
+    check_read_back(r, &BME680_MODEL_BOARD_CALIBRATION);
+    check_read_back(r, &BME680_MODEL_PUBLISHED_CALIBRATION);
 
     // And a negative range switching error, which is a signed 4-bit field.
     r->sensor.calibration.range_switching_error = -5;

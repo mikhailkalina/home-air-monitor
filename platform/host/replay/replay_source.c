@@ -389,23 +389,63 @@ static void sample_field(const replay_timeline_t *tl, replay_field_t field, size
     *out = measurement_ok((float)value, ts_ms, id);
 }
 
+void replay_timeline_sample(const replay_timeline_t *tl, uint64_t elapsed_ms, bool interpolate,
+                            uint64_t ts_ms, uint8_t id, sensor_sample_t *out)
+{
+    const double elapsed_s = (double)elapsed_ms / 1000.0;
+    double phase = 0.0;
+    if (tl->loop_period_s > 0.0) {
+        phase = fmod(elapsed_s, tl->loop_period_s);
+    }
+
+    if (tl->row_count == 0u) {
+        memset(out, 0, sizeof(*out));  // nothing to play: every field VAL_UNAVAILABLE
+        return;
+    }
+
+    size_t i0;
+    size_t i1;
+    double frac;
+    find_bracket(tl, phase, &i0, &i1, &frac);
+
+    sample_field(tl, REPLAY_FIELD_TEMPERATURE_C, i0, i1, frac, interpolate, ts_ms, id,
+                 &out->temperature_c);
+    sample_field(tl, REPLAY_FIELD_HUMIDITY_RH, i0, i1, frac, interpolate, ts_ms, id,
+                 &out->humidity_rh);
+    sample_field(tl, REPLAY_FIELD_PRESSURE_HPA, i0, i1, frac, interpolate, ts_ms, id,
+                 &out->pressure_hpa);
+    sample_field(tl, REPLAY_FIELD_CO2_PPM, i0, i1, frac, interpolate, ts_ms, id, &out->co2_ppm);
+    sample_field(tl, REPLAY_FIELD_IAQ, i0, i1, frac, interpolate, ts_ms, id, &out->iaq);
+    sample_field(tl, REPLAY_FIELD_VOC_INDEX, i0, i1, frac, interpolate, ts_ms, id, &out->voc_index);
+    sample_field(tl, REPLAY_FIELD_GAS_RESISTANCE_OHM, i0, i1, frac, interpolate, ts_ms, id,
+                 &out->gas_resistance_ohm);
+}
+
 static replay_source_t *self_of(sensor_source_t *port)
 {
     return (replay_source_t *)port->impl;
 }
 
+// The file is already loaded by replay_source_init(). Like a sensor's reset,
+// init() forgets the measurement in progress -- read() wants a start() again
+// -- but not the scenario's clock: the room goes on whatever the sensor does.
 static hal_status_t rs_init(sensor_source_t *self)
 {
-    (void)self;
-    return HAL_OK;  // the file is already loaded by replay_source_init()
+    self_of(self)->measuring = false;
+    return HAL_OK;
 }
 
+// The scenario's clock starts at the first start(); later ones begin nothing
+// new, as a sensor measuring on its own schedule does not (port_sensor.h).
 static hal_status_t rs_start(sensor_source_t *self)
 {
     replay_source_t *rs = self_of(self);
 
-    rs->start_ms = rs->clock->now_ms(rs->clock);
-    rs->started = true;
+    if (!rs->started) {
+        rs->start_ms = rs->clock->now_ms(rs->clock);
+        rs->started = true;
+    }
+    rs->measuring = true;
     return HAL_OK;
 }
 
@@ -419,39 +459,13 @@ static hal_status_t rs_read(sensor_source_t *self, sensor_sample_t *out)
 {
     replay_source_t *rs = self_of(self);
 
-    if (!rs->started) {
+    if (!rs->measuring) {
         return HAL_ERR_NOT_READY;
     }
 
-    uint64_t now = rs->clock->now_ms(rs->clock);
-    uint64_t elapsed_ms = (now >= rs->start_ms) ? (now - rs->start_ms) : 0u;
-    double elapsed_s = (double)elapsed_ms / 1000.0;
-
-    double phase = 0.0;
-    if (rs->timeline.loop_period_s > 0.0) {
-        phase = fmod(elapsed_s, rs->timeline.loop_period_s);
-    }
-
-    size_t i0, i1;
-    double frac;
-    find_bracket(&rs->timeline, phase, &i0, &i1, &frac);
-
-    uint8_t id = self->id;
-    sample_field(&rs->timeline, REPLAY_FIELD_TEMPERATURE_C, i0, i1, frac, rs->interpolate, now, id,
-                 &out->temperature_c);
-    sample_field(&rs->timeline, REPLAY_FIELD_HUMIDITY_RH, i0, i1, frac, rs->interpolate, now, id,
-                 &out->humidity_rh);
-    sample_field(&rs->timeline, REPLAY_FIELD_PRESSURE_HPA, i0, i1, frac, rs->interpolate, now, id,
-                 &out->pressure_hpa);
-    sample_field(&rs->timeline, REPLAY_FIELD_CO2_PPM, i0, i1, frac, rs->interpolate, now, id,
-                 &out->co2_ppm);
-    sample_field(&rs->timeline, REPLAY_FIELD_IAQ, i0, i1, frac, rs->interpolate, now, id,
-                 &out->iaq);
-    sample_field(&rs->timeline, REPLAY_FIELD_VOC_INDEX, i0, i1, frac, rs->interpolate, now, id,
-                 &out->voc_index);
-    sample_field(&rs->timeline, REPLAY_FIELD_GAS_RESISTANCE_OHM, i0, i1, frac, rs->interpolate, now,
-                 id, &out->gas_resistance_ohm);
-
+    const uint64_t now = rs->clock->now_ms(rs->clock);
+    const uint64_t elapsed_ms = (now >= rs->start_ms) ? (now - rs->start_ms) : 0u;
+    replay_timeline_sample(&rs->timeline, elapsed_ms, rs->interpolate, now, self->id, out);
     return HAL_OK;
 }
 

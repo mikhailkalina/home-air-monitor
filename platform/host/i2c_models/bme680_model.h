@@ -45,9 +45,11 @@
 //     change too. A driver that relies on either is wrong for this model,
 //     and the counter shows it.
 //
-// The calibration is a published one, not this board's: phase 3c replaces
-// it with the unit's own, read off the board once a composition runs the
-// driver there.
+// The calibration is this board's own (BME680_MODEL_BOARD_CALIBRATION),
+// logged by bme68x_source at its first init() on the board -- five
+// "calibration (n/5)" lines in this struct's field names. A published set
+// from another sensor stays beside it, for the outside test vectors that were
+// computed with it.
 //
 // Only the BME680's gas registers are modelled. A test may set variant_id to
 // the BME688's 0x01 to see what a driver reports for it, but Bosch's driver
@@ -142,8 +144,13 @@ typedef struct {
 } bme680_model_calibration_t;
 
 // A real BME680's calibration, as published in pimoroni/bme680-python; see
-// the definition for where exactly.
+// the definition for where exactly. The set the outside test vectors were
+// computed with.
 extern const bme680_model_calibration_t BME680_MODEL_PUBLISHED_CALIBRATION;
+
+// This board's BME680, read off it in phase 3c; see the definition. What
+// bme680_model_init() gives a model.
+extern const bme680_model_calibration_t BME680_MODEL_BOARD_CALIBRATION;
 
 // One measurement, in physical units, as the sensor's die sees it -- its
 // self-heating included. The model turns it into raw ADC values.
@@ -211,7 +218,7 @@ typedef struct {
     bme680_model_reading_t last;   // what the last completed measurement was of
 } bme680_model_t;
 
-// A sensor that was powered up at `now_ms`: the published calibration, a
+// A sensor that was powered up at `now_ms`: this board's calibration, a
 // BME680's identity, every register at its reset state (Table 20), the
 // default reading, and the address refused for the start-up time.
 void bme680_model_init(bme680_model_t *m, uint64_t now_ms);

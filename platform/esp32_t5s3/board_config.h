@@ -57,10 +57,13 @@
 // build when they do not. The reasoning lives in epd_emulation.h and
 // docs/adr/0008-panel-timing.md, not here.
 //
-// OBSERVED (phase 2c, 2026-10-13): ten partial refreshes, one below the
-// earliest step at which ghosting probes showed anything on this panel, even
-// looked at closely.
-#define BOARD_EPD_MAX_PARTIAL_REFRESHES_BEFORE_FULL 10u
+// THE OWNER'S CHOICE (2026-10-16, docs/adr/0019-partials-past-the-budget.md),
+// within what was OBSERVED (phase 2c, ADR 0008): twenty partial refreshes,
+// half of the forty the ghosting probes ran with nothing visible from 50 cm.
+// Close up, faint outlines of earlier digits appeared from the 11th in the
+// worst pattern; phase 2c's budget of 10 sat below that, this one accepts
+// them for fewer flashing full refreshes.
+#define BOARD_EPD_MAX_PARTIAL_REFRESHES_BEFORE_FULL 20u
 
 // A GUARD, NOT A MEASUREMENT: a rate limit on the 3.7 s flashing refresh. No
 // stopwatch measures how often a panel "tolerates" a full refresh, the vendor
@@ -263,17 +266,19 @@
 // and every one is now EPDiy's own business. That is most of the unmeasured
 // surface this board_config.h used to carry.
 
-// The display temperature handed to epd_draw_base(). A PLACEHOLDER, not a
-// measurement: EPDiy selects a waveform temperature range with it, and the
-// ED047TC1 waveform it ships declares a single range (num_temp_ranges = 1),
-// so today every value lands in the same range and the number cannot
-// misbehave. It stops being free the moment a waveform with several ranges
-// is used.
+// The display temperature handed to EPDiy's update while no measured one is
+// known. A PLACEHOLDER, not a measurement: EPDiy selects a waveform
+// temperature range with it, and the ED047TC1 waveform it ships declares a
+// single range (num_temp_ranges = 1), so today every value lands in the same
+// range and the number cannot misbehave. It stops being free the moment a
+// waveform with several ranges is used.
 //
-// Replaced once a composition runs bme68x_source (drivers/bme68x/, phase
-// 3b), which gives a real ambient temperature; EPDiy also offers
-// epd_ambient_temperature() for boards with a sensor on the panel itself,
-// which this one does not have.
+// Since phase 3c only the fallback: the firmware's composition hands the
+// sensor manager's temperature -- the BME68x's, or the SCD41's when it is
+// down -- to adp_display_set_temperature() after every poll, and this
+// applies only before the first reading and while no source has a fresh
+// one. EPDiy also offers epd_ambient_temperature() for boards with a sensor
+// on the panel itself, which this one does not have.
 #define BOARD_EPD_ASSUMED_TEMPERATURE_C 25
 
 #endif  // HAC_PLATFORM_ESP32_T5S3_BOARD_CONFIG_H

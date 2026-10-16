@@ -70,7 +70,7 @@ ctest --test-dir build/host-debug --output-on-failure
 # Build with sanitizers
 cmake --preset host-asan && cmake --build build/host-asan && ctest --test-dir build/host-asan
 
-# Run the simulator
+# Run the simulator (--sensors fake-i2c: the real drivers over device models)
 ./build/host-debug/apps/simulator/simulator \
     --scenario-co2 scenarios/co2_spike_meeting.csv \
     --scenario-env scenarios/normal_day.csv --time-scale 60
@@ -259,9 +259,50 @@ home screen's IAQ cell shows gas resistance while nothing provides IAQ. All veri
 host only. Three estimates in `drivers/bme68x/bme68x_limits.h` — heater profile, gas
 burn-in, self-heating offset — are phase 3c's to replace.
 
-Next: a composition that runs `scd4x_source` and `bme68x_source` on the board, then phase 3c
-(BSEC, or this unit's own figures for the estimates). See the open items in
-`docs/hardware/board_notes.md`.
+Phase 3c on branch `phase-3c-sensor-manager` (ADR 0017, 0018): `core/app/sensor_manager.c`
+drives every `sensor_source_t` through init/start/ready_in_ms/read on its own schedule, merges
+the fields by priorities the composition passes in (temperature and humidity from the BME68x,
+the SCD41 as fallback), marks a failed source's fields `VAL_ERROR` at once, and starts a source
+that fails three times over with `init()` after a doubling backoff (5 s to 120 s) -- `init()`
+again without `deinit()` is now part of `port_sensor`. An optional `set_ambient()` in the port
+carries the BME68x's pressure to the SCD41's CO2 compensation. Both event loops wake at the
+earlier of the manager's and `update_policy`'s deadlines, and age the reading against the
+clock read *after* the poll (a poll takes time; before it, every fresh value looked stale).
+`bringup_reading.c` and the simulator's own merge are gone. The simulator has
+`--sensors replay|fake-i2c`; in fake-i2c the drivers read device models that measure
+`platform/host/scenario_world.c`, played from the same CSVs, and a test holds the two modes to
+the same readings. The firmware wires both sensors on the bus `adp_i2c` brings up, hands the
+measured temperature to `adp_display_set_temperature()`, and logs each source's sample once a
+minute. `CONFIG_HAC_DISPLAY_NULL` and the test app raise `PWR_EN` themselves
+(`board_power.c`). The `i2c.master` log tag is not quietened (ADR 0017). Verified on the host
+(unit, contract, integration, ASan). On the board, 2026-10-16: the test app's `port_sensor`
+contract passes against both real sensors -- an SCD41 and a BME680 -- with `PWR_EN` raised by
+`board_power.c`; this BME680's calibration is now the host model's default; the firmware ran
+both under the manager for half an hour, and unplugging both showed `ERR` at once and recovered
+25 s after the replug without a reboot. Measured: event loop stack 4,716 of 8,192 bytes used,
+internal RAM after EPD init 1,352 bytes lower than before the sensors, the heater stable from
+the second measurement after each init. Still owed by the board
+(`docs/hardware/board_notes.md`, open item "Phase 3c's measurements"): temperature against a
+reference beside the device, the gas reading's real burn-in (hours), CO2 near outdoor air, the
+SCD41's warm-up.
+
+Also on this branch, at the owner's request after watching the board (ADR 0019, superseding ADR
+0004's deferral and ADR 0008's budget): the partial-refresh budget is 20, past it
+`update_policy` keeps refreshing partially until the panel's minimum full-refresh interval
+allows a full refresh, and the next redraw due after that is full -- the screen no longer
+freezes, and nothing is redrawn only because the interval elapsed. At most one redraw per 5 s
+sensor cycle (`min_redraw_interval_ms`), so both sensors' readings of a cycle cost one partial
+refresh: at most 20 partials and at least 105 s between full refreshes. The 2-minute periodic
+redraw runs only while the data on screen is getting older; with fresh data the footer says
+"updated just now" and the screen changes only when the readings do. The simulator's panel model
+performs and counts such partials and rescues only past the 40 the panel was tested with. And
+the home screen's text is as large as its widest strings allow -- CO2 at 160px, the grid's
+readings at 72px, labels and units at 32px, bar and footer at 40px, 3px rules -- with
+`tests/unit/test_screen_home_layout.c` checking by pixels that the worst cases do not collide;
+the gas cell's label is "Gas".
+
+Next: the rest of phase 3c's measurements, then BSEC or this unit's own figures for the
+remaining estimates.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

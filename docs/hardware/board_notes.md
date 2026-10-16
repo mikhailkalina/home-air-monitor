@@ -288,7 +288,11 @@ the firmware:
 - **Sensor power follows `PWR_EN`.** It is undefined from power-up until
   EPDiy's init first writes the register, so the sensors are initialised
   after the display adapter, allowing each sensor's power-up time after
-  that. A `CONFIG_HAC_DISPLAY_NULL` build never writes the register at all.
+  that. A `CONFIG_HAC_DISPLAY_NULL` build, and the on-target test app, never
+  run EPDiy's init; since phase 3c they write the register themselves
+  (`platform/esp32_t5s3/board_power.c`: the bits `epd_poweroff()` leaves,
+  `PWR_EN` set, output enable and start pulse low) before anything touches
+  the bus.
 - **A hardware reset power-cycles the sensors**: every such boot starts the
   SCD41 from idle, warm-up included, and the BME68x unconfigured. A software
   reset may or may not do the same, so the SCD4x driver must not assume
@@ -362,8 +366,9 @@ the sensor's 30 ms power-up time first, because the switched `3V3` may have
 risen only when EPDiy's init wrote the register; it stops periodic
 measurement and reinitialises whatever the reset was; and it logs the serial
 number, the variant and `found_measuring` -- whether the sensor was still
-measuring, which after a reset that dropped `PWR_EN` it cannot be. Nothing in
-the firmware runs it yet.
+measuring, which after a reset that dropped `PWR_EN` it cannot be. Since
+phase 3c the firmware runs it, under the sensor manager
+(`docs/adr/0017-sensor-manager.md`).
 
 **How the BME68x driver starts** (`drivers/bme68x/bme68x_source.h`,
 `docs/adr/0016-bme68x-driver.md`, phase 3b): it waits the sensor's 2 ms
@@ -373,15 +378,27 @@ configured or measuring starts from its power-on state; it checks the sensor
 is asleep before anything goes through Bosch's unbounded wait for sleep mode;
 and it logs the chip id, the variant (`BME680`, `BME688` or `unknown`, from
 register `0xF0`) and the measurement time, 143 ms by Bosch's estimate with
-the 100 ms heater. Nothing in the firmware runs it yet either.
+the 100 ms heater; the first init() also logs the calibration NVM, in five
+`calibration (n/5)` lines. Since phase 3c the firmware runs it too.
+
+**The order the firmware brings them up in** (phase 3c,
+`apps/firmware_esp32/main/main.c`): the display adapter -- EPDiy's init
+raises `PWR_EN` and the blue LED lights -- or, in a
+`CONFIG_HAC_DISPLAY_NULL` build, `board_power_switched_3v3_on()`; then
+`BOARD_SWITCHED_3V3_SETTLE_MS` (50 ms); then the bus and the boot scan; then
+the event loop, whose first poll initialises each sensor, each driver
+waiting its own power-up time once more before its first transfer: 30 ms
+for the SCD4x (its datasheet v1.7, Table 7, "power-up time", maximum),
+2 ms for the BME68x (BME680 datasheet, Table 1, `t_startup`). Nothing
+touches the bus while `PWR_EN` is low.
 
 **Checks still to do on the board, in order:**
 
 1. ~~`restart` at the console, watching the blue LED.~~ Done 2026-10-16:
    it stays lit -- open item "What a software reset does to `PWR_EN`".
 2. ~~Wire the sensors and scan.~~ Done 2026-10-16, above.
-3. Run `scd4x_source` on the board, once a composition does: its first log
-   line names the variant, and its first minutes of readings replace the
+3. Run `scd4x_source` on the board -- the phase-3c firmware does: its first
+   log line names the variant, and its first minutes of readings replace the
    warm-up estimate (`SCD4X_WARMUP_MS`).
 4. Run `bme68x_source` beside it: its first log line names the variant
    (open item "Which sensor variants are fitted"); its first readings say
@@ -390,6 +407,51 @@ the 100 ms heater. Nothing in the firmware runs it yet either.
    hour of readings, beside the SCD41's temperature and a reference
    thermometer, gives the three estimates of the open item "The BME68x's
    estimates" their first measured values.
+5. ~~The `port_sensor` contract in the test app.~~ **Done 2026-10-16**
+   (`idf.py -T hac_platform build`, ELF SHA256 `6ab6ea91b...`):
+   `6 Tests 0 Failures`, every `contract port_sensor` line PASS -- the SCD4x
+   in periodic and single-shot mode and the BME68x, each through init, a
+   measurement, `set_ambient()`, init again without deinit and a second
+   measurement. What the log shows beyond PASS:
+   - **`board_power_switched_3v3_on()` works**: with the sensors wired and
+     EPDiy never run, every `adp_i2c: bus up` line read both lines high,
+     and the `port_i2c` contract passed in full on the shared bus.
+   - **The parts**: an SCD41 (serial `0x2103c5073b73`) and a BME680
+     (`chip_id=0x61`, `variant_id=0x00`) -- open item "Which sensor
+     variants are fitted".
+   - **The SCD41 refuses `get_serial_number` while it measures**: the
+     periodic suite's second init() met it measuring (`found_measuring=true`),
+     and the one refused transfer cost three `i2c.master` lines. Whether the
+     address or the command byte was refused, the log does not say -- see
+     the open item "What the SCD41 does where its datasheet is silent".
+   - **Single shots were done by 5 s on the board's clock**: both of them,
+     read at the first attempt after 5000 ms, with no refused transfer.
+   - **This BME680's first two measurements after init came back
+     `gas_valid=true heat_stab=false`** -- the heater did not reach 300 C in
+     the 100 ms profile, from cold. Whether it does once warm is the
+     firmware run's to show (open item "The BME68x's estimates").
+   - **This BME680's calibration**, now the host model's
+     (`BME680_MODEL_BOARD_CALIBRATION`).
+   - In passing: the `port_i2c` contract's forced hang took five clocks to
+     free this time, two on 2026-10-13 -- the RTC's position in its byte
+     when the injection stops differs between runs.
+6. ~~On the running firmware, unplug the sensors.~~ **Done 2026-10-16**
+   (ELF `ea261721f...`, the owner's log of 02:28-02:59; boot at about
+   02:28:51 by the log's own clock): both sensors, on one connector, out at
+   02:41:45 and back at 02:42:45. Within the poll after the unplug both
+   failed (`scd4x ... step=read status=not_found`, `bme68x ... step=start
+   status=not_found`), the panel showed `ERR` in every sensor field in the
+   next partial refresh, and the display adapter went back to its assumed
+   25 C. Three failures in a row each, then re-init attempts 5, 10, 20 and
+   40 s apart; the one 25 s after the replug found both (`inits=5
+   after_failure=true`), the SCD41 power-cycled by the unplug
+   (`found_measuring=false`) and so warming up again, the BME680 burning in
+   again. No reboot; the bus only ever refused addresses, never timed out.
+   Each attempt cost 12 `i2c.master` lines for the two sensors, three per
+   refused transfer. Not yet tried: one sensor alone, which this wiring
+   cannot do without separating the connectors.
+7. The measurements phase 3c owes (open item "Phase 3c's measurements";
+   the first run's are recorded there).
 
 ## Per-row signal sequence (STH, CKH, CKV, LE)
 
@@ -518,7 +580,13 @@ The e-paper panel must not be partially refreshed for an extended period —
 doing so leaves residual ghosting and causes irreversible damage. This is the
 hardware fact behind `max_partial_refreshes_before_full` in
 `ports/port_display.h`. **Set from observation in phase 2c: 10**
-(`docs/adr/0008-panel-timing.md`, "Ghosting, and the budget").
+(`docs/adr/0008-panel-timing.md`, "Ghosting, and the budget"); **20 since
+2026-10-16**, the owner's choice (`docs/adr/0019-partials-past-the-budget.md`),
+accepting close-up outlines from the 11th for fewer full refreshes. Partial
+refreshes may also go past it while a full refresh waits for the minimum
+interval -- never at the firmware's pace, which draws at most once per 5 s
+sensor cycle (20 partials, at least 105 s between full refreshes) -- and the
+next redraw after the interval is full.
 
 ## Ghosting observed in the simulator — a calibration starting point
 
@@ -736,7 +804,90 @@ layout settles, not before.
       the rail is back. Powering the sensors from the always-on `VDD3V3`
       instead would remove the whole question, at the cost of switching
       them off by command rather than by rail.
-- [ ] **Which sensor variants are fitted.** BME680 or BME688 (the BME68x's
+- [ ] **Phase 3c's measurements.** The firmware logs what each needs. Each
+      replaces an estimate or sets a comparison point, and lands here and at
+      the estimate's definition. **First run 2026-10-16** (ELF
+      `ea261721f...`, 30 minutes from boot at about 02:28:51; the owner
+      warmed the BME680 by hand and breathed on both sensors in the first ten
+      minutes, unplugged both at 02:41:45-02:42:45 and aired the room
+      02:45-02:53; a reference sensor in the next room read 21.6 C, 48 %,
+      1006 hPa):
+      - *Event loop stack*: `stack_free_min_bytes=3476` at 4.6 s, and never
+        lower through the unplug and the recovery: 4,716 bytes used of
+        8,192. Kept at 8,192; 6,144 would leave 1.4 KB.
+      - *Internal RAM after EPD init*: 223,115 against 224,467 before the
+        sensors: 1,352 bytes, the drivers' and the manager's static state.
+        The event loop's stack, 2,048 bytes larger since phase 3c, comes out
+        of the heap after that line.
+      - *The heater*: `heat_stab=false` at the first measurement after each
+        init, and never again in 30 minutes -- the 300 C / 100 ms profile
+        reaches stability once the plate has cycled.
+      - *Gas*: 12.0 kOhm at the first valid reading (300 s), 30.3 kOhm at
+        12 minutes; after the replug's power cycle 45.7 kOhm at 6 minutes and
+        57.8 kOhm at 16, still rising about 1 kOhm a minute. The 300 s
+        burn-in is far short of where the reading settles; how far needs
+        hours, without breath on the sensor.
+      - *Temperature*: over 02:45-02:59 the SCD41 read 0.23-0.54 C (about
+        0.45) above the BME680 with its 0.3 C self-heating offset taken off;
+        both 0.5-1.8 C above the reference -- but the reference was in
+        another room, so neither offset is settled. Next: the reference
+        beside the device.
+      - *Humidity*: BME680 46.3-48.1 %, SCD41 47.1-49.2 %, reference 48 %.
+      - *Pressure*: 1006.20-1006.30 hPa against the reference's 1006 --
+        agreement within its resolution. Seen in the minute samples: a dip
+        of 0.2 hPa each time the sensor was warmed by hand to about 30 C
+        (02:31:52, 02:39:05) -- the die's temperature, not the air's
+        pressure; flat at 1006.28-1006.30 (+-0.01) while the window was open;
+        and 0.07 hPa (7 Pa) lower within a minute of closing it, which fits a
+        room going from open to the outside to slightly depressurised. Nothing
+        at the unplug. One-minute samples cannot resolve faster events.
+      - *CO2*: about 1,100 ppm in the closed room, 5,423 at the peak of
+        breathing on the sensor; eight minutes of airing brought it from
+        1,118 to 939, nowhere near outdoor air, so nothing about the
+        calibration follows. The warm-up cannot be measured from these logs:
+        a value in warm-up is withheld (`warmup`), so where the readings stop
+        drifting after a cold start does not show.
+      **Second run 2026-10-16** (ELF `9c8d96f20...`, the larger type,
+      ~6 minutes): the event loop's stack low-water mark 3,588 bytes free --
+      the 160px font did not deepen it; partial refreshes now draw for
+      ~320-630 ms (larger glyphs, more rows) and a full one ~1,020 ms after
+      the clear, against 275-450 and 875 before; the gas's first valid
+      reading, at 6 minutes, was 78.8 kOhm against 12.0 the day before -- the
+      burn-in goes on across power cycles.
+      What each item needs:
+      - **Temperature and humidity, three ways**: the BME68x's and the
+        SCD41's (`bme68x: sample ...` and `scd4x: sample ...`, once a
+        minute each, the SCD41's logged even while the BME68x's is shown)
+        beside a reference thermometer, after an hour of running. Gives
+        `HAC_BME68X_SELF_HEATING_C` its first measured value
+        (requirements 13.2), and says whether the SCD41's own offset
+        (4 C by default, inside the sensor) suits this board.
+      - **Pressure** against a local weather report's sea-level pressure,
+        corrected for this room's altitude.
+      - **CO2 after airing the room**: an open window brings it towards the
+        outdoor ~420 ppm. With the warm-up seen from a cold start, it
+        replaces `SCD4X_WARMUP_MS`; whether the reading moves with the
+        pressure handed over (`sensor_manager: ambient handed over`) is a
+        separate question, ADR 0018.
+      - ~~**This unit's BME68x calibration.**~~ **Done 2026-10-16**, from
+        the test app's five `bme68x: calibration (n/5)` lines: the host
+        model's default since then (`BME680_MODEL_BOARD_CALIBRATION`,
+        `platform/host/i2c_models/bme680_model.c`), and the simulator's
+        fake-i2c mode runs against it.
+      - **Free internal RAM after EPD init** (`adp_display: memory budget
+        ... free_internal_after_epd_init=`) against 224,467 at the same
+        line before the sensors (2026-10-13, "Free PSRAM at runtime").
+      - **The event loop's stack**: `event_loop: stack low-water mark
+        stack_free_min_bytes=...` at its lowest after the drivers have run
+        a while -- an init, failures and a recovery included, so the unplug
+        test (checks, item 6) belongs in the same run. The task has
+        8192 bytes since phase 3c.
+- [x] **Which sensor variants are fitted.** **Resolved 2026-10-16** on the
+      board (the test app's `port_sensor` contract, ELF `6ab6ea91b...`): an
+      **SCD41**, serial `0x2103c5073b73`, so single-shot mode is available;
+      and a **BME680**, `chip_id=0x61 variant_id=0x00` -- the part the host
+      model is, so the driver's gas path is the modelled one. The history
+      follows. BME680 or BME688 (the BME68x's
       `variant_id` register), and SCD40 or SCD41 (the seller lists both;
       read the variant back): the drivers log both, phase 3a/3b.
       **SCD4x side done in phase 3a, on the host:** `scd4x_source`'s init
@@ -757,10 +908,14 @@ layout settles, not before.
       heater's ambient temperature, 25 C (`HAC_BME68X_HEATER_AMBIENT_C`); and
       the conversion time, which no datasheet gives and which the model
       takes from Bosch's own estimate, so no host test can show it wrong.
-      The calibration the host model uses is a published one, not this
-      unit's: read this unit's out of the driver's `dev.calib` once it runs,
-      and give the model those. With BSEC linked, its own heater profile and
-      heat compensation replace the first and third.
+      The host model's calibration is this unit's since 2026-10-16 (the
+      test app's log). With BSEC linked, its own heater profile and heat
+      compensation replace the first and third. **First evidence on the
+      heater, 2026-10-16**: the two forced measurements the test app made
+      right after init both came back `gas_valid=true heat_stab=false` --
+      300 C was not reached in 100 ms from a cold plate. Whether it is once
+      the plate has cycled for a while, the firmware's minute-by-minute
+      `bme68x: sample ... gas_ohm=` shows: a number, or `error`.
 - [x] **Which addresses the sensors answer at.** **Resolved 2026-10-16**
       by the boot scan: the SCD4x at `0x62`, the BME68x at `0x77` (SDO high
       on this module), nothing at `0x76`, nothing unexpected ("Sensors on
@@ -774,6 +929,16 @@ layout settles, not before.
       `scd4x_source` tells "busy" from "gone". All three show in the first
       logs of the driver on the board (and in the `i2c.master` driver's own
       NACK lines); correct the model if the sensor disagrees.
+      **First evidence, 2026-10-16** (the test app, ELF `6ab6ea91b...`):
+      the second, refused: `get_serial_number` sent to a measuring SCD41 was
+      refused on the write (`i2c_master_multi_buffer_transmit ... I2C
+      transaction failed`), but whether at the address or at the command
+      byte the log does not say -- `adp_i2c` logs its classification at
+      `DEBUG` only. The first was not exercised: the driver never addresses
+      the sensor during a single shot, and both shots were ready by 5 s. The
+      third was not exercised. To settle the first two: raise the
+      `adp_i2c` tag to `DEBUG` (its `transfer failed ... status=` line names
+      `NOT_FOUND` for the address, `IO` for a data byte), or a scope.
 - [ ] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
       timestamps, or is only used for scheduling.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings

@@ -64,7 +64,11 @@
 // exactly. The datasheet says only that "approximately 20-30 ms" bring the
 // plate to temperature (3.3.5) and that typical targets are 200-400 C; it
 // recommends no profile. Replaced in phase 3c, by BSEC's own profile if
-// BSEC is linked, or from this unit's gas readings if it is not.
+// BSEC is linked, or from this unit's gas readings if it is not. First
+// evidence, 2026-10-16: this unit's first two measurements after init both
+// reported the gas valid and the heater NOT stable -- 300 C was not reached
+// in 100 ms from a cold plate (docs/hardware/board_notes.md, "Checks still
+// to do on the board", item 5). Whether it is once warm is not yet seen.
 #define HAC_BME68X_HEATER_TEMPERATURE_C 300u
 #define HAC_BME68X_HEATER_DURATION_MS 100u
 
@@ -86,7 +90,11 @@
 // hardware reset power-cycles the sensor, so the burn-in recurs at every
 // such boot; a software reset does not, but the driver cannot tell the two
 // apart and counts it anyway. Replaced in phase 3c from this unit's gas
-// readings after a cold start, by where they stop drifting.
+// readings after a cold start, by where they stop drifting. First evidence,
+// 2026-10-16: still rising about 1 kOhm a minute at 16 minutes after a power
+// cycle (45.7 -> 57.8 kOhm from 6 to 16 minutes) -- 300 s is far short of
+// settled; how far needs hours (docs/hardware/board_notes.md, open item
+// "Phase 3c's measurements").
 #define HAC_BME68X_GAS_BURN_IN_MS 300000u
 
 // ESTIMATE: how much warmer the die is than the air around it, subtracted

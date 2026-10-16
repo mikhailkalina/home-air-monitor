@@ -11,8 +11,8 @@
 // to the project's issue #11). The same file's neighbour,
 // tests/test_compensation.py, computes test vectors from it with that
 // project's integer compensation, which test_bme680_model.c holds this
-// model's floating-point compensation to. Replaced in phase 3c by this
-// unit's own calibration, read off the board.
+// model's floating-point compensation to. Kept for those vectors: the model's
+// own default is this board's set, below.
 const bme680_model_calibration_t BME680_MODEL_PUBLISHED_CALIBRATION = {
     .par_t1 = 26041,
     .par_t2 = 26469,
@@ -40,6 +40,41 @@ const bme680_model_calibration_t BME680_MODEL_PUBLISHED_CALIBRATION = {
     .res_heat_range = 1,
     .res_heat_val = 48,
     .range_switching_error = 0,
+};
+
+// The calibration of this board's BME680 (docs/hardware/board_notes.md,
+// "Sensors on the bus"), read out of its NVM by Bosch's bme68x_init() and
+// logged by bme68x_source as "calibration (1/5)" .. "(5/5)" in the on-target
+// test app, 2026-10-16, ELF SHA256 6ab6ea91b... -- the model's default since
+// phase 3c, so the simulator's fake-i2c mode and the host tests run against
+// this unit's numbers, not someone else's.
+const bme680_model_calibration_t BME680_MODEL_BOARD_CALIBRATION = {
+    .par_t1 = 26195,
+    .par_t2 = 26383,
+    .par_t3 = 3,
+    .par_p1 = 36513,
+    .par_p2 = -10358,
+    .par_p3 = 88,
+    .par_p4 = 8598,
+    .par_p5 = -181,
+    .par_p6 = 30,
+    .par_p7 = 42,
+    .par_p8 = -2657,
+    .par_p9 = -2592,
+    .par_p10 = 30,
+    .par_h1 = 917,
+    .par_h2 = 982,
+    .par_h3 = 0,
+    .par_h4 = 45,
+    .par_h5 = 20,
+    .par_h6 = 120,
+    .par_h7 = -100,
+    .par_g1 = -60,
+    .par_g2 = -10528,
+    .par_g3 = 18,
+    .res_heat_range = 1,
+    .res_heat_val = 36,
+    .range_switching_error = 1,
 };
 
 // A room, for a model nobody gave a reading.
@@ -693,7 +728,7 @@ void bme680_model_init(bme680_model_t *m, uint64_t now_ms)
     m->model.impl = m;
     m->chip_id = BME680_MODEL_CHIP_ID;
     m->variant_id = BME680_MODEL_VARIANT_BME680;
-    m->calibration = BME680_MODEL_PUBLISHED_CALIBRATION;
+    m->calibration = BME680_MODEL_BOARD_CALIBRATION;
     m->default_reading.temperature_c = DEFAULT_TEMPERATURE_C;
     m->default_reading.humidity_rh = DEFAULT_HUMIDITY_RH;
     m->default_reading.pressure_hpa = DEFAULT_PRESSURE_HPA;

@@ -7,9 +7,10 @@
 //
 // The shared body: cmake/sources_contract.cmake compiles this file,
 // unmodified, into the host runner (tests/contract/test_port_sensor_contract.c,
-// against replay_source and against scd4x_source over the fake bus) and into
-// the ESP-IDF hac_contract component, ready for an on-target runner once a
-// sensor is wired to the board. No stdio, no malloc, no harness: results
+// against replay_source, and against scd4x_source and bme68x_source over the
+// fake bus) and into the ESP-IDF hac_contract component, whose on-target
+// runner (tests/contract/esp32/test_port_sensor_contract.c) holds both real
+// sensors on the board to it. No stdio, no malloc, no harness: results
 // travel out through contract_report_fn, as in port_clock_contract.h.
 //
 // Time is the runner's: a source measures on its own clock, and only the
@@ -39,9 +40,11 @@ typedef struct {
 // needs several polls (a warm-up, a sensor that answers "not yet").
 #define PORT_SENSOR_CONTRACT_READ_ATTEMPTS 8u
 
-// Exercises `src` from init() to deinit() and reports each check through
-// `report`. Returns the number of checks that failed (0 means the source
-// satisfies the contract). The source is deinitialised when it returns.
+// Exercises `src` from init() to deinit() -- a first measurement,
+// set_ambient() where the source has it, init() again without deinit() and a
+// second measurement -- and reports each check through `report`. Returns the
+// number of checks that failed (0 means the source satisfies the contract).
+// The source is deinitialised when it returns.
 unsigned port_sensor_contract_run(sensor_source_t *src, const port_sensor_contract_env_t *env,
                                   contract_report_fn report, void *report_ctx);
 

@@ -62,6 +62,43 @@ static bool reported_fields_carry_the_source_id(const sensor_sample_t *s, uint8_
     return true;
 }
 
+// Waits ready_in_ms() and reads, until a reading arrives or the attempts run
+// out.
+static hal_status_t read_when_ready(sensor_source_t *src, const port_sensor_contract_env_t *env,
+                                    sensor_sample_t *sample)
+{
+    hal_status_t status = HAL_ERR_NOT_READY;
+    for (unsigned attempt = 0; attempt < PORT_SENSOR_CONTRACT_READ_ATTEMPTS && status != HAL_OK;
+         attempt++) {
+        const uint32_t wait_ms = src->ready_in_ms(src);
+        env->advance(env->ctx, wait_ms > 0u ? wait_ms : 1u);
+        status = src->read(src, sample);
+    }
+    return status;
+}
+
+// A typical sea-level pressure, which every source that compensates for
+// pressure must accept.
+#define SEA_LEVEL_HPA 1013.25f
+
+// set_ambient(), where the source has it: a pressure nobody measured is
+// ignored, and a plausible one is taken.
+static void check_set_ambient(sensor_source_t *src, contract_report_fn report, void *ctx,
+                              unsigned *failures)
+{
+    if (src->set_ambient == NULL) {
+        return;  // optional: this source corrects for nothing
+    }
+    sensor_ambient_t ambient;
+    ambient.pressure_hpa = measurement_unavailable();
+    check(report, ctx, failures, "sensor.set_ambient_ignores_what_is_not_ok",
+          src->set_ambient(src, &ambient) == HAL_OK);
+
+    ambient.pressure_hpa = measurement_ok(SEA_LEVEL_HPA, 0u, 0u);
+    check(report, ctx, failures, "sensor.set_ambient_takes_a_plausible_pressure",
+          src->set_ambient(src, &ambient) == HAL_OK);
+}
+
 unsigned port_sensor_contract_run(sensor_source_t *src, const port_sensor_contract_env_t *env,
                                   contract_report_fn report, void *report_ctx)
 {
@@ -77,13 +114,7 @@ unsigned port_sensor_contract_run(sensor_source_t *src, const port_sensor_contra
 
     check(report, report_ctx, &failures, "sensor.start_ok", src->start(src) == HAL_OK);
 
-    hal_status_t status = HAL_ERR_NOT_READY;
-    for (unsigned attempt = 0; attempt < PORT_SENSOR_CONTRACT_READ_ATTEMPTS && status != HAL_OK;
-         attempt++) {
-        const uint32_t wait_ms = src->ready_in_ms(src);
-        env->advance(env->ctx, wait_ms > 0u ? wait_ms : 1u);
-        status = src->read(src, &sample);
-    }
+    hal_status_t status = read_when_ready(src, env, &sample);
     check(report, report_ctx, &failures, "sensor.read_after_ready_in_ms_ok", status == HAL_OK);
     if (status == HAL_OK) {
         check(report, report_ctx, &failures, "sensor.fields_outside_caps_unavailable",
@@ -91,6 +122,19 @@ unsigned port_sensor_contract_run(sensor_source_t *src, const port_sensor_contra
         check(report, report_ctx, &failures, "sensor.reported_fields_carry_source_id",
               reported_fields_carry_the_source_id(&sample, src->id));
     }
+
+    check_set_ambient(src, report, report_ctx, &failures);
+
+    // The sensor manager starts a failing source over with init() alone,
+    // never deinit() first (port_sensor.h): it must come back, and forget
+    // the measurement it was in.
+    check(report, report_ctx, &failures, "sensor.init_again_ok", src->init(src) == HAL_OK);
+    check(report, report_ctx, &failures, "sensor.init_again_forgets_the_measurement",
+          src->read(src, &sample) == HAL_ERR_NOT_READY);
+    check(report, report_ctx, &failures, "sensor.start_after_init_again_ok",
+          src->start(src) == HAL_OK);
+    status = read_when_ready(src, env, &sample);
+    check(report, report_ctx, &failures, "sensor.read_after_init_again_ok", status == HAL_OK);
 
     check(report, report_ctx, &failures, "sensor.suspend_ok", src->suspend(src) == HAL_OK);
     src->deinit(src);  // must not crash; the source is unusable after this

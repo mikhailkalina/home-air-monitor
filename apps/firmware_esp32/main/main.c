@@ -7,22 +7,26 @@
 // behind platform/esp32_t5s3/adp_display.c. Phase 2d
 // (docs/adr/0011-i2c-bus-adapter.md) brings up the shared I2C bus behind
 // platform/esp32_t5s3/adp_i2c.c, scans it once at boot and offers the
-// i2c_scan / i2c_recover console commands. No sensors yet -- phase 3.
+// i2c_scan / i2c_recover console commands. Phase 3c
+// (docs/adr/0017-sensor-manager.md) runs both sensors -- the SCD4x and the
+// BME68x drivers over that bus -- through core/app/sensor_manager.c, with
+// the ids and priorities below, the same as the simulator's.
 //
-// What runs: adp_log and adp_clock, the port_clock and port_log contract
-// suites run once against the real adapters (docs/adr/0005), the real display
-// adapter (or the null one, CONFIG_HAC_DISPLAY_NULL -- see
-// main/Kconfig.projbuild), adp_i2c and the boot-time bus scan -- after the
-// display, whose init powers the sensors (see bring_up_i2c()) -- optionally the
-// whole-panel bring-up diagnostic
+// What runs, in this order: adp_log and adp_clock, the port_clock and
+// port_log contract suites run once against the real adapters
+// (docs/adr/0005), the real display adapter (or the null one,
+// CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), adp_i2c and the
+// boot-time bus scan -- after the display, whose init powers the sensors (see
+// bring_up_i2c()) -- optionally the whole-panel bring-up diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
 // run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
-// driving update_policy against bringup_reading.c's synthetic data, and last
-// the serial console (see start_console() for why last).
+// driving the sensor manager and update_policy, and last the serial console
+// (see start_console() for why last).
 //
 // CONFIG_HAC_EPD_CALIBRATION (phase 2c, off by default) replaces the pump
-// with epd_calibration.c's measurement run: the same adapters, no event loop.
+// with epd_calibration.c's measurement run: the same adapters, no event loop
+// and no sensors.
 
 #include <stdint.h>
 
@@ -36,32 +40,51 @@
 #include "adp_i2c.h"
 #include "adp_log.h"
 #include "board_config.h"
+#include "board_power.h"
 
+#include "app/sensor_manager.h"
 #include "app/update_policy.h"
+#include "bme68x_source.h"
+#include "domain/measurement.h"
 #include "hal_status.h"
 #include "port_clock.h"
 #include "port_display.h"
 #include "port_log.h"
+#include "port_sensor.h"
+#include "scd4x_source.h"
 
 #include "port_clock_contract.h"
 #include "port_log_contract.h"
 
-#include "bringup_reading.h"
 #include "console.h"
 #include "epd_calibration.h"
 #include "event_loop.h"
 
-// Arithmetic behind this figure: ~2 KB IDF/vsnprintf baseline + ~400 B
-// view_model_t + ~400 B air_reading_t + ~500 B through the render call chain
-// is roughly 3.3 KB at peak, doubled for margin. event_loop.c logs
-// uxTaskGetStackHighWaterMark() every iteration, so this number gets
-// revisited from evidence rather than kept out of superstition.
-#define BRINGUP_TASK_STACK_BYTES 6144u
+// Phase 2a's figure was 6144: ~2 KB IDF/vsnprintf baseline, ~400 B
+// view_model_t, ~400 B through the render call chain, doubled. Phase 3c puts
+// both drivers on this task -- Bosch's and Sensirion's calls, the I2C
+// adapter under them -- and logs floats (newlib's float formatting is the
+// deepest thing on this stack), so 8 KB until the board says otherwise:
+// event_loop.c logs the task's free-stack low-water mark at each new low, and
+// this number is revisited from that line rather than kept out of
+// superstition.
+#define EVENT_LOOP_TASK_STACK_BYTES 8192u
 
-// Off the protocol core (0), forward-looking to Wi-Fi joining this task's
-// core in phase 3.
-#define BRINGUP_TASK_PRIORITY 5
-#define BRINGUP_TASK_CORE 1
+// Off the protocol core (0), where ESP-IDF runs Wi-Fi when phase 4 brings it.
+#define EVENT_LOOP_TASK_PRIORITY 5
+#define EVENT_LOOP_TASK_CORE 1
+
+// The sources' ids, which every measurement carries as its source_id and the
+// priorities below are written in -- the same two the simulator gives the
+// same two sensors (apps/simulator/main.c).
+#define SCD4X_SOURCE_ID 1u
+#define BME68X_SOURCE_ID 2u
+
+// CHOICE: how often each source's latest sample is logged, besides what the
+// sensor manager logs on every change of state -- often enough to compare
+// the BME68x's temperature with the SCD41's and a reference thermometer
+// (docs/requirements.md 13.2), seldom enough not to bury the rest.
+#define SAMPLE_LOG_INTERVAL_MS 60000u
 
 typedef struct {
     const port_log_t *log;
@@ -238,18 +261,21 @@ static void run_contract_suites(const port_clock_t *clock, const port_log_t *log
 
 // Phase 2d's deliverable: the bus comes up and the boot log shows what
 // answers on it beside what board_config.h expects. A bus that fails to come
-// up is logged and the rest of the firmware runs regardless -- nothing before
-// phase 3 depends on it, and the console's i2c_recover is the way to retry
-// it.
+// up is logged and the rest of the firmware runs regardless: the sensor
+// manager then finds both sensors failing and keeps retrying them at its
+// backoff, and the console's i2c_recover is the way to retry the bus.
 //
-// Called after the display adapter, not before: the sensors run from the
-// switched 3V3 that EPDiy's init raises (PWR_EN), and until then they sit on
-// the bus unpowered and hold both lines low -- the RTC and the touch
-// controller lose the bus with them, and the scan stops at its first
-// address. Seen on the board 2026-10-15 (docs/hardware/board_notes.md, open
-// item "A reboot loop when the switched 3V3 comes up"). A
-// CONFIG_HAC_DISPLAY_NULL build never raises the rail, so with the sensors
-// wired its scan finds nothing.
+// Called after the switched 3V3 is up, never before: the sensors run from
+// it, and until it rises they sit on the bus unpowered and hold both lines
+// low -- the RTC and the touch controller lose the bus with them, and the
+// scan stops at its first address. Seen on the board 2026-10-15
+// (docs/hardware/board_notes.md, open item "A reboot loop when the switched
+// 3V3 comes up"). In the normal build EPDiy's init raises the rail (PWR_EN);
+// a CONFIG_HAC_DISPLAY_NULL build raises it itself, through
+// board_power_switched_3v3_on(). Either way BOARD_SWITCHED_3V3_SETTLE_MS
+// passes first, and each driver's init() waits its own sensor's power-up time
+// again before its first transfer: 30 ms for the SCD4x (its datasheet,
+// Table 7), 2 ms for the BME68x (Table 1).
 //
 // The port_i2c contract suite is deliberately NOT run here, unlike port_clock
 // and port_log above: it hangs and stalls the shared bus on purpose, which
@@ -284,6 +310,132 @@ static void start_console(adp_i2c_t *i2c, const port_log_t *log)
     (void)console_start(i2c, log);
 }
 
+// The board's two sensors, set up on the bus and handed to the sensor
+// manager with the priorities of docs/architecture.md 6.3: temperature and
+// humidity from the BME68x, the SCD41 as fallback; CO2 from the SCD41 alone;
+// pressure and gas from the BME68x alone. Nothing touches the bus here: the
+// event loop's first poll initialises both, on its own task.
+static void compose_sensors(sensor_manager_t *mgr, scd4x_source_t *scd4x, bme68x_source_t *bme68x,
+                            adp_i2c_t *i2c, const port_clock_t *clock, const port_log_t *log)
+{
+    const scd4x_source_config_t scd4x_cfg = {
+        .bus = adp_i2c_port(i2c),
+        .clock = clock,
+        .log = log,
+        .address = BOARD_SCD4X_I2C_ADDRESS,
+        .id = SCD4X_SOURCE_ID,
+        .mode = SCD4X_MODE_PERIODIC,  // USB power (requirements 11.2); single shot is phase 5's
+    };
+    const bme68x_source_config_t bme68x_cfg = {
+        .bus = adp_i2c_port(i2c),
+        .clock = clock,
+        .log = log,
+        .address = BOARD_BME68X_I2C_ADDRESS,
+        .id = BME68X_SOURCE_ID,
+    };
+    (void)scd4x_source_setup(scd4x, &scd4x_cfg);
+    (void)bme68x_source_setup(bme68x, &bme68x_cfg);
+
+    const sensor_manager_config_t cfg = sensor_manager_config_default();
+    sensor_manager_init(mgr, clock, log, &cfg);
+    (void)sensor_manager_add(mgr, &scd4x->port, SENSOR_MANAGER_DEFAULT_INTERVAL_MS);
+    (void)sensor_manager_add(mgr, &bme68x->port, SENSOR_MANAGER_DEFAULT_INTERVAL_MS);
+
+    static const uint8_t prefer_bme68x[] = {BME68X_SOURCE_ID, SCD4X_SOURCE_ID};
+    static const uint8_t only_bme68x[] = {BME68X_SOURCE_ID};
+    static const uint8_t only_scd4x[] = {SCD4X_SOURCE_ID};
+    (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_TEMPERATURE, prefer_bme68x, 2u);
+    (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_HUMIDITY, prefer_bme68x, 2u);
+    (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_PRESSURE, only_bme68x, 1u);
+    (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_CO2, only_scd4x, 1u);
+    (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_GAS_RESISTANCE, only_bme68x, 1u);
+}
+
+static const char *status_text(value_status_t status)
+{
+    switch (status) {
+        case VAL_OK:
+            return "ok";
+        case VAL_WARMUP:
+            return "warmup";
+        case VAL_STALE:
+            return "stale";
+        case VAL_ERROR:
+            return "error";
+        case VAL_UNAVAILABLE:
+        default:
+            return "n/a";
+    }
+}
+
+// A value if it is VAL_OK, else its status, under one key.
+static log_field_t value_field(const char *key, const measurement_f32_t *m)
+{
+    return (m->status == VAL_OK) ? log_f32(key, m->value) : log_str(key, status_text(m->status));
+}
+
+// One line per source: its own latest sample, whichever field the merge took
+// from it -- so the SCD41's temperature shows beside the BME68x's even while
+// the BME68x's is the one on the screen.
+static void log_samples(const sensor_manager_t *sensors, const port_log_t *log)
+{
+    for (size_t i = 0u; i < SENSOR_MANAGER_MAX_SOURCES; ++i) {
+        const sensor_manager_slot_t *slot = sensor_manager_slot(sensors, i);
+        if (slot == NULL) {
+            return;
+        }
+        const sensor_caps_t caps = slot->source->caps;
+        const sensor_sample_t *s = &slot->sample;
+        log_field_t fields[LOG_FIELDS_MAX];
+        size_t n = 0u;
+        fields[n++] = log_str("state", sensor_manager_slot_state_name(slot->state));
+        if ((caps & SENS_CAP_CO2) != 0u) {
+            fields[n++] = value_field("co2_ppm", &s->co2_ppm);
+        }
+        if ((caps & SENS_CAP_TEMPERATURE) != 0u) {
+            fields[n++] = value_field("t_c", &s->temperature_c);
+        }
+        if ((caps & SENS_CAP_HUMIDITY) != 0u) {
+            fields[n++] = value_field("rh", &s->humidity_rh);
+        }
+        if ((caps & SENS_CAP_PRESSURE) != 0u) {
+            fields[n++] = value_field("p_hpa", &s->pressure_hpa);
+        }
+        if ((caps & SENS_CAP_GAS_RES) != 0u && n < LOG_FIELDS_MAX) {
+            fields[n++] = value_field("gas_ohm", &s->gas_resistance_ohm);
+        }
+        port_log_write(log, LOG_LEVEL_INFO, slot->source->name, "sample", fields, n);
+    }
+}
+
+typedef struct {
+    const port_log_t *log;
+#if !CONFIG_HAC_DISPLAY_NULL
+    adp_display_t *display;
+#endif
+    uint64_t next_sample_log_ms;
+} reading_hook_ctx_t;
+
+// event_loop.h's hook, after every poll: the measured temperature to the
+// display adapter for EPDiy's waveform selection -- through the adapter's own
+// function, not port_display (adp_display.h) -- and, once a minute, every
+// source's sample to the log.
+static void on_reading(void *ctx_v, const sensor_manager_t *sensors, const air_reading_t *reading,
+                       uint64_t now_ms)
+{
+    reading_hook_ctx_t *ctx = (reading_hook_ctx_t *)ctx_v;
+#if !CONFIG_HAC_DISPLAY_NULL
+    adp_display_set_temperature(ctx->display, reading->temperature_c.status == VAL_OK,
+                                reading->temperature_c.value);
+#else
+    (void)reading;
+#endif
+    if (now_ms >= ctx->next_sample_log_ms) {
+        log_samples(sensors, ctx->log);
+        ctx->next_sample_log_ms = now_ms + SAMPLE_LOG_INTERVAL_MS;
+    }
+}
+
 void app_main(void)
 {
     static adp_log_t s_log;
@@ -295,6 +447,10 @@ void app_main(void)
 #endif
     static adp_i2c_t s_i2c;
     static update_policy_t s_policy;
+    static scd4x_source_t s_scd4x;
+    static bme68x_source_t s_bme68x;
+    static sensor_manager_t s_sensors;
+    static reading_hook_ctx_t s_hook;
 
     adp_log_init(&s_log);
     const port_log_t *log = adp_log_port(&s_log);
@@ -304,13 +460,13 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 3a: board bring-up -- null display (CONFIG_HAC_DISPLAY_NULL), I2C bus, "
-                   "no sensor driver running",
+                   "phase 3c: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, SCD4x and BME68x through the sensor manager",
 #elif CONFIG_HAC_EPD_CALIBRATION
-                   "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop",
+                   "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
+                   "no sensors",
 #else
-                   "phase 3a: board bring-up -- EPDiy driving the panel, I2C bus, no sensor driver "
-                   "running",
+                   "phase 3c: EPDiy driving the panel, SCD4x and BME68x through the sensor manager",
 #endif
                    NULL, 0u);
 
@@ -321,7 +477,8 @@ void app_main(void)
 #if CONFIG_HAC_DISPLAY_NULL
     const hal_status_t display_status =
         adp_display_null_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
-    bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
+    board_power_switched_3v3_on(log);  // what EPDiy's init does for the sensors otherwise
+    bring_up_i2c(&s_i2c, clock, log);  // after the rail: see bring_up_i2c()
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_null_init failed", fields, 1u);
@@ -373,15 +530,23 @@ void app_main(void)
     port_log_write(log, LOG_LEVEL_INFO, "main", "panel and policy limits", panel_fields,
                    sizeof(panel_fields) / sizeof(panel_fields[0]));
 
+    compose_sensors(&s_sensors, &s_scd4x, &s_bme68x, &s_i2c, clock, log);
+    s_hook.log = log;
+#if !CONFIG_HAC_DISPLAY_NULL
+    s_hook.display = &s_display;
+#endif
+    s_hook.next_sample_log_ms = 0u;
+
     event_loop_deps_t deps = {
         .clock = clock,
         .display = display,
         .log = log,
         .policy = &s_policy,
-        .read_reading = bringup_reading_update,
-        .read_reading_ctx = NULL,
-        .max_reading_age_ms = BRINGUP_MAX_READING_AGE_MS,
+        .sensors = &s_sensors,
+        .on_reading = on_reading,
+        .on_reading_ctx = &s_hook,
     };
-    event_loop_start(&deps, BRINGUP_TASK_STACK_BYTES, BRINGUP_TASK_PRIORITY, BRINGUP_TASK_CORE);
+    event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
+                     EVENT_LOOP_TASK_CORE);
     start_console(&s_i2c, log);
 }

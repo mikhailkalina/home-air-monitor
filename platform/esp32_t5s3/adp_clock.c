@@ -16,7 +16,7 @@ static uint64_t clk_now_ms(const port_clock_t *port)
 static uint64_t clk_wall_ms(const port_clock_t *port)
 {
     (void)port;
-    return 0u;  // the port contract: 0 means "not synchronized" -- true until phase 3
+    return 0u;  // the port contract: 0 means "not synchronized" -- true until phase 4's SNTP
 }
 
 static void clk_delay_ms(const port_clock_t *port, uint32_t ms)

@@ -192,3 +192,25 @@ int32_t gfx_measure_text(const font_t *font, const char *text)
     }
     return width;
 }
+
+int32_t gfx_measure_text_ink(const font_t *font, const char *text)
+{
+    if (font == NULL || text == NULL) {
+        return 0;
+    }
+
+    int32_t pen = 0;
+    int32_t right = 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; ++p) {
+        const font_glyph_t *g = find_glyph(font, *p);
+        if (g == NULL) {
+            continue;
+        }
+        if (g->width > 0u) {
+            const int32_t ink_right = pen + g->x_offset + (int32_t)g->width;
+            right = (ink_right > right) ? ink_right : right;
+        }
+        pen += g->x_advance;
+    }
+    return right;
+}

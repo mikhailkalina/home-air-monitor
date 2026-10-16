@@ -2,6 +2,7 @@
 
 #include "adp_display.h"
 
+#include <math.h>
 #include <string.h>
 
 // epdiy.h pulls in ESP-IDF's xtensa/core-macros.h, whose
@@ -123,13 +124,14 @@ static void model_glass_as_white(const adp_display_t *d)
 // The caller owns the power bracket; see adp_flush().
 static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw_mode, EpdRect area)
 {
-    const enum EpdDrawError err =
-        epd_hl_update_area(&s_hl, draw_mode, BOARD_EPD_ASSUMED_TEMPERATURE_C, area);
+    const enum EpdDrawError err = epd_hl_update_area(&s_hl, draw_mode, d->temperature_c, area);
 
     const hal_status_t status = hal_status_of(err);
     const log_field_t fields[] = {
         log_i64("epd_draw_error", (int64_t)err),
         log_i64("status", (int64_t)status),
+        log_i64("temperature_c", d->temperature_c),
+        log_bool("temperature_measured", d->temperature_measured),
     };
     port_log_write(d->log, LOG_LEVEL_INFO, "adp_display", "epd_hl_update_area returned", fields,
                    sizeof(fields) / sizeof(fields[0]));
@@ -363,6 +365,9 @@ hal_status_t adp_display_init(adp_display_t *d, uint16_t width, uint16_t height,
     port_log_write(log, LOG_LEVEL_INFO, "adp_display", "memory budget", heap_fields,
                    sizeof(heap_fields) / sizeof(heap_fields[0]));
 
+    d->temperature_c = BOARD_EPD_ASSUMED_TEMPERATURE_C;  // until a reading arrives
+    d->temperature_measured = false;
+
     d->port.width = width;
     d->port.height = height;
     d->port.format = PIXFMT_GRAY4;
@@ -379,6 +384,26 @@ hal_status_t adp_display_init(adp_display_t *d, uint16_t width, uint16_t height,
 port_display_t *adp_display_port(adp_display_t *d)
 {
     return &d->port;
+}
+
+void adp_display_set_temperature(adp_display_t *d, bool known, float temperature_c)
+{
+    const bool measured = known && isfinite(temperature_c);
+    const int rounded = measured ? (int)lroundf(temperature_c) : BOARD_EPD_ASSUMED_TEMPERATURE_C;
+    if (measured == d->temperature_measured && rounded == d->temperature_c) {
+        return;
+    }
+    // INFO when it switches between measured and assumed; a measured value
+    // that only moves a degree -- or flickers across a half -- is DEBUG, and
+    // every update's own log line carries the value it used anyway.
+    const log_field_t fields[] = {
+        log_i64("temperature_c", rounded),
+        log_bool("measured", measured),
+    };
+    port_log_write(d->log, (measured != d->temperature_measured) ? LOG_LEVEL_INFO : LOG_LEVEL_DEBUG,
+                   "adp_display", "panel temperature", fields, sizeof(fields) / sizeof(fields[0]));
+    d->temperature_c = rounded;
+    d->temperature_measured = measured;
 }
 
 // EPDiy's highlevel state has no teardown of its own -- epd_hl_init() has no

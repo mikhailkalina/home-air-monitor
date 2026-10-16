@@ -16,6 +16,7 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/adp_display.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c_pure.c
+        ${HAC_ROOT}/platform/esp32_t5s3/board_power.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
     REQUIRES

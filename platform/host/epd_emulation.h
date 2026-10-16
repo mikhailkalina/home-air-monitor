@@ -119,10 +119,22 @@
 // visible through 40 partial refreshes in either pattern. Looked at closely,
 // light outlines of earlier digits appeared inside the current ones after
 // 11-25 partial refreshes when the headline flipped between three and four
-// digits every step, and around 25-30 in the realistic sawtooth. The budget
-// is one below the earliest of those, so a policy that respects it leaves
-// nothing visible even close up; each full refresh removed the outlines.
-#define EPD_SIM_MAX_PARTIAL_REFRESHES_BEFORE_FULL 10u
+// digits every step, and around 25-30 in the realistic sawtooth; each full
+// refresh removed the outlines. Phase 2c set the budget one below the
+// earliest of those, 10. Since 2026-10-16 it is 20, the owner's choice
+// (ADR 0019): half of what is invisible from 50 cm, trading close-up outlines
+// from the 11th, which the window shows, for fewer full refreshes.
+#define EPD_SIM_MAX_PARTIAL_REFRESHES_BEFORE_FULL 20u
+
+// OBSERVED: the most partial refreshes this panel has been driven through
+// without a full one -- the ghosting probes' 40 (ADR 0008), with nothing
+// visible from 50 cm. Past the budget update_policy keeps refreshing
+// partially until its minimum full-refresh interval allows a full one (ADR
+// 0019) -- never at the firmware's pace of one redraw per 5 s cycle, up to
+// three past a budget of 20 at twice that; the emulated panel turns a
+// partial refresh into a full one only past this, where nothing about the
+// glass is known.
+#define EPD_SIM_MOST_PARTIALS_TESTED 40u
 
 // A GUARD, NOT A MEASUREMENT, and not a measurable one: no stopwatch says how
 // often a panel "tolerates" a full refresh, and the vendor gives no figure.
