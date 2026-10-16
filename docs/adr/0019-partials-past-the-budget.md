@@ -9,6 +9,10 @@ its second half ("the emulated panel enforces the budget"), and replaces the
 budget ADR 0008 set (10). Both changes are the owner's, made watching the
 board; verified on the host, not yet on the board.
 
+Its periodic redraw is gone since ADR 0023 (2026-10-16): the footer says
+when the values were measured, not how long ago, and nothing on the screen
+changes with time alone.
+
 ## Context
 
 ADR 0004 met a conflict between the panel's two limits -- the partial-refresh

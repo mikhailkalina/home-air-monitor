@@ -100,8 +100,9 @@ static void log_decision(const event_loop_state_t *s, const update_decision_t *d
 // redraw(), unchanged in shape: the policy is only credited with the redraw
 // once the flush actually reaches the display.
 // Returns true only when the flush actually reached the panel, which is what
-// the caller's backoff is keyed on.
-static bool redraw(event_loop_state_t *s, const update_decision_t *d)
+// the caller's backoff is keyed on. `now_ms` is the time the reading's wall
+// time was read at (view_model_build()).
+static bool redraw(event_loop_state_t *s, const update_decision_t *d, uint64_t now_ms)
 {
     framebuffer_t *fb = s->deps.display->get_framebuffer(s->deps.display);
     if (fb == NULL) {
@@ -111,7 +112,7 @@ static bool redraw(event_loop_state_t *s, const update_decision_t *d)
     }
 
     view_model_t vm;
-    view_model_build(&vm, &s->reading, s->deps.clock->now_ms(s->deps.clock));
+    view_model_build(&vm, &s->reading, now_ms, s->deps.zone);
     screen_home_render(fb, &vm);
 
     const bool full = (d->action == UPDATE_FULL);
@@ -217,7 +218,11 @@ static void pump_task(void *arg)
         // sensors' command times inside it, and a reading stamped later than
         // the time it is aged against would count as stale
         // (sensor_manager_poll()).
+        // The wall clock at the same point -- ESP-IDF's system time, 0 until
+        // the RTC or the console has set it -- so that a value's wall time is
+        // the reading's minus its age (view_model_build()).
         const uint64_t now_ms = clock->now_ms(clock);
+        s->reading.wall_time_ms = clock->wall_ms(clock);
         s->reading.uptime_s = (uint32_t)(now_ms / 1000u);
         air_reading_apply_age(&s->reading, now_ms, s->deps.sensors->cfg.max_age_ms);
         if (s->deps.on_reading != NULL) {
@@ -230,7 +235,7 @@ static void pump_task(void *arg)
         if (decision.action != UPDATE_NONE) {
             if (now_ms >= s->redraw_not_before_ms) {
                 log_decision(s, &decision, now_ms);
-                if (redraw(s, &decision)) {
+                if (redraw(s, &decision, now_ms)) {
                     s->consecutive_no_progress = 0u;
                     s->redraw_not_before_ms = 0u;
                 } else {

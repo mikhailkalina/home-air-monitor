@@ -7,8 +7,21 @@
 
 #include <string.h>
 
+#include "domain/civil_time.h"
 #include "hac_test.h"
 #include "ui/view_model.h"
+
+// For the cases that are not about the clock: no reading here carries a wall
+// time, so the zone is never consulted.
+static const time_zone_t k_utc = {0, 0, {0u, 0u, 0u, 0}, {0u, 0u, 0u, 0}};
+
+// Vilnius, the device's zone, for the "updated" line (main.c).
+#define VILNIUS_STANDARD_MIN 120
+
+// 2026-10-16T11:07:30Z: 14:07:30 in Vilnius, summer time.
+#define WALL_MS 1792148850000u
+#define MINUTE_MS 60000u
+#define HOUR_MS 3600000u
 
 static bool text_is(const vm_field_view_t *f, const char *expected)
 {
@@ -35,7 +48,7 @@ static void a_normal_reading_becomes_numbers_and_units(void)
     view_model_t vm;
     const air_reading_t r = normal_reading(1000u);
 
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
 
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_CO2], "738"));
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_TEMPERATURE], "23.4"));
@@ -59,7 +72,7 @@ static void negative_and_rounded_values_format_correctly(void)
     air_reading_init(&r);
     r.temperature_c = measurement_ok(-4.25f, 0u, 2u);
     r.humidity_rh = measurement_ok(0.4f, 0u, 2u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
 
     // Half away from zero, and a leading zero rather than a bare point.
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_TEMPERATURE], "-4.3"));
@@ -67,7 +80,7 @@ static void negative_and_rounded_values_format_correctly(void)
 
     air_reading_init(&r);
     r.temperature_c = measurement_ok(0.42f, 0u, 2u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_TEMPERATURE], "0.4"));
 }
 
@@ -91,7 +104,7 @@ static void every_status_has_its_own_treatment(void)
         } else {
             r.co2_ppm = measurement_status(statuses[i], 0u, 1u);
         }
-        view_model_build(&vm, &r, 0u);
+        view_model_build(&vm, &r, 0u, &k_utc);
 
         const vm_field_view_t *co2 = &vm.fields[VM_FIELD_CO2];
         HAC_CHECK(co2->text[0] != '\0');  // never a blank field
@@ -114,24 +127,24 @@ static void every_status_has_its_own_treatment(void)
     air_reading_init(&r);
     r.co2_ppm = measurement_ok(738.0f, 0u, 1u);
     r.co2_ppm.status = VAL_STALE;
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_CO2], "738"));
     HAC_CHECK(vm.fields[VM_FIELD_CO2].has_value);
     HAC_CHECK(vm.fields[VM_FIELD_CO2].ink != VM_INK_PRIMARY);
 
     air_reading_init(&r);
     r.co2_ppm = measurement_status(VAL_ERROR, 0u, 1u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_CO2], "ERR"));
     HAC_CHECK(!vm.fields[VM_FIELD_CO2].has_value);
 
     air_reading_init(&r);
     r.co2_ppm = measurement_status(VAL_WARMUP, 0u, 1u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_CO2], "warm"));
 
     air_reading_init(&r);
-    view_model_build(&vm, &r, 0u);  // a zeroed reading: everything unavailable
+    view_model_build(&vm, &r, 0u, &k_utc);  // a zeroed reading: everything unavailable
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_CO2], "n/a"));
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "n/a"));
     HAC_CHECK(text_is(&vm.battery, "n/a"));
@@ -143,12 +156,12 @@ static void faults_are_counted_and_summarized(void)
     air_reading_t r = normal_reading(0u);
 
     r.co2_ppm = measurement_status(VAL_ERROR, 0u, 1u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK_EQ_INT(vm.error_count, 1);
     HAC_CHECK(strcmp(vm.status_text, "1 sensor error") == 0);
 
     r.iaq = measurement_status(VAL_ERROR, 0u, 2u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK_EQ_INT(vm.error_count, 2);
     HAC_CHECK(strcmp(vm.status_text, "2 sensor errors") == 0);
 
@@ -158,7 +171,7 @@ static void faults_are_counted_and_summarized(void)
     r.co2_ppm = measurement_status(VAL_WARMUP, 0u, 1u);
     r.temperature_c = measurement_ok(22.0f, 0u, 2u);
     r.temperature_c.status = VAL_STALE;
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK_EQ_INT(vm.warmup_count, 1);
     HAC_CHECK_EQ_INT(vm.stale_count, 1);
     HAC_CHECK(strcmp(vm.status_text, "sensors warming up") == 0);
@@ -166,7 +179,7 @@ static void faults_are_counted_and_summarized(void)
     air_reading_init(&r);
     r.temperature_c = measurement_ok(22.0f, 0u, 2u);
     r.temperature_c.status = VAL_STALE;
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK(strcmp(vm.status_text, "data is stale") == 0);
 }
 
@@ -189,7 +202,7 @@ static void the_co2_band_follows_the_requirements(void)
 
         air_reading_init(&r);
         r.co2_ppm = measurement_ok(cases[i].ppm, 0u, 1u);
-        view_model_build(&vm, &r, 0u);
+        view_model_build(&vm, &r, 0u, &k_utc);
 
         HAC_CHECK_EQ_INT(vm.co2_level, cases[i].level);
         HAC_CHECK_EQ_INT(vm.co2_warning, cases[i].warning);
@@ -201,61 +214,152 @@ static void the_co2_band_follows_the_requirements(void)
     air_reading_t r;
     air_reading_init(&r);
     r.co2_ppm = measurement_status(VAL_ERROR, 0u, 1u);
-    view_model_build(&vm, &r, 0u);
+    view_model_build(&vm, &r, 0u, &k_utc);
     HAC_CHECK_EQ_INT(vm.co2_level, VM_LEVEL_UNKNOWN);
     HAC_CHECK(!vm.co2_warning);
     HAC_CHECK(strcmp(vm.co2_level_text, "--") == 0);
 }
 
-// Stale data: the line is the age of the freshest quantity on the screen.
-static void the_update_line_reports_the_freshest_stale_quantity(void)
+// --- the "updated" line ---------------------------------------------------------
+
+// A reading of two values measured `co2_age_ms` and `t_age_ms` before the
+// wall time WALL_MS, which was read at monotonic `now_ms`.
+static air_reading_t measured_before(uint64_t now_ms, uint64_t co2_age_ms, uint64_t t_age_ms)
 {
-    view_model_t vm;
     air_reading_t r;
-
     air_reading_init(&r);
-    r.co2_ppm = measurement_ok(738.0f, 1000u, 1u);        // 90 s old
-    r.temperature_c = measurement_ok(22.0f, 85000u, 2u);  // 6 s old
-    r.co2_ppm.status = VAL_STALE;
-    r.temperature_c.status = VAL_STALE;
-
-    view_model_build(&vm, &r, 91000u);
-    HAC_CHECK(vm.has_updated);
-    HAC_CHECK(vm.updated_is_age);
-    HAC_CHECK(strcmp(vm.updated_text, "6 s") == 0);
-
-    view_model_build(&vm, &r, 400000u);  // co2 399 s, temperature 315 s
-    HAC_CHECK(strcmp(vm.updated_text, "5 min") == 0);
-
-    view_model_build(&vm, &r, 8000000u);
-    HAC_CHECK(strcmp(vm.updated_text, "2 h") == 0);
-
-    // Nothing has ever been read: say so rather than showing "0 s".
-    air_reading_init(&r);
-    view_model_build(&vm, &r, 5000u);
-    HAC_CHECK(!vm.has_updated);
-    HAC_CHECK(!vm.updated_is_age);
-    HAC_CHECK(strcmp(vm.updated_text, "--") == 0);
+    r.co2_ppm = measurement_ok(738.0f, now_ms - co2_age_ms, 1u);
+    r.temperature_c = measurement_ok(22.0f, now_ms - t_age_ms, 2u);
+    r.wall_time_ms = WALL_MS;
+    return r;
 }
 
-// Fresh data: "just now", not a count of seconds the e-paper would go on
-// showing long after it stopped being true. One fresh quantity is enough.
-static void the_update_line_says_just_now_while_anything_is_fresh(void)
+// The local minute the freshest value was measured, rounded down -- not an
+// age, and the same whether it is fresh or stale.
+static void the_update_line_is_when_the_freshest_value_was_measured(void)
 {
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
+    const uint64_t now = 1000000000u;
     view_model_t vm;
-    air_reading_t r;
 
-    air_reading_init(&r);
-    r.co2_ppm = measurement_ok(738.0f, 85000u, 1u);
-    view_model_build(&vm, &r, 91000u);
+    air_reading_t r = measured_before(now, 90000u, 6000u);  // 14:06:00 and 14:07:24
+    view_model_build(&vm, &r, now, &vilnius);
     HAC_CHECK(vm.has_updated);
-    HAC_CHECK(!vm.updated_is_age);
-    HAC_CHECK(strcmp(vm.updated_text, "just now") == 0);
+    HAC_CHECK(strcmp(vm.updated_text, "14:07") == 0);
 
-    r.temperature_c = measurement_ok(22.0f, 1000u, 2u);
+    // Rounded down: 14:07:00 exactly, and a millisecond before it.
+    r = measured_before(now, 90000u, 30000u);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "14:07") == 0);
+    r = measured_before(now, 90000u, 30001u);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "14:06") == 0);
+
+    // Stale: the same line, an hour back, and nothing in it says "ago".
+    r = measured_before(now, 2u * HOUR_MS, HOUR_MS + 10u * MINUTE_MS);
+    r.co2_ppm.status = VAL_STALE;
     r.temperature_c.status = VAL_STALE;
-    view_model_build(&vm, &r, 91000u);
-    HAC_CHECK(strcmp(vm.updated_text, "just now") == 0);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "12:57") == 0);
+}
+
+// The same reading drawn later says the same: the line does not move with
+// the clock, so nothing has to redraw it.
+static void the_update_line_does_not_change_with_time_alone(void)
+{
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
+    const uint64_t now = 1000000000u;
+    view_model_t vm;
+    air_reading_t r = measured_before(now, 90000u, 6000u);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "14:07") == 0);
+
+    r.wall_time_ms += 3u * HOUR_MS;  // the loops read both clocks together
+    view_model_build(&vm, &r, now + 3u * HOUR_MS, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "14:07") == 0);
+}
+
+// From an earlier local day, the date goes in front -- local, not UTC.
+static void an_update_from_an_earlier_day_carries_its_date(void)
+{
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
+    const uint64_t now = 1000000000u;
+    view_model_t vm;
+
+    // 2026-10-16T21:00:30Z is 00:00:30 on the 17th in Vilnius; a value from
+    // a minute earlier is from 23:59 on the 16th.
+    air_reading_t r = measured_before(now, 61000u, 61000u);
+    r.wall_time_ms = 1792184430000u;
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "16.10 23:59") == 0);
+
+    // The same instant read in UTC is still the 16th: no date.
+    view_model_build(&vm, &r, now, &k_utc);
+    HAC_CHECK(strcmp(vm.updated_text, "20:59") == 0);
+
+    // Across a year end, and a leap day.
+    r.wall_time_ms = 1798754400000u + 30000u;  // 2027-01-01T00:00:30 in Vilnius
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "31.12 23:59") == 0);
+    r.wall_time_ms = 1835474400000u + 30000u;  // 2028-03-01T00:00:30 in Vilnius
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "29.02 23:59") == 0);
+
+    // Days back, the day and month are still all it says.
+    r = measured_before(now, 3u * 24u * HOUR_MS, 3u * 24u * HOUR_MS);
+    r.co2_ppm.status = VAL_STALE;
+    r.temperature_c.status = VAL_STALE;
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "13.10 14:07") == 0);
+}
+
+// The hour that summer time repeats or skips is shown as the zone has it.
+static void the_update_line_follows_summer_time(void)
+{
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
+    const uint64_t now = 1000000000u;
+    view_model_t vm;
+    air_reading_t r = measured_before(now, 0u, 0u);
+
+    r.wall_time_ms = 1792889999000u;  // 2026-10-25T00:59:59Z
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "03:59") == 0);
+    r.wall_time_ms = 1792890000000u;  // 01:00:00Z: clocks go back
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "03:00") == 0);
+}
+
+// No wall time, or nothing carrying a number: "--:--", in the faint ink.
+static void without_a_time_to_give_the_line_says_so(void)
+{
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
+    const uint64_t now = 1000000000u;
+    view_model_t vm;
+
+    air_reading_t r = measured_before(now, 6000u, 6000u);
+    r.wall_time_ms = 0u;  // the clock is not set
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(!vm.has_updated);
+    HAC_CHECK(strcmp(vm.updated_text, "--:--") == 0);
+
+    air_reading_init(&r);  // nothing has ever been read
+    r.wall_time_ms = WALL_MS;
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(!vm.has_updated);
+    HAC_CHECK(strcmp(vm.updated_text, "--:--") == 0);
+
+    r.co2_ppm = measurement_status(VAL_ERROR, now, 1u);  // a failure carries no number
+    r.temperature_c = measurement_status(VAL_WARMUP, now, 2u);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "--:--") == 0);
+
+    // A value stamped after the wall time was read, or before the clock's
+    // origin: its age is unknown, and no time is made up for it.
+    r = measured_before(now, 6000u, 6000u);
+    r.co2_ppm.ts_ms = now + 1u;
+    r.temperature_c.ts_ms = now + 1u;
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "--:--") == 0);
 }
 
 // --- the IAQ cell without BSEC ------------------------------------------------
@@ -279,7 +383,7 @@ static void without_iaq_the_cell_shows_gas_resistance(void)
 {
     view_model_t vm;
     const air_reading_t r = without_bsec(182000.0f, VAL_OK);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
 
     const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
     HAC_CHECK(strcmp(cell->label, "Gas") == 0);
@@ -305,7 +409,7 @@ static void gas_resistance_reads_in_kohm_with_a_decimal_only_when_small(void)
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         view_model_t vm;
         const air_reading_t r = without_bsec(cases[i].ohm, VAL_OK);
-        view_model_build(&vm, &r, 1000u);
+        view_model_build(&vm, &r, 1000u, &k_utc);
         HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], cases[i].text));
     }
 }
@@ -314,7 +418,7 @@ static void gas_resistance_brings_its_own_status(void)
 {
     view_model_t vm;
     air_reading_t r = without_bsec(0.0f, VAL_WARMUP);  // the BME68x burning in
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
     HAC_CHECK(strcmp(cell->label, "Gas") == 0);
     HAC_CHECK(text_is(cell, "warm"));
@@ -323,13 +427,13 @@ static void gas_resistance_brings_its_own_status(void)
     HAC_CHECK(strcmp(vm.status_text, "sensors warming up") == 0);
 
     r = without_bsec(0.0f, VAL_ERROR);  // not marked valid and heater-stable
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "ERR"));
     HAC_CHECK_EQ_INT(vm.error_count, 1);
     HAC_CHECK(strcmp(vm.status_text, "1 sensor error") == 0);
 
     r = without_bsec(87000.0f, VAL_STALE);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "87"));
     HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].ink, VM_INK_STALE);
     HAC_CHECK_EQ_INT(vm.stale_count, 1);
@@ -342,45 +446,48 @@ static void an_iaq_that_is_provided_keeps_the_cell(void)
 
     // BSEC is there but not settled, or failing: still IAQ's cell.
     r.iaq = measurement_status(VAL_WARMUP, 1000u, 2u);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].label, "IAQ") == 0);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "warm"));
 
     r.iaq = measurement_status(VAL_ERROR, 1000u, 2u);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "ERR"));
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "") == 0);
 
     r.iaq = measurement_ok(84.0f, 1000u, 2u);
     r.gas_resistance_ohm = measurement_status(VAL_ERROR, 1000u, 2u);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "84"));
     HAC_CHECK_EQ_INT(vm.error_count, 0);  // the gas is not on the screen
 
     // Neither: the cell is IAQ's, and says it is not available.
     r.iaq = measurement_unavailable();
     r.gas_resistance_ohm = measurement_unavailable();
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].label, "IAQ") == 0);
     HAC_CHECK(text_is(&vm.fields[VM_FIELD_IAQ], "n/a"));
 }
 
 static void the_update_line_follows_the_gas_in_the_cell(void)
 {
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
+    const uint64_t now = 1000000000u;
     view_model_t vm;
     air_reading_t r;
     air_reading_init(&r);
-    r.co2_ppm = measurement_ok(738.0f, 1000u, 1u);                // 90 s old
-    r.gas_resistance_ohm = measurement_ok(87000.0f, 88000u, 2u);  // 3 s old
+    r.wall_time_ms = WALL_MS;                                            // 14:07:30
+    r.co2_ppm = measurement_ok(738.0f, now - 2u * HOUR_MS, 1u);          // 12:07:30
+    r.gas_resistance_ohm = measurement_ok(87000.0f, now - HOUR_MS, 2u);  // 13:07:30
     r.co2_ppm.status = VAL_STALE;
     r.gas_resistance_ohm.status = VAL_STALE;
-    view_model_build(&vm, &r, 91000u);
-    HAC_CHECK(strcmp(vm.updated_text, "3 s") == 0);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "13:07") == 0);
 
-    r.iaq = measurement_ok(84.0f, 1000u, 2u);  // now IAQ's cell: the gas is off screen
+    r.iaq = measurement_ok(84.0f, now - 3u * HOUR_MS, 2u);  // now IAQ's cell: the gas is off screen
     r.iaq.status = VAL_STALE;
-    view_model_build(&vm, &r, 91000u);
-    HAC_CHECK(strcmp(vm.updated_text, "1 min") == 0);
+    view_model_build(&vm, &r, now, &vilnius);
+    HAC_CHECK(strcmp(vm.updated_text, "12:07") == 0);
 }
 
 // --- the IAQ band and the accuracy mark -----------------------------------------
@@ -402,7 +509,7 @@ static void an_iaq_number_has_its_band_under_it(void)
         view_model_t vm;
         air_reading_t r = normal_reading(1000u);
         r.iaq = measurement_ok(cases[i].iaq, 1000u, 2u);
-        view_model_build(&vm, &r, 1000u);
+        view_model_build(&vm, &r, 1000u, &k_utc);
         HAC_CHECK_EQ_INT(vm.iaq_level, cases[i].level);
         HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, cases[i].text) == 0);
         HAC_CHECK(strcmp(view_model_iaq_level_text(cases[i].level), cases[i].text) == 0);
@@ -439,7 +546,7 @@ static void the_band_always_matches_the_number_shown(void)
         view_model_t vm;
         air_reading_t r = normal_reading(1000u);
         r.iaq = measurement_ok(iaq, 1000u, 2u);
-        view_model_build(&vm, &r, 1000u);
+        view_model_build(&vm, &r, 1000u, &k_utc);
 
         int shown = 0;
         for (const char *p = vm.fields[VM_FIELD_IAQ].text; *p != '\0'; ++p) {
@@ -460,7 +567,7 @@ static void without_an_iaq_number_there_is_no_band(void)
 
     r.iaq = measurement_status(VAL_WARMUP, 1000u, 2u);
     r.iaq.accuracy = ACC_UNRELIABLE;
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK_EQ_INT(vm.iaq_level, IAQ_LEVEL_UNKNOWN);
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "") == 0);
     HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_WARMUP);  // not the question mark
@@ -468,14 +575,14 @@ static void without_an_iaq_number_there_is_no_band(void)
     // Gas in the cell: its unit, and no IAQ band.
     r.iaq = measurement_unavailable();
     r.gas_resistance_ohm = measurement_ok(153000.0f, 1000u, 2u);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK_EQ_INT(vm.iaq_level, IAQ_LEVEL_UNKNOWN);
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "kOhm") == 0);
 
     // A stale number keeps its band.
     r.iaq = measurement_ok(128.0f, 1000u, 2u);
     r.iaq.status = VAL_STALE;
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "Fair") == 0);
 }
 
@@ -484,7 +591,7 @@ static void a_number_not_yet_calibrated_gets_the_question_mark(void)
     view_model_t vm;
     air_reading_t r = normal_reading(1000u);
     r.iaq.accuracy = ACC_LOW;
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
 
     const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
     HAC_CHECK_EQ_INT(cell->mark, VM_MARK_LOW_ACCURACY);
@@ -502,7 +609,7 @@ static void a_calibrated_or_unrated_number_has_no_mark(void)
         view_model_t vm;
         air_reading_t r = normal_reading(1000u);
         r.iaq.accuracy = accuracies[i];
-        view_model_build(&vm, &r, 1000u);
+        view_model_build(&vm, &r, 1000u, &k_utc);
         HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_NONE);
         HAC_CHECK_EQ_INT(vm.low_accuracy_count, 0);
         HAC_CHECK(strcmp(vm.status_text, "all sensors OK") == 0);
@@ -517,19 +624,19 @@ static void worse_news_comes_before_calibration(void)
     r.iaq.accuracy = ACC_LOW;
 
     r.iaq.status = VAL_STALE;
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_STALE);
     HAC_CHECK_EQ_INT(vm.low_accuracy_count, 0);
     HAC_CHECK(strcmp(vm.status_text, "data is stale") == 0);
 
     r.iaq.status = VAL_OK;
     r.temperature_c = measurement_status(VAL_WARMUP, 1000u, 2u);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_LOW_ACCURACY);
     HAC_CHECK(strcmp(vm.status_text, "sensors warming up") == 0);
 
     r.co2_ppm = measurement_status(VAL_ERROR, 1000u, 1u);
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK(strcmp(vm.status_text, "1 sensor error") == 0);
 }
 
@@ -539,10 +646,18 @@ static void several_numbers_not_calibrated_are_counted(void)
     air_reading_t r = normal_reading(1000u);
     r.iaq.accuracy = ACC_LOW;
     r.co2_ppm.accuracy = ACC_LOW;
-    view_model_build(&vm, &r, 1000u);
+    view_model_build(&vm, &r, 1000u, &k_utc);
     HAC_CHECK_EQ_INT(vm.low_accuracy_count, 2);
-    HAC_CHECK(strcmp(vm.status_text, "2 readings not calibrated") == 0);
+    HAC_CHECK(strcmp(vm.status_text, "2 not calibrated") == 0);
     HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_CO2].mark, VM_MARK_LOW_ACCURACY);
+
+    // One, under the longest label: the footer's shorter name for it.
+    air_reading_init(&r);
+    r.temperature_c = measurement_ok(22.0f, 1000u, 2u);
+    r.temperature_c.accuracy = ACC_LOW;
+    view_model_build(&vm, &r, 1000u, &k_utc);
+    HAC_CHECK(strcmp(vm.status_text, "Temp. not calibrated") == 0);
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_TEMPERATURE].label, "Temperature") == 0);
 }
 
 int main(void)
@@ -552,8 +667,11 @@ int main(void)
     HAC_RUN(every_status_has_its_own_treatment);
     HAC_RUN(faults_are_counted_and_summarized);
     HAC_RUN(the_co2_band_follows_the_requirements);
-    HAC_RUN(the_update_line_reports_the_freshest_stale_quantity);
-    HAC_RUN(the_update_line_says_just_now_while_anything_is_fresh);
+    HAC_RUN(the_update_line_is_when_the_freshest_value_was_measured);
+    HAC_RUN(the_update_line_does_not_change_with_time_alone);
+    HAC_RUN(an_update_from_an_earlier_day_carries_its_date);
+    HAC_RUN(the_update_line_follows_summer_time);
+    HAC_RUN(without_a_time_to_give_the_line_says_so);
     HAC_RUN(without_iaq_the_cell_shows_gas_resistance);
     HAC_RUN(gas_resistance_reads_in_kohm_with_a_decimal_only_when_small);
     HAC_RUN(gas_resistance_brings_its_own_status);

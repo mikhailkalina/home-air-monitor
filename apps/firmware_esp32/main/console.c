@@ -14,7 +14,10 @@
 #include "esp_timer.h"
 
 #include "board_config.h"
+#include "domain/civil_time.h"
 #include "i2c_scan.h"
+#include "pcf8563.h"
+#include "wall_clock.h"
 
 // No trailing space: esp_console_setup_prompt() appends one itself.
 #define CONSOLE_PROMPT "hac>"
@@ -56,6 +59,13 @@ static const i2c_expected_t EXPECTED[] = {
 #define REPORT_ROWS (EXPECTED_COUNT + (I2C_SCAN_LAST_ADDR - I2C_SCAN_FIRST_ADDR + 1u))
 static i2c_scan_row_t s_rows[REPORT_ROWS];
 
+// What the commands work with, copied by console_start().
+static console_deps_t s_deps;
+
+// "YYYY-MM-DDTHH:MM:SSZ" and its terminator; "YYYY-MM-DD HH:MM:SS UTC+hh:mm".
+#define UTC_TEXT_LEN (CIVIL_ISO8601_UTC_LEN + 1u)
+#define LOCAL_TEXT_LEN 32u
+#define MINUTES_PER_HOUR 60
 static const char *hal_status_text(hal_status_t s)
 {
     switch (s) {
@@ -133,6 +143,119 @@ void console_print_i2c_scan(adp_i2c_t *bus)
            result.status == HAL_OK ? "complete" : "INCOMPLETE", (long long)(scan_us / 1000));
 }
 
+// --- time ------------------------------------------------------------------------
+
+static void format_utc(char *dst, size_t cap, uint64_t unix_ms)
+{
+    const civil_time_t t = civil_time_from_unix_ms(unix_ms);
+    (void)snprintf(dst, cap, "%04d-%02u-%02uT%02u:%02u:%02uZ", (int)t.year, (unsigned)t.month,
+                   (unsigned)t.day, (unsigned)t.hour, (unsigned)t.minute, (unsigned)t.second);
+}
+
+static void format_local(char *dst, size_t cap, uint64_t unix_ms)
+{
+    const civil_time_t t = civil_time_local(unix_ms, s_deps.zone);
+    const int32_t offset = time_zone_offset_min(s_deps.zone, unix_ms);
+    const int32_t magnitude = (offset < 0) ? -offset : offset;
+    (void)snprintf(dst, cap, "%04d-%02u-%02u %02u:%02u:%02u UTC%c%02d:%02d", (int)t.year,
+                   (unsigned)t.month, (unsigned)t.day, (unsigned)t.hour, (unsigned)t.minute,
+                   (unsigned)t.second, (offset < 0) ? '-' : '+',
+                   (int)(magnitude / MINUTES_PER_HOUR), (int)(magnitude % MINUTES_PER_HOUR));
+}
+
+// Two lines: the system time and where it came from, or why there is none;
+// then what the RTC holds now, with its registers, so a VL bit or a stopped
+// clock shows as it is on the chip.
+static void print_time(void)
+{
+    wall_clock_rtc_t rtc;
+    wall_clock_read_rtc(adp_i2c_port(s_deps.bus), BOARD_RTC_I2C_ADDRESS, ADP_CLOCK_WALL_EARLIEST_MS,
+                        &rtc);
+
+    const uint64_t wall_ms = s_deps.clock->port.wall_ms(&s_deps.clock->port);
+    if (wall_ms != 0u) {
+        char utc[UTC_TEXT_LEN];
+        char local[LOCAL_TEXT_LEN];
+        format_utc(utc, sizeof(utc), wall_ms);
+        format_local(local, sizeof(local), wall_ms);
+        printf("TIME utc=%s %s=\"%s\" source=\"%s\"\n", utc, s_deps.zone_name, local,
+               wall_clock_source_name(*s_deps.wall_source));
+    } else {
+        printf("TIME none: %s -- set it with time_set YYYY-MM-DDTHH:MM:SSZ (UTC)\n",
+               wall_clock_rtc_reason(&rtc));
+    }
+
+    if (rtc.chip.verdict == PCF8563_TIME_NOT_ANSWERING) {
+        printf("TIME_RTC %s (bus: %s)\n", wall_clock_rtc_reason(&rtc),
+               hal_status_text(rtc.chip.bus));
+        return;
+    }
+    char held[UTC_TEXT_LEN] = "?";
+    if (rtc.decoded) {
+        format_utc(held, sizeof(held), rtc.unix_ms);
+    }
+    const uint8_t *g = rtc.chip.regs;
+    printf("TIME_RTC holds %s, %s; registers 00-08: %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+           held, wall_clock_rtc_reason(&rtc), g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8]);
+}
+
+static int cmd_time(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    print_time();
+    return 0;
+}
+
+static int cmd_time_set(void *context, int argc, char **argv)
+{
+    (void)context;
+    if (argc != 2) {
+        printf("TIME_SET usage: time_set YYYY-MM-DDTHH:MM:SSZ -- UTC, e.g. "
+               "time_set 2026-10-16T12:00:00Z\n");
+        return 1;
+    }
+    civil_time_t t;
+    uint64_t unix_ms = 0u;
+    if (!civil_time_parse_iso8601_utc(argv[1], &t) || !civil_time_to_unix_ms(&t, &unix_ms)) {
+        printf("TIME_SET refused: \"%s\" is not YYYY-MM-DDTHH:MM:SSZ (UTC, a real date)\n",
+               argv[1]);
+        return 1;
+    }
+    if (unix_ms < ADP_CLOCK_WALL_EARLIEST_MS) {
+        printf("TIME_SET refused: %s is before 2026, earlier than any clock this firmware sets\n",
+               argv[1]);
+        return 1;
+    }
+
+    const hal_status_t rtc =
+        wall_clock_write_rtc(adp_i2c_port(s_deps.bus), BOARD_RTC_I2C_ADDRESS, unix_ms);
+    const hal_status_t system = adp_clock_set_wall_ms(s_deps.clock, unix_ms);
+    if (system == HAL_OK) {
+        *s_deps.wall_source = WALL_CLOCK_SOURCE_CONSOLE;
+    }
+    printf("TIME_SET %s rtc=%s system=%s\n", argv[1], hal_status_text(rtc),
+           hal_status_text(system));
+    if (rtc != HAL_OK) {
+        printf("TIME_SET the RTC was not written: this time will not survive a reset\n");
+    }
+
+    const log_field_t fields[] = {
+        log_str("utc", argv[1]),
+        log_str("rtc", hal_status_text(rtc)),
+        log_str("system", hal_status_text(system)),
+    };
+    port_log_write(s_deps.log,
+                   (rtc == HAL_OK && system == HAL_OK) ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR,
+                   "console", "time_set", fields, sizeof(fields) / sizeof(fields[0]));
+
+    print_time();
+    return (rtc == HAL_OK && system == HAL_OK) ? 0 : 1;
+}
+
+// --- i2c ----------------------------------------------------------------------------
+
 static int cmd_i2c_scan(void *context, int argc, char **argv)
 {
     (void)argc;
@@ -197,6 +320,19 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_restart,
         .context = NULL,
     };
+    const esp_console_cmd_t time_cmd = {
+        .command = "time",
+        .help = "The system time (UTC and local), where it came from, and what the RTC holds",
+        .func_w_context = cmd_time,
+        .context = NULL,
+    };
+    const esp_console_cmd_t time_set_cmd = {
+        .command = "time_set",
+        .help = "Set the RTC and the system time to a UTC time: time_set YYYY-MM-DDTHH:MM:SSZ",
+        .hint = "<YYYY-MM-DDTHH:MM:SSZ>",
+        .func_w_context = cmd_time_set,
+        .context = NULL,
+    };
     esp_err_t err = esp_console_cmd_register(&scan);
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&recover);
@@ -204,11 +340,21 @@ static esp_err_t register_commands(adp_i2c_t *bus)
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&restart);
     }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&time_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&time_set_cmd);
+    }
     return err;
 }
 
-hal_status_t console_start(adp_i2c_t *bus, const port_log_t *log)
+hal_status_t console_start(const console_deps_t *deps)
 {
+    s_deps = *deps;
+    adp_i2c_t *bus = deps->bus;
+    const port_log_t *log = deps->log;
+
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_config.prompt = CONSOLE_PROMPT;
@@ -228,7 +374,7 @@ hal_status_t console_start(adp_i2c_t *bus, const port_log_t *log)
 
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
-        log_str("commands", "help i2c_scan i2c_recover restart"),
+        log_str("commands", "help i2c_scan i2c_recover restart time time_set"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

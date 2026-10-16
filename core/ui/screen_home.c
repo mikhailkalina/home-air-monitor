@@ -297,13 +297,12 @@ static void draw_footer(framebuffer_t *fb, const view_model_t *vm)
 
     draw_rule(fb, SCREEN_HOME_FOOT_RULE_Y);
 
-    int32_t x = gfx_draw_text(fb, SCREEN_HOME_MARGIN, FOOT_BASELINE, font, "updated ",
-                              ink(fb, VM_INK_SECONDARY));
-    x = gfx_draw_text(fb, x, FOOT_BASELINE, font, vm->updated_text,
-                      ink(fb, vm->has_updated ? VM_INK_PRIMARY : VM_INK_UNAVAILABLE));
-    if (vm->updated_is_age) {
-        (void)gfx_draw_text(fb, x, FOOT_BASELINE, font, " ago", ink(fb, VM_INK_SECONDARY));
-    }
+    // "updated 14:07": a time that stays true for as long as it is on the
+    // glass (view_model.h), so nothing has to redraw it.
+    const int32_t x = gfx_draw_text(fb, SCREEN_HOME_MARGIN, FOOT_BASELINE, font, "updated ",
+                                    ink(fb, VM_INK_SECONDARY));
+    (void)gfx_draw_text(fb, x, FOOT_BASELINE, font, vm->updated_text,
+                        ink(fb, vm->has_updated ? VM_INK_PRIMARY : VM_INK_UNAVAILABLE));
 
     const int32_t status_w = gfx_measure_text_ink(font, vm->status_text);
     const int32_t status_x = right - status_w;

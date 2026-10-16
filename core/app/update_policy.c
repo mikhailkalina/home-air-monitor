@@ -15,7 +15,6 @@ update_policy_config_t update_policy_config_default(void)
     cfg.co2_delta_ppm = UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM;
     cfg.temperature_delta_c = UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C;
     cfg.humidity_delta_rh = UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
-    cfg.max_interval_ms = UPDATE_POLICY_DEFAULT_MAX_INTERVAL_MS;
     cfg.min_redraw_interval_ms = UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS;
     return cfg;
 }
@@ -86,10 +85,19 @@ static bool accuracy_marks_differ(const air_reading_t *a, const air_reading_t *b
     return false;
 }
 
-// Every status the home screen renders, plus the link flags in its status bar
-// and the accuracy mark. Any of them changing must reach the glass even when
-// no number moved: docs/requirements.md 15.1 requires a sensor error to be
-// visible on screen.
+// Whether a wall time is known: the footer's "updated --:--" becomes a time
+// of day when the clock is first set -- at the console, or in phase 4 by
+// SNTP -- and the screen should say so without waiting for a reading to move.
+// Only whether, never the time itself, which changes at every poll.
+static bool wall_time_known(const air_reading_t *r)
+{
+    return r->wall_time_ms != 0u;
+}
+
+// Every status the home screen renders, plus the link flags in its status bar,
+// the accuracy mark and whether the wall time is known. Any of them changing
+// must reach the glass even when no number moved: docs/requirements.md 15.1
+// requires a sensor error to be visible on screen.
 static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
 {
     return a->temperature_c.status != b->temperature_c.status ||
@@ -100,53 +108,11 @@ static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
            a->gas_resistance_ohm.status != b->gas_resistance_ohm.status ||
            a->battery_percent.status != b->battery_percent.status || a->charging != b->charging ||
            a->net_connected != b->net_connected ||
-           a->telemetry_connected != b->telemetry_connected || accuracy_marks_differ(a, b);
+           a->telemetry_connected != b->telemetry_connected || accuracy_marks_differ(a, b) ||
+           wall_time_known(a) != wall_time_known(b);
 }
 
-// Whether the screen's "updated N ago" line grows with time: nothing it shows
-// is fresh, and something still carries a number. While any quantity is
-// VAL_OK the line says "just now" (view_model.h), and with nothing to show
-// it says "--"; either way a redraw would draw the same, so there is nothing
-// for the periodic redraw to do. The quantities are the home screen's.
-static bool shown_age_grows(const air_reading_t *r)
-{
-    const measurement_f32_t *shown[] = {
-        &r->co2_ppm,      &r->temperature_c, &r->humidity_rh,
-        &r->pressure_hpa, &r->iaq,           &r->gas_resistance_ohm,
-    };
-    bool stale = false;
-    for (size_t i = 0u; i < sizeof(shown) / sizeof(shown[0]); ++i) {
-        if (shown[i]->status == VAL_OK) {
-            return false;
-        }
-        stale = stale || shown[i]->status == VAL_STALE;
-    }
-    return stale;
-}
-
-// The deadline for the periodic redraw, or UPDATE_POLICY_NO_DEADLINE when the
-// periodic redraw is switched off or has nothing to update.
-static uint64_t periodic_deadline(const update_policy_t *p, const air_reading_t *reading)
-{
-    if (p->cfg.max_interval_ms == 0u || !shown_age_grows(reading)) {
-        return UPDATE_POLICY_NO_DEADLINE;
-    }
-    return p->last_refresh_ms + (uint64_t)p->cfg.max_interval_ms;
-}
-
-static bool periodic_due(const update_policy_t *p, const air_reading_t *reading, uint64_t now_ms)
-{
-    if (p->cfg.max_interval_ms == 0u || !shown_age_grows(reading)) {
-        return false;
-    }
-    if (now_ms < p->last_refresh_ms) {
-        return true;  // the monotonic clock restarted: treat the frame as old
-    }
-    return now_ms >= periodic_deadline(p, reading);
-}
-
-static update_reason_t due_reason(const update_policy_t *p, const air_reading_t *reading,
-                                  uint64_t now_ms)
+static update_reason_t due_reason(const update_policy_t *p, const air_reading_t *reading)
 {
     if (!p->have_last_rendered) {
         return UPDATE_REASON_FIRST_FRAME;
@@ -171,9 +137,6 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
     }
     if (statuses_differ(reading, &p->last_rendered)) {
         return UPDATE_REASON_STATUS;
-    }
-    if (periodic_due(p, reading, now_ms)) {
-        return UPDATE_REASON_PERIODIC;
     }
     return UPDATE_REASON_NONE;
 }
@@ -210,9 +173,9 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
     memset(out, 0, sizeof(*out));
     out->action = UPDATE_NONE;
     out->reason = UPDATE_REASON_NONE;
-    out->next_deadline_ms = periodic_deadline(p, reading);
+    out->next_deadline_ms = UPDATE_POLICY_NO_DEADLINE;  // nothing changes with time alone
 
-    const update_reason_t reason = due_reason(p, reading, now_ms);
+    const update_reason_t reason = due_reason(p, reading);
     if (reason == UPDATE_REASON_NONE) {
         return;
     }
@@ -246,11 +209,10 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
             if (p->limits.max_partial_refreshes_before_full > 0u) {
                 // Past the budget, before a full refresh is allowed: keep the
                 // screen current with a partial one. The first redraw that is
-                // due once the interval has elapsed -- a change, or the
-                // periodic one -- is full, since partial_allowed() stays
-                // false until a full refresh resets the count. Nothing is
-                // redrawn only because the interval elapsed
-                // (docs/adr/0019-partials-past-the-budget.md).
+                // due once the interval has elapsed is full, since
+                // partial_allowed() stays false until a full refresh resets
+                // the count. Nothing is redrawn only because the interval
+                // elapsed (docs/adr/0019-partials-past-the-budget.md).
                 out->action = UPDATE_PARTIAL;
                 out->full_forced_by_budget = false;
                 out->partial_past_budget = true;
@@ -329,8 +291,6 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "iaq";
         case UPDATE_REASON_STATUS:
             return "status";
-        case UPDATE_REASON_PERIODIC:
-            return "periodic";
     }
     return "?";
 }

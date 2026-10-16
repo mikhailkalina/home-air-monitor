@@ -143,6 +143,16 @@
 // boot-time scan shows whether it answers before that contract relies on it.
 #define BOARD_RTC_I2C_ADDRESS 0x51u
 
+// The RTC's own wiring, read from the v2.4 schematic (docs/hardware/
+// board_notes.md, "The RTC"): its VDD is VCC_RTC -- VDD3V3 through a 1N4148
+// (D3), with an MS412FE rechargeable cell behind it -- so it is not on
+// PWR_EN, no reset stops it, and it should keep time with the board
+// unpowered, if the cell is fitted and charged (open item). Its open-drain
+// INT goes to IO9, pulled up to VDD3V3 through 10 kOhm: alarm and timer
+// interrupts, unused -- a candidate wake source for phase 5's deep sleep.
+// CLKOUT is pulled up and goes nowhere this firmware uses.
+#define BOARD_RTC_INT_GPIO 9
+
 // An address nothing on this board answers to, for the on-target port_i2c
 // contract's "absent device" checks. 0x08 is the SMBus host address, which no
 // slave on this board -- nor any sensor phase 3 plans -- uses.

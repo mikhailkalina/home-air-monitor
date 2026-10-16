@@ -12,6 +12,7 @@
 #include "sdkconfig.h"
 
 #include "board_config.h"
+#include "domain/civil_time.h"
 #include "domain/measurement.h"
 #include "hal_status.h"
 #include "ui/fonts/font_dejavu_sans.h"
@@ -307,7 +308,10 @@ static void render_home(cal_t *c, float co2_ppm)
     s_reading.temperature_c = measurement_ok(CAL_GHOST_TEMPERATURE_C, now_ms, CAL_ENV_SOURCE_ID);
     s_reading.humidity_rh = measurement_ok(CAL_GHOST_HUMIDITY_RH, now_ms, CAL_ENV_SOURCE_ID);
 
-    view_model_build(&s_vm, &s_reading, now_ms);
+    // No wall time in this reading: the footer says "updated --:--", and the
+    // zone is never read.
+    const time_zone_t utc = time_zone_fixed(0);
+    view_model_build(&s_vm, &s_reading, now_ms, &utc);
     screen_home_render(c->fb, &s_vm);
 }
 

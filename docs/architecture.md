@@ -122,6 +122,7 @@ home-air-monitor/
 │   ├── domain/
 │   │   ├── measurement.h/.c        # measurement_f32_t, air_reading_t, merging, validation
 │   │   ├── air_quality.h/.c        # IAQ's bands (ADR 0021); the CO₂ bands are still in view_model.h
+│   │   ├── civil_time.h/.c         # date and local time without time.h, the zone a rule (ADR 0023)
 │   │   └── device_state.h/.c       # state that must survive deep sleep
 │   ├── app/
 │   │   ├── app_core.h/.c           # state machine: event → actions; next_deadline()
@@ -163,6 +164,8 @@ home-air-monitor/
 │   │   ├── scd4x_hal.c             # Sensirion's HAL over port_i2c + port_clock
 │   │   ├── scd4x_limits.h          # datasheet values, estimates, choices
 │   │   └── scd4x_source.c          # the SCD4x as a sensor_source_t (ADR 0014)
+│   ├── pcf8563/
+│   │   └── pcf8563.h/.c            # the RTC over port_i2c: UTC, BCD, the VL bit; no port (ADR 0023)
 │   ├── gt911/
 │   ├── epd_ed047tc1/
 │   └── bq27220/
@@ -389,6 +392,11 @@ The core **never** calls `esp_timer_get_time()`, `xTaskGetTickCount()` or `time(
 - the test "there must be exactly N publishes over six hours" runs in milliseconds;
 - the simulator supports `--time-scale 3600`, replaying a full day in 24 seconds;
 - no flaky tests caused by wall-clock timing.
+
+`wall_ms()` is UTC. On the board it is ESP-IDF's system time, set at boot from the PCF8563 when
+the chip says its time is valid, at the console by `time_set`, and in phase 4 by SNTP; until then
+it is 0. The core turns it into local time itself (`core/domain/civil_time.h`), with a zone rule
+the composition passes in -- the footer's "updated HH:MM" (ADR 0023).
 
 ### 5.3 The sensor abstraction (the seam that files plug into)
 
@@ -789,6 +797,7 @@ This catches, on a PC, the most expensive class of battery-mode bugs: garbage on
 set(HAC_CORE_SOURCES
     ${HAC_ROOT}/core/domain/measurement.c
     ${HAC_ROOT}/core/domain/air_quality.c
+    ${HAC_ROOT}/core/domain/civil_time.c
     ${HAC_ROOT}/core/app/app_core.c
     ${HAC_ROOT}/core/app/sensor_manager.c
     ${HAC_ROOT}/core/app/update_policy.c

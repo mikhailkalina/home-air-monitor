@@ -13,6 +13,7 @@
 //             --scenario-env scenarios/normal_day.csv --time-scale 60
 //   simulator --headless --frames out/ --duration 600
 //   simulator --sensors fake-i2c --scenario-co2 ... --scenario-env ...
+//   simulator --wall-time 2026-10-25T00:58:00Z ...    (or --no-wall-time)
 //
 // Two ways to the same sensor_source_t (architecture 5.4): replay sources
 // that play the scenario files straight into the core, or the real drivers
@@ -21,6 +22,12 @@
 // (platform/host/scenario_world.h). Either way core/app/sensor_manager.c
 // drives them, with the ids and priorities given below, as
 // apps/firmware_esp32/main/main.c gives them on the board.
+//
+// The wall clock: the PC's time of day when the run starts, or the one
+// --wall-time pins, moving on with virtual time at --time-scale -- or none at
+// all with --no-wall-time, which is the board with its RTC not yet set. The
+// footer shows it in the board's zone, Vilnius
+// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
 //
 // Not yet wired, and deliberately: the control panel, the remaining screens,
 // deep-sleep emulation, networking and telemetry. There is no app_core yet
@@ -40,6 +47,7 @@
 #include "bme68x_limits.h"
 #include "bme68x_source.h"
 #include "board_config.h"  // plain data: where the board's sensors answer
+#include "domain/civil_time.h"
 #include "domain/measurement.h"
 #include "epd_model.h"
 #include "host_time.h"
@@ -70,6 +78,10 @@
 #define SIM_CO2_SOURCE_ID 1u  // the SCD41, or its replay stand-in
 #define SIM_ENV_SOURCE_ID 2u  // the BME68x, or its replay stand-in
 
+// The zone the footer's time is shown in: the board's, Vilnius -- EET, UTC+2,
+// with the EU's summer time -- as apps/firmware_esp32/main/main.c has it.
+#define SIM_LOCAL_STANDARD_OFFSET_MIN 120
+
 // Windowed: how long one loop iteration waits before looking again. Small
 // enough that the window stays responsive, large enough not to spin a core.
 #define SIM_TICK_MS 20u
@@ -99,6 +111,9 @@ typedef struct {
     bool headless;
     uint32_t duration_s;  // 0 = until the window is closed
     bool duration_set;
+    bool no_wall_time;
+    bool wall_time_pinned;
+    uint64_t wall_time_ms;  // the pinned start, when wall_time_pinned
 } sim_args_t;
 
 static void usage(const char *argv0)
@@ -116,6 +131,9 @@ static void usage(const char *argv0)
            "  --frames <dir>         directory for the headless PNG frames\n"
            "  --zoom <f>             window scale, 1 = one panel pixel per screen pixel\n"
            "  --duration <s>         stop after this many virtual seconds (0 = never)\n"
+           "  --wall-time <utc>      start the wall clock here, YYYY-MM-DDTHH:MM:SSZ, instead\n"
+           "                         of at this PC's time; it moves on with --time-scale\n"
+           "  --no-wall-time         no wall clock: the board before its RTC is set\n"
            "  --help\n"
            "\n"
            "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
@@ -182,6 +200,18 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
             TAKE_VALUE("--duration");
             out->duration_s = (uint32_t)strtoul(argv[++i], NULL, 10);
             out->duration_set = true;
+        } else if (strcmp(arg, "--wall-time") == 0) {
+            TAKE_VALUE("--wall-time");
+            const char *text = argv[++i];
+            civil_time_t t;
+            if (!civil_time_parse_iso8601_utc(text, &t) ||
+                !civil_time_to_unix_ms(&t, &out->wall_time_ms)) {
+                fprintf(stderr, "--wall-time must be UTC as YYYY-MM-DDTHH:MM:SSZ, not %s\n", text);
+                return false;
+            }
+            out->wall_time_pinned = true;
+        } else if (strcmp(arg, "--no-wall-time") == 0) {
+            out->no_wall_time = true;
         } else if (strcmp(arg, "--headless") == 0) {
             out->headless = true;
         } else {
@@ -199,6 +229,10 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
     }
     if (out->headless && !out->duration_set) {
         out->duration_s = SIM_DEFAULT_HEADLESS_DURATION_S;
+    }
+    if (out->no_wall_time && out->wall_time_pinned) {
+        fprintf(stderr, "--wall-time and --no-wall-time contradict each other\n");
+        return false;
     }
     return true;
 }
@@ -329,6 +363,7 @@ static void set_priorities(sensor_manager_t *m)
 typedef struct {
     port_display_t *display;
     const port_clock_t *clock;
+    time_zone_t zone;
     sensor_manager_t sensors;
     update_policy_t policy;
     air_reading_t reading;
@@ -352,7 +387,8 @@ static void log_decision(const update_decision_t *d, const update_policy_t *poli
            update_policy_reason_name(d->reason), update_policy_partials_since_full(policy), note);
 }
 
-static void redraw(sim_t *sim, const update_decision_t *d)
+// `now_ms` is the time the reading's wall time was read at.
+static void redraw(sim_t *sim, const update_decision_t *d, uint64_t now_ms)
 {
     framebuffer_t *fb = sim->display->get_framebuffer(sim->display);
     if (fb == NULL) {
@@ -360,7 +396,7 @@ static void redraw(sim_t *sim, const update_decision_t *d)
     }
 
     view_model_t vm;
-    view_model_build(&vm, &sim->reading, sim->clock->now_ms(sim->clock));
+    view_model_build(&vm, &sim->reading, now_ms, &sim->zone);
     screen_home_render(fb, &vm);
 
     const bool full = (d->action == UPDATE_FULL);
@@ -400,7 +436,10 @@ static uint64_t step(sim_t *sim)
     // drivers wait out their sensors' command times on this clock -- and a
     // reading stamped later than the "now" it is aged against has no age at
     // all, which measurement_age_ms() rightly calls stale.
+    // The wall clock at the same point, so that a value's wall time is the
+    // reading's minus its age (view_model_build()).
     const uint64_t now_ms = sim->clock->now_ms(sim->clock);
+    sim->reading.wall_time_ms = sim->clock->wall_ms(sim->clock);
     sim->reading.uptime_s = (uint32_t)(now_ms / 1000u);
     air_reading_apply_age(&sim->reading, now_ms, sim->sensors.cfg.max_age_ms);
 
@@ -409,7 +448,7 @@ static uint64_t step(sim_t *sim)
 
     if (decision.action != UPDATE_NONE) {
         log_decision(&decision, &sim->policy);
-        redraw(sim, &decision);
+        redraw(sim, &decision, now_ms);
         sim->deferral_logged = false;
         // What is due after this redraw: the deadline above was "now".
         update_policy_evaluate(&sim->policy, &sim->reading, &decision);
@@ -448,6 +487,10 @@ int main(int argc, char **argv)
     adp_clock_virtual_t vclock;
     adp_clock_virtual_init(&vclock, args.time_scale);
     const port_clock_t *clock = adp_clock_virtual_port(&vclock);
+    if (!args.no_wall_time) {
+        adp_clock_virtual_set_wall(&vclock,
+                                   args.wall_time_pinned ? args.wall_time_ms : host_wall_ms());
+    }
 
     adp_log_console_t console_log;
     adp_log_console_init(&console_log);
@@ -521,6 +564,7 @@ int main(int argc, char **argv)
     memset(&sim, 0, sizeof(sim));
     sim.display = display;
     sim.clock = clock;
+    sim.zone = time_zone_eu(SIM_LOCAL_STANDARD_OFFSET_MIN);
     framebuffer_init(&sim.previous_fb, previous_fb_pixels, previous_fb_size, display->width,
                      display->height, display->format);
 
@@ -545,6 +589,16 @@ int main(int argc, char **argv)
            args.headless ? "headless" : "windowed",
            (args.sensors == SIM_SENSORS_FAKE_I2C) ? "fake-i2c (drivers over device models)"
                                                   : "replay");
+    const uint64_t wall_ms = clock->wall_ms(clock);
+    if (wall_ms == 0u) {
+        printf("[sim] wall clock: none (--no-wall-time): the footer says \"updated --:--\"\n");
+    } else {
+        const civil_time_t utc = civil_time_from_unix_ms(wall_ms);
+        const civil_time_t local = civil_time_local(wall_ms, &sim.zone);
+        printf("[sim] wall clock: %04d-%02u-%02uT%02u:%02u:%02uZ (%s), %02u:%02u in Vilnius\n",
+               (int)utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second,
+               args.wall_time_pinned ? "--wall-time" : "this PC's", local.hour, local.minute);
+    }
 
     air_reading_init(&sim.reading);
 

@@ -2,6 +2,10 @@
 
 #include "adp_clock.h"
 
+#include <sys/time.h>
+#include <sys/types.h>
+#include <time.h>
+
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -13,10 +17,20 @@ static uint64_t clk_now_ms(const port_clock_t *port)
     return (uint64_t)(esp_timer_get_time() / 1000);
 }
 
+#define MS_PER_S 1000u
+#define US_PER_MS 1000u
+
 static uint64_t clk_wall_ms(const port_clock_t *port)
 {
     (void)port;
-    return 0u;  // the port contract: 0 means "not synchronized" -- true until phase 4's SNTP
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) != 0 || tv.tv_sec < 0) {
+        return 0u;
+    }
+    const uint64_t ms = (uint64_t)tv.tv_sec * MS_PER_S + (uint64_t)tv.tv_usec / US_PER_MS;
+    // The port contract: 0 means "not synchronized" -- a system time nobody
+    // set (adp_clock.h).
+    return (ms < ADP_CLOCK_WALL_EARLIEST_MS) ? 0u : ms;
 }
 
 static void clk_delay_ms(const port_clock_t *port, uint32_t ms)
@@ -85,4 +99,23 @@ void adp_clock_init(adp_clock_t *c, const port_log_t *log)
 const port_clock_t *adp_clock_port(const adp_clock_t *c)
 {
     return &c->port;
+}
+
+hal_status_t adp_clock_set_wall_ms(adp_clock_t *c, uint64_t unix_ms)
+{
+    if (unix_ms < ADP_CLOCK_WALL_EARLIEST_MS) {
+        return HAL_ERR_INVALID_ARG;
+    }
+    const struct timeval tv = {
+        .tv_sec = (time_t)(unix_ms / MS_PER_S),
+        .tv_usec = (suseconds_t)((unix_ms % MS_PER_S) * US_PER_MS),
+    };
+    const int rc = settimeofday(&tv, NULL);
+    const log_field_t fields[] = {
+        log_u64("unix_ms", unix_ms),
+        log_i64("rc", (int64_t)rc),
+    };
+    port_log_write(c->log, rc == 0 ? LOG_LEVEL_DEBUG : LOG_LEVEL_ERROR, "adp_clock",
+                   "system time set", fields, sizeof(fields) / sizeof(fields[0]));
+    return (rc == 0) ? HAL_OK : HAL_ERR_IO;
 }

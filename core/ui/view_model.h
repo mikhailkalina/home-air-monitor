@@ -22,8 +22,10 @@
 // (measurement_low_accuracy()) keeps its black ink and gets a question mark
 // instead of no mark: a reading, on a scale its source has not yet
 // calibrated. Any other status keeps its own mark, which says more. The
-// footer names it when nothing worse is wrong, "IAQ not calibrated"
-// (docs/adr/0021-measurement-accuracy-and-iaq-levels.md).
+// footer names it when nothing worse is wrong, "IAQ not calibrated", or
+// counts them, "2 not calibrated"
+// (docs/adr/0021-measurement-accuracy-and-iaq-levels.md; the shorter forms
+// since docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
 //
 // The IAQ cell. An index of air quality needs Bosch's BSEC library, which a
 // build links only on request (docs/adr/0020-bsec-iaq.md); without it the
@@ -34,6 +36,18 @@
 // never as IAQ (13.3), with the gas's own status treatment. An IAQ in any
 // other status keeps the cell: warming up or failing, it is provided. The
 // "updated" line and the fault counts follow whichever the cell shows.
+//
+// The "updated" line says when the values on the screen were measured, as a
+// local time of day: "HH:MM", the minute the freshest value carrying a number
+// was measured, rounded down; "DD.MM HH:MM" when that was on an earlier local
+// day than the reading's own wall time; "--:--" while no wall time is known
+// (air_reading_t.wall_time_ms is 0) or nothing carries a number. Never an
+// age: an age is out of date the moment the e-paper keeps showing it, and
+// would need a redraw on a timer to stay true. A time of measurement stays
+// true for as long as the readings it describes are the ones on the glass --
+// which, with nothing redrawn because time passed, is exactly as long as it
+// is shown. Freshness is the stale marks' job
+// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
 //
 // Under an IAQ number, where the other cells have their unit, goes its band
 // (core/domain/air_quality.h), in a word that fits the cell at 32px beside a
@@ -47,16 +61,19 @@
 #include <stdint.h>
 
 #include "domain/air_quality.h"
+#include "domain/civil_time.h"
 #include "domain/measurement.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Long enough for every string this module produces: "1013" (pressure),
-// "-12.3" (temperature), "warm", "n/a", "45 min".
+// Long enough for every reading this module produces: "1013" (pressure),
+// "-12.3" (temperature), "warm", "n/a".
 #define VM_TEXT_MAX 12
 #define VM_STATUS_TEXT_MAX 32
+// "DD.MM HH:MM", the longest "updated" text.
+#define VM_UPDATED_TEXT_MAX 12
 
 // Grey levels in the PIXFMT_GRAY4 range, 0 = black, 15 = white. The screen
 // draws on a white ground, so a lighter ink reads as a weaker claim: a stale
@@ -142,18 +159,11 @@ typedef struct {
     bool net_connected;
     const char *net_text;  // "Wi-Fi" / "offline"
 
-    // When the screen's data was measured. "just now" while any quantity
-    // shown is fresh (VAL_OK) -- the picture is current, and saying how many
-    // seconds old it was when drawn would be a number the e-paper then keeps
-    // showing long after it stopped being true. Otherwise the age of the
-    // freshest quantity that still carries a number, as "12 s" / "4 min" /
-    // "2 h", which update_policy redraws periodically while it grows.
-    // has_updated is false when nothing carries a number, and updated_text is
-    // then "--". updated_is_age says whether the text is an age (and reads
-    // "updated <text> ago").
-    char updated_text[VM_TEXT_MAX];
+    // When the screen's data was measured, in local time: "14:07", or
+    // "15.10 23:58" from an earlier day; "--:--", with has_updated false,
+    // when that is not known (above, "The updated line").
+    char updated_text[VM_UPDATED_TEXT_MAX];
     bool has_updated;
-    bool updated_is_age;
 
     uint8_t error_count;
     uint8_t stale_count;
@@ -162,9 +172,14 @@ typedef struct {
     char status_text[VM_STATUS_TEXT_MAX];  // "2 sensor errors", "all sensors OK", ...
 } view_model_t;
 
-// Builds the whole view from one reading. `now_ms` comes from port_clock and
-// is used only to age the "updated" line; nothing here reads a clock.
-void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t now_ms);
+// Builds the whole view from one reading. `now_ms` is port_clock's monotonic
+// time at the moment `reading->wall_time_ms` was read -- both loops read the
+// two together, after the poll -- so that a value measured at ts_ms was
+// measured at wall_time_ms - (now_ms - ts_ms). `zone` turns that into the
+// local time the "updated" line shows; it is the composition's
+// (core/domain/civil_time.h), and required. Nothing here reads a clock.
+void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t now_ms,
+                      const time_zone_t *zone);
 
 // The per-status treatments, exposed so that a test can assert them directly
 // and so that any later screen renders a status the same way this one does.

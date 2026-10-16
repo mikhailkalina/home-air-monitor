@@ -4,7 +4,8 @@
 // allows (screen_home.h). This holds it to that: it renders the widest and
 // deepest strings each field can show -- "40000" ppm, "-40.0" C, "1100" hPa,
 // "warm", "ERR", "n/a", an IAQ's widest bands beside the question mark, the
-// error box and the longest "... not calibrated" in the footer -- on the
+// error box and the longest "... not calibrated" in the footer, beside the
+// widest "updated HH:MM" and "updated DD.MM HH:MM" this font draws -- on the
 // 960x540 panel,
 // and checks by pixels that nothing reaches the margins, the band, a grid
 // separator or a rule, and that the left and right halves of the status bar
@@ -19,17 +20,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "domain/civil_time.h"
 #include "domain/measurement.h"
 #include "hac_test.h"
+#include "ui/fonts/font_dejavu_sans.h"
 #include "ui/framebuffer.h"
+#include "ui/gfx.h"
 #include "ui/screen_home.h"
 #include "ui/view_model.h"
 
 #define PANEL_W 960
 #define PANEL_H 540
 
-#define RENDER_TS_MS 10000000u
+#define RENDER_TS_MS 100000000u
 #define SOURCE_ID 1u
+
+// Read with RENDER_TS_MS: 2026-10-16T11:07:42Z. Every reading here carries
+// it, so the footer shows a time of day unless a case says otherwise.
+#define RENDER_WALL_MS 1792148862000u
 
 // What a text must keep clear of: the band beside the CO2 reading, a rule
 // above or below it, the halves of a line from each other.
@@ -40,11 +48,26 @@
 
 static uint8_t *g_pixels;
 static framebuffer_t g_fb;
+static time_zone_t g_zone;  // Vilnius, set in main()
+
+// The "updated" text to draw in place of the one the reading gives, or NULL:
+// how the widest time strings are put on the screen.
+static const char *g_updated_text;
+
+static void build(view_model_t *vm, const air_reading_t *r)
+{
+    view_model_build(vm, r, RENDER_TS_MS, &g_zone);
+    if (g_updated_text != NULL) {
+        strncpy(vm->updated_text, g_updated_text, sizeof(vm->updated_text) - 1u);
+        vm->updated_text[sizeof(vm->updated_text) - 1u] = '\0';
+        vm->has_updated = true;
+    }
+}
 
 static void render(const air_reading_t *r)
 {
     view_model_t vm;
-    view_model_build(&vm, r, RENDER_TS_MS);
+    build(&vm, r);
     screen_home_render(&g_fb, &vm);
 }
 
@@ -182,6 +205,7 @@ static air_reading_t widest_numbers(void)
     r.gas_resistance_ohm = measurement_ok(9999000.0f, RENDER_TS_MS, SOURCE_ID);  // "9999" kOhm
     r.battery_percent = measurement_ok(100.0f, RENDER_TS_MS, SOURCE_ID);
     r.net_connected = true;
+    r.wall_time_ms = RENDER_WALL_MS;
     return r;
 }
 
@@ -231,12 +255,12 @@ static void nothing_provided_fits(void)
     check_layout("nothing provided");
 }
 
-// The widest numbers gone stale, 59 minutes ago: the clock marks beside
-// them, and the footer's longest age, "updated 59 min ago".
+// The widest numbers gone stale since the evening before: the clock marks
+// beside them, and the footer's dated form.
 static void the_widest_numbers_gone_stale_fit(void)
 {
     air_reading_t r = widest_numbers();
-    const uint64_t measured_ms = RENDER_TS_MS - 59u * 60000u;
+    const uint64_t measured_ms = RENDER_TS_MS - 15u * 3600000u;  // 23:07:42 the day before
     r.co2_ppm.ts_ms = measured_ms;
     r.temperature_c.ts_ms = measured_ms;
     r.humidity_rh.ts_ms = measured_ms;
@@ -249,6 +273,97 @@ static void the_widest_numbers_gone_stale_fit(void)
     r.gas_resistance_ohm.status = VAL_STALE;
     render(&r);
     check_layout("widest numbers, stale");
+
+    view_model_t vm;
+    build(&vm, &r);
+    HAC_CHECK(strcmp(vm.updated_text, "15.10 23:07") == 0);
+}
+
+// The widest text of the "updated" line, measured over every string it can
+// say: every HH:MM of a day, and every DD.MM HH:MM of a leap year. Digits
+// differ in their side bearings even where they share an advance, so the
+// ink decides.
+static void widest_updated_text(char *out, size_t cap, bool dated)
+{
+    const font_t *font = &font_dejavu_sans_40;
+    int32_t widest = -1;
+    char text[VM_UPDATED_TEXT_MAX];
+    for (uint8_t month = dated ? 1u : 12u; month <= 12u; ++month) {
+        const uint8_t last_day = dated ? civil_days_in_month(2028, month) : 1u;
+        for (uint8_t day = 1u; day <= last_day; ++day) {
+            for (uint8_t hour = 0u; hour < 24u; ++hour) {
+                for (uint8_t minute = 0u; minute < 60u; ++minute) {
+                    char *p = text;
+                    if (dated) {
+                        *p++ = (char)('0' + day / 10u);
+                        *p++ = (char)('0' + day % 10u);
+                        *p++ = '.';
+                        *p++ = (char)('0' + month / 10u);
+                        *p++ = (char)('0' + month % 10u);
+                        *p++ = ' ';
+                    }
+                    *p++ = (char)('0' + hour / 10u);
+                    *p++ = (char)('0' + hour % 10u);
+                    *p++ = ':';
+                    *p++ = (char)('0' + minute / 10u);
+                    *p++ = (char)('0' + minute % 10u);
+                    *p = '\0';
+                    const int32_t w = gfx_measure_text_ink(font, text);
+                    if (w > widest) {
+                        widest = w;
+                        strncpy(out, text, cap - 1u);
+                        out[cap - 1u] = '\0';
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The widest time, and the widest dated one, beside the footer's widest
+// texts on the right: the error box and the longest calibration note.
+static void the_widest_update_times_fit(void)
+{
+    char hhmm[VM_UPDATED_TEXT_MAX];
+    char dated[VM_UPDATED_TEXT_MAX];
+    widest_updated_text(hhmm, sizeof(hhmm), false);
+    widest_updated_text(dated, sizeof(dated), true);
+    const char *texts[] = {hhmm, dated, "--:--"};
+
+    for (size_t i = 0u; i < sizeof(texts) / sizeof(texts[0]); ++i) {
+        g_updated_text = texts[i];
+
+        air_reading_t r = widest_numbers();
+        r.temperature_c.accuracy = ACC_LOW;
+        render(&r);
+        check_layout(texts[i]);  // beside "Temp. not calibrated", the longest single note
+        r.temperature_c.accuracy = ACC_NOT_REPORTED;
+        r.humidity_rh.accuracy = ACC_LOW;
+        render(&r);
+        check_layout(texts[i]);  // beside "Humidity not calibrated"
+
+        r.co2_ppm.accuracy = ACC_LOW;
+        r.temperature_c.accuracy = ACC_LOW;
+        r.humidity_rh.accuracy = ACC_LOW;
+        r.pressure_hpa.accuracy = ACC_LOW;
+        r.iaq = measurement_ok(200.0f, RENDER_TS_MS, SOURCE_ID);
+        r.iaq.accuracy = ACC_LOW;
+        render(&r);
+        check_layout(texts[i]);  // beside "5 not calibrated"
+
+        r.co2_ppm = measurement_status(VAL_ERROR, RENDER_TS_MS, SOURCE_ID);
+        r.temperature_c = measurement_status(VAL_ERROR, RENDER_TS_MS, SOURCE_ID);
+        r.humidity_rh = measurement_status(VAL_ERROR, RENDER_TS_MS, SOURCE_ID);
+        r.pressure_hpa = measurement_status(VAL_ERROR, RENDER_TS_MS, SOURCE_ID);
+        render(&r);
+        check_layout(texts[i]);  // beside the box around "4 sensor errors"
+
+        r.co2_ppm = measurement_status(VAL_WARMUP, RENDER_TS_MS, SOURCE_ID);
+        render(&r);
+        check_layout(texts[i]);  // beside the box around "3 sensor errors"
+
+        g_updated_text = NULL;
+    }
 }
 
 // IAQ in its widest bands -- "Moderate", then "Excellent" -- beside the
@@ -273,7 +388,7 @@ static void the_longest_calibration_notes_fit(void)
     air_reading_t r = widest_numbers();
     r.temperature_c.accuracy = ACC_LOW;
     render(&r);
-    check_layout("Temperature not calibrated");
+    check_layout("Temp. not calibrated");
 
     r.co2_ppm.accuracy = ACC_LOW;
     r.humidity_rh.accuracy = ACC_LOW;
@@ -281,7 +396,7 @@ static void the_longest_calibration_notes_fit(void)
     r.iaq = measurement_ok(200.0f, RENDER_TS_MS, SOURCE_ID);
     r.iaq.accuracy = ACC_LOW;
     render(&r);
-    check_layout("5 readings not calibrated");
+    check_layout("5 not calibrated");
 }
 
 // The headline's unit and mark never share a pixel with any reading, and
@@ -305,7 +420,7 @@ static uint8_t g_rest[PANEL_H][PANEL_W];      // the first OK reading's rest
 static void render_headline_parts(const air_reading_t *r, bool record_rest, bool *rest_same)
 {
     view_model_t vm;
-    view_model_build(&vm, r, RENDER_TS_MS);
+    build(&vm, r);
     screen_home_render(&g_fb, &vm);
     for (int32_t y = HEAD_TOP; y < SCREEN_HOME_HEAD_RULE_Y; ++y) {
         for (int32_t x = HEAD_LEFT; x < HEAD_RIGHT; ++x) {
@@ -358,7 +473,7 @@ static void the_co2_unit_and_mark_stay_off_every_reading(void)
         r.co2_ppm = (k == 0u) ? measurement_ok(readings[0], RENDER_TS_MS, SOURCE_ID)
                               : measurement_status(statuses[k - 1u], RENDER_TS_MS, SOURCE_ID);
         view_model_t vm;
-        view_model_build(&vm, &r, RENDER_TS_MS);
+        build(&vm, &r);
         vm.fields[VM_FIELD_CO2].text[0] = '\0';
         screen_home_render(&g_fb, &vm);
         for (int32_t y = HEAD_TOP; y < SCREEN_HOME_HEAD_RULE_Y; ++y) {
@@ -380,6 +495,7 @@ int main(void)
         return 1;
     }
     framebuffer_init(&g_fb, g_pixels, size, PANEL_W, PANEL_H, PIXFMT_GRAY4);
+    g_zone = time_zone_eu(120);  // Vilnius
 
     HAC_RUN(the_widest_numbers_fit);
     HAC_RUN(every_field_warming_up_fits);
@@ -388,6 +504,7 @@ int main(void)
     HAC_RUN(the_widest_numbers_gone_stale_fit);
     HAC_RUN(the_widest_iaq_bands_fit);
     HAC_RUN(the_longest_calibration_notes_fit);
+    HAC_RUN(the_widest_update_times_fit);
     HAC_RUN(the_co2_unit_and_mark_stay_off_every_reading);
 
     free(g_pixels);
