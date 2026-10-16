@@ -64,6 +64,17 @@ target_link_libraries(test_duration_stats PRIVATE hac_test_support)
 hac_apply_warnings(test_duration_stats)
 add_test(NAME test_duration_stats COMMAND test_duration_stats)
 
+# The debug log's ring between the logging tasks and the card's writer
+# (docs/adr/0024), from where the firmware compiles it.
+add_executable(test_log_ring
+    unit/test_log_ring.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/log_ring.c
+)
+target_include_directories(test_log_ring PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_log_ring PRIVATE hac_test_support)
+hac_apply_warnings(test_log_ring)
+add_test(NAME test_log_ring COMMAND test_log_ring)
+
 # The firmware's I2C bus scan, against the host's fake bus.
 add_executable(test_i2c_scan
     unit/test_i2c_scan.c
@@ -139,6 +150,28 @@ if(HAC_BSEC)
     hac_apply_warnings(test_bme68x_bsec_source)
     add_test(NAME test_bme68x_bsec_source COMMAND test_bme68x_bsec_source)
 endif()
+
+# The recordings (docs/adr/0024): the row format against the replay parser
+# that reads it back, the file names and the bound over adp_files_dir, the
+# recorder itself over the same directory, the round trip -- scenarios
+# recorded and the recordings replayed through the same sensor manager -- and
+# the debug log's files.
+foreach(test IN ITEMS test_record_format test_record_files test_recorder
+                      test_recording_round_trip test_log_file)
+    add_executable(${test} unit/${test}.c)
+    target_link_libraries(${test} PRIVATE hac_platform_host hac_test_support)
+    target_compile_definitions(${test} PRIVATE HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+    hac_apply_warnings(${test})
+    add_test(NAME ${test} COMMAND ${test})
+endforeach()
+
+# The same through the simulator's command line: --record, then --recording,
+# deciding the same redraws (tests/cli/simulator_record_replay.cmake).
+add_test(NAME simulator_record_replay
+    COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
+            -DSCENARIOS=${HAC_ROOT}/scenarios
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/simulator_record_replay
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_record_replay.cmake)
 
 # The simulator's two sensor modes on one scenario: replay sources, and both
 # drivers over the fake bus measuring platform/host/scenario_world.c -- each

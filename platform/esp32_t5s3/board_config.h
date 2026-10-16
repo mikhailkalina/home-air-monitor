@@ -227,14 +227,34 @@
 #define BOARD_BUTTON_GPIO 21
 #define BOARD_BATTERY_ADC_GPIO 14
 
-// --- SD card (free for other use if no card is fitted) ---------------------
-// src/utilities.h:34-37 (CONFIG_IDF_TARGET_ESP32S3 block). Not used in this
-// phase; recorded because these four GPIOs are claimed the moment an SD
-// card is present, and any future use of them elsewhere must know that.
+// --- microSD card slot (phase 3f) ------------------------------------------
+// Pins: src/utilities.h:34-37 (CONFIG_IDF_TARGET_ESP32S3 block). The slot's
+// wiring, from the v2.4 schematic (docs/hardware/board_notes.md, "The
+// microSD slot"): SPI mode only -- DAT1 and DAT2 go nowhere, so the 4-bit
+// SDMMC mode is not available; VDD from VDD3V3, so the card is powered
+// whenever the board is and not switched by PWR_EN; 10 kOhm pull-ups on CS,
+// MOSI and CLK, none fitted on MISO (R14 is NC), so platform/esp32_t5s3/
+// adp_sd.c enables the S3's internal one there; card-detect (CD#) reaches
+// only test pad TP72, so firmware cannot see a card arrive or leave.
+//
+// IO15 and IO16 are also pins 2 and 3 of the white connector P5. From phase
+// 3f they belong to the card; the sensors use only P5's V and G.
 #define BOARD_SD_MISO_GPIO 16
 #define BOARD_SD_MOSI_GPIO 15
 #define BOARD_SD_SCLK_GPIO 11
 #define BOARD_SD_CS_GPIO 42
+
+// The SPI controller the card is on: SPI2 (FSPI), the general-purpose one --
+// SPI0/1 run the flash and the PSRAM, EPDiy drives the panel through LCD_CAM,
+// and nothing else in this firmware uses SPI. A name ESP-IDF's
+// driver/spi_common.h defines, so this expands only where that is included.
+#define BOARD_SD_SPI_HOST SPI2_HOST
+
+// A CHOICE, not a measurement: ESP-IDF's SD-over-SPI default, 20 MHz
+// (SDMMC_FREQ_DEFAULT). The card is a few centimetres from the S3 on the
+// board itself, and the recordings need some kilobytes a minute; nothing
+// asks for more, and nothing has shown that less is needed.
+#define BOARD_SD_SPI_MAX_KHZ 20000
 
 // --- genuinely free GPIOs ---------------------------------------------------
 // README.MD "GPIO List": marked free (checked) with no on-board connection.

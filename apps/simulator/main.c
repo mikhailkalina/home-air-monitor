@@ -14,6 +14,9 @@
 //   simulator --headless --frames out/ --duration 600
 //   simulator --sensors fake-i2c --scenario-co2 ... --scenario-env ...
 //   simulator --wall-time 2026-10-25T00:58:00Z ...    (or --no-wall-time)
+//   simulator --record out/rec --scenario-co2 ... --scenario-env ...
+//   simulator --recording card/data/2026-10-16_scd4x.csv
+//             --recording card/data/2026-10-16_bme68x.csv
 //
 // Two ways to the same sensor_source_t (architecture 5.4): replay sources
 // that play the scenario files straight into the core, or the real drivers
@@ -27,7 +30,18 @@
 // --wall-time pins, moving on with virtual time at --time-scale -- or none at
 // all with --no-wall-time, which is the board with its RTC not yet set. The
 // footer shows it in the board's zone, Vilnius
-// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
+// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md). Replaying
+// recordings, it starts at the earliest of their first rows instead, unless
+// one of those two options says otherwise.
+//
+// Recordings (docs/adr/0024-sd-card-recordings-and-debug-log.md): --record
+// writes each source's rows into <dir>/data/ through the host's port_files,
+// as the board writes them to its card, with the board's file names; and
+// --recording replays such a file -- the board's, or the simulator's own --
+// as the source that recorded it: the capabilities its header shows, the id
+// and the priority that source has on the board, which the file name's tag
+// says (_scd4x, _bme68x). So a day recorded on the board plays through the
+// same sensor_manager merge.
 //
 // Not yet wired, and deliberately: the control panel, the remaining screens,
 // deep-sleep emulation, networking and telemetry. There is no app_core yet
@@ -40,6 +54,7 @@
 
 #include "adp_clock_virtual.h"
 #include "adp_display_png.h"
+#include "adp_files_dir.h"
 #include "adp_i2c_fake.h"
 #include "adp_log_console.h"
 #include "app/sensor_manager.h"
@@ -56,6 +71,8 @@
 #include "port_display.h"
 #include "port_input.h"
 #include "port_log.h"
+#include "recording/record_files.h"
+#include "recording/recorder.h"
 #include "replay/replay_source.h"
 #include "scd4x_source.h"
 #include "scenario_world.h"
@@ -77,6 +94,18 @@
 // gives the same two sensors.
 #define SIM_CO2_SOURCE_ID 1u  // the SCD41, or its replay stand-in
 #define SIM_ENV_SOURCE_ID 2u  // the BME68x, or its replay stand-in
+
+// The tags the two sources' recordings carry in their file names, the
+// firmware's: what --record writes and what --recording reads a file's
+// source from.
+#define SIM_CO2_RECORDING_TAG "scd4x"
+#define SIM_ENV_RECORDING_TAG "bme68x"
+
+// --recording may be given once per source the manager can hold.
+#define SIM_MAX_RECORDINGS SENSOR_MANAGER_MAX_SOURCES
+
+// How many recorder events one poll can produce: one per source.
+#define SIM_EVENTS_PER_POLL SENSOR_MANAGER_MAX_SOURCES
 
 // The zone the footer's time is shown in: the board's, Vilnius -- EET, UTC+2,
 // with the EU's summer time -- as apps/firmware_esp32/main/main.c has it.
@@ -114,6 +143,9 @@ typedef struct {
     bool no_wall_time;
     bool wall_time_pinned;
     uint64_t wall_time_ms;  // the pinned start, when wall_time_pinned
+    const char *record_dir;
+    const char *recordings[SIM_MAX_RECORDINGS];
+    size_t recording_count;
 } sim_args_t;
 
 static void usage(const char *argv0)
@@ -134,6 +166,12 @@ static void usage(const char *argv0)
            "  --wall-time <utc>      start the wall clock here, YYYY-MM-DDTHH:MM:SSZ, instead\n"
            "                         of at this PC's time; it moves on with --time-scale\n"
            "  --no-wall-time         no wall clock: the board before its RTC is set\n"
+           "  --record <dir>         write each source's rows into <dir>/data/, as the board\n"
+           "                         writes them to its card\n"
+           "  --recording <file>     replay a recording (the board's or --record's) as the\n"
+           "                         source its name says: <day>_scd4x.csv, <day>_bme68x.csv;\n"
+           "                         repeatable, one per source. The wall clock starts at\n"
+           "                         the earliest first row unless --wall-time says otherwise\n"
            "  --help\n"
            "\n"
            "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
@@ -212,6 +250,17 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
             out->wall_time_pinned = true;
         } else if (strcmp(arg, "--no-wall-time") == 0) {
             out->no_wall_time = true;
+        } else if (strcmp(arg, "--record") == 0) {
+            TAKE_VALUE("--record");
+            out->record_dir = argv[++i];
+        } else if (strcmp(arg, "--recording") == 0) {
+            TAKE_VALUE("--recording");
+            if (out->recording_count >= SIM_MAX_RECORDINGS) {
+                fprintf(stderr, "--recording may be given at most %u times\n",
+                        (unsigned)SIM_MAX_RECORDINGS);
+                return false;
+            }
+            out->recordings[out->recording_count++] = argv[++i];
         } else if (strcmp(arg, "--headless") == 0) {
             out->headless = true;
         } else {
@@ -234,6 +283,11 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
         fprintf(stderr, "--wall-time and --no-wall-time contradict each other\n");
         return false;
     }
+    if (out->recording_count > 0u && out->sensors == SIM_SENSORS_FAKE_I2C) {
+        fprintf(stderr, "a recording replays into the core directly: --recording needs "
+                        "--sensors replay\n");
+        return false;
+    }
     return true;
 }
 
@@ -246,6 +300,9 @@ typedef struct {
     // replay mode
     replay_source_t co2_replay;
     replay_source_t env_replay;
+    replay_source_t recordings[SIM_MAX_RECORDINGS];
+    size_t recording_count;
+    uint64_t earliest_utc_ms;  // the earliest first row among the recordings; 0 for none
 
     // fake-i2c mode
     adp_i2c_fake_t bus;
@@ -256,7 +313,8 @@ typedef struct {
     scd4x_source_t scd4x;
     bme68x_source_t bme68x;
 
-    sensor_source_t *sources[2];
+    sensor_source_t *sources[SENSOR_MANAGER_MAX_SOURCES];
+    sensor_caps_t accuracy_caps[SENSOR_MANAGER_MAX_SOURCES];  // what each source's file rates
     size_t count;
 } sim_sensors_rig_t;
 
@@ -265,28 +323,118 @@ static const sensor_caps_t CO2_CAPS =
 static const sensor_caps_t ENV_CAPS = (sensor_caps_t)(SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY |
                                                       SENS_CAP_PRESSURE | SENS_CAP_GAS_RES);
 
+static bool id_taken(const sim_sensors_rig_t *r, uint8_t id)
+{
+    for (size_t i = 0u; i < r->count; ++i) {
+        if (r->sources[i]->id == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_source(sim_sensors_rig_t *r, replay_source_t *rs)
+{
+    r->accuracy_caps[r->count] = replay_timeline_accuracy_caps(&rs->timeline);
+    r->sources[r->count++] = &rs->port;
+}
+
+// The source a recording came from, by the tag in its name -- the board's
+// names (core/recording/record_files.h): <key>_<tag>[_<n>].csv.
+static bool recording_source_id(const char *path, uint8_t *id)
+{
+    const char *base = path;
+    for (const char *p = path; *p != '\0'; ++p) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+    record_name_t name;
+    if (!record_name_parse(base, &name)) {
+        return false;
+    }
+    if (strcmp(name.tag, SIM_CO2_RECORDING_TAG) == 0) {
+        *id = SIM_CO2_SOURCE_ID;
+        return true;
+    }
+    if (strcmp(name.tag, SIM_ENV_RECORDING_TAG) == 0) {
+        *id = SIM_ENV_SOURCE_ID;
+        return true;
+    }
+    return false;
+}
+
+// A recording replays as the source that wrote it, claiming what its header
+// shows. Interpolated like a scenario, between rows a few seconds apart.
+static bool add_recording(sim_sensors_rig_t *r, const char *path, const port_clock_t *clock)
+{
+    uint8_t id = 0u;
+    if (!recording_source_id(path, &id)) {
+        fprintf(stderr,
+                "%s: cannot tell which sensor recorded it -- a recording's name ends in _%s.csv "
+                "or _%s.csv (optionally _<n> before .csv), as the board writes it\n",
+                path, SIM_CO2_RECORDING_TAG, SIM_ENV_RECORDING_TAG);
+        return false;
+    }
+    if (id_taken(r, id)) {
+        fprintf(stderr, "%s: another file already plays that sensor\n", path);
+        return false;
+    }
+    replay_source_t *rs = &r->recordings[r->recording_count];
+    const hal_status_t st = replay_source_init(rs, path, (sensor_caps_t)0, id, clock, true);
+    if (st != HAL_OK) {
+        fprintf(stderr, "cannot load %s (status %d)\n", path, (int)st);
+        return false;
+    }
+    rs->port.caps = replay_timeline_caps(&rs->timeline);
+    r->recording_count++;
+    add_source(r, rs);
+
+    const uint64_t first = rs->timeline.first_utc_ms;
+    if (first != 0u && (r->earliest_utc_ms == 0u || first < r->earliest_utc_ms)) {
+        r->earliest_utc_ms = first;
+    }
+    return true;
+}
+
 // Replay: the CO2 file stands in for the SCD41, with the SCD41's three
 // quantities, so the fallback of architecture 6.3 has something to fall back
-// on; a column the file lacks is simply VAL_UNAVAILABLE.
+// on; a column the file lacks is simply VAL_UNAVAILABLE. Recordings come
+// first, so a scenario file cannot take a sensor a recording plays.
 static bool build_replay(sim_sensors_rig_t *r, const sim_args_t *args, const port_clock_t *clock)
 {
+    for (size_t i = 0u; i < args->recording_count; ++i) {
+        if (!add_recording(r, args->recordings[i], clock)) {
+            return false;
+        }
+    }
     if (args->scenario_co2 != NULL) {
+        if (id_taken(r, SIM_CO2_SOURCE_ID)) {
+            fprintf(stderr, "--scenario-co2 and a _%s recording both play the SCD41\n",
+                    SIM_CO2_RECORDING_TAG);
+            return false;
+        }
         const hal_status_t st = replay_source_init(&r->co2_replay, args->scenario_co2, CO2_CAPS,
                                                    SIM_CO2_SOURCE_ID, clock, true);
         if (st != HAL_OK) {
             fprintf(stderr, "cannot load %s (status %d)\n", args->scenario_co2, (int)st);
             return false;
         }
-        r->sources[r->count++] = &r->co2_replay.port;
+        add_source(r, &r->co2_replay);
     }
     if (args->scenario_env != NULL) {
+        if (id_taken(r, SIM_ENV_SOURCE_ID)) {
+            fprintf(stderr, "--scenario-env and a _%s recording both play the BME68x\n",
+                    SIM_ENV_RECORDING_TAG);
+            return false;
+        }
         const hal_status_t st = replay_source_init(&r->env_replay, args->scenario_env, ENV_CAPS,
                                                    SIM_ENV_SOURCE_ID, clock, true);
         if (st != HAL_OK) {
             fprintf(stderr, "cannot load %s (status %d)\n", args->scenario_env, (int)st);
             return false;
         }
-        r->sources[r->count++] = &r->env_replay.port;
+        add_source(r, &r->env_replay);
     }
     return true;
 }
@@ -342,8 +490,8 @@ static bool build_fake_i2c(sim_sensors_rig_t *r, const sim_args_t *args,
 }
 
 // The priorities of architecture 6.3: temperature and humidity from the
-// BME68x, the SCD41 as fallback; CO2 from the SCD41 alone; pressure and gas
-// from the BME68x alone. Same as the firmware's.
+// BME68x, the SCD41 as fallback; CO2 from the SCD41 alone; pressure, gas and
+// IAQ from the BME68x alone. Same as the firmware's.
 static void set_priorities(sensor_manager_t *m)
 {
     static const uint8_t prefer_env[] = {SIM_ENV_SOURCE_ID, SIM_CO2_SOURCE_ID};
@@ -354,6 +502,37 @@ static void set_priorities(sensor_manager_t *m)
     (void)sensor_manager_set_priority(m, SENSOR_FIELD_PRESSURE, only_env, 1u);
     (void)sensor_manager_set_priority(m, SENSOR_FIELD_CO2, only_co2, 1u);
     (void)sensor_manager_set_priority(m, SENSOR_FIELD_GAS_RESISTANCE, only_env, 1u);
+    (void)sensor_manager_set_priority(m, SENSOR_FIELD_IAQ, only_env, 1u);
+}
+
+// --- recording --------------------------------------------------------------
+
+// --record: the board's recorder over a directory, the same tags, so the
+// files are named and laid out as on the card.
+typedef struct {
+    bool on;
+    adp_files_dir_t dir;
+    recorder_t rec;
+    recorder_watch_t watch;
+} sim_recording_t;
+
+static bool start_recording(sim_recording_t *rec, const char *dir, const sim_sensors_rig_t *rig,
+                            const time_zone_t *zone, const port_log_t *log)
+{
+    if (adp_files_dir_init(&rec->dir, dir) != HAL_OK) {
+        fprintf(stderr, "--record: cannot use %s as the card (is its parent there?)\n", dir);
+        return false;
+    }
+    const recorder_config_t cfg = recorder_config_default();
+    recorder_init(&rec->rec, adp_files_dir_port(&rec->dir), log, zone, &cfg);
+    for (size_t i = 0u; i < rig->count; ++i) {
+        const uint8_t id = rig->sources[i]->id;
+        const char *tag = (id == SIM_CO2_SOURCE_ID) ? SIM_CO2_RECORDING_TAG : SIM_ENV_RECORDING_TAG;
+        (void)recorder_add_source(&rec->rec, id, tag, rig->accuracy_caps[i]);
+    }
+    recorder_watch_init(&rec->watch);
+    rec->on = true;
+    return true;
 }
 
 // --- the loop --------------------------------------------------------------
@@ -368,6 +547,7 @@ typedef struct {
     update_policy_t policy;
     air_reading_t reading;
     bool deferral_logged;
+    sim_recording_t *recording;  // NULL without --record
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
@@ -443,6 +623,19 @@ static uint64_t step(sim_t *sim)
     sim->reading.uptime_s = (uint32_t)(now_ms / 1000u);
     air_reading_apply_age(&sim->reading, now_ms, sim->sensors.cfg.max_age_ms);
 
+    // --record: what the board's card writer does with the events its event
+    // loop posts, here in the same loop -- the simulator does not mind
+    // waiting on a disk.
+    if (sim->recording != NULL) {
+        recorder_event_t events[SIM_EVENTS_PER_POLL];
+        const size_t n = recorder_watch(&sim->recording->watch, &sim->sensors, now_ms,
+                                        sim->reading.wall_time_ms, events, SIM_EVENTS_PER_POLL);
+        for (size_t i = 0u; i < n; ++i) {
+            recorder_record(&sim->recording->rec, &events[i]);
+        }
+        recorder_tick(&sim->recording->rec, now_ms);
+    }
+
     update_decision_t decision;
     update_policy_evaluate(&sim->policy, &sim->reading, &decision);
 
@@ -478,8 +671,9 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (args.scenario_co2 == NULL && args.scenario_env == NULL) {
-        fprintf(stderr, "nothing to replay: pass --scenario-co2 and/or --scenario-env\n\n");
+    if (args.scenario_co2 == NULL && args.scenario_env == NULL && args.recording_count == 0u) {
+        fprintf(stderr,
+                "nothing to replay: pass --scenario-co2, --scenario-env or --recording\n\n");
         usage(argv[0]);
         return 2;
     }
@@ -487,10 +681,6 @@ int main(int argc, char **argv)
     adp_clock_virtual_t vclock;
     adp_clock_virtual_init(&vclock, args.time_scale);
     const port_clock_t *clock = adp_clock_virtual_port(&vclock);
-    if (!args.no_wall_time) {
-        adp_clock_virtual_set_wall(&vclock,
-                                   args.wall_time_pinned ? args.wall_time_ms : host_wall_ms());
-    }
 
     adp_log_console_t console_log;
     adp_log_console_init(&console_log);
@@ -503,6 +693,20 @@ int main(int argc, char **argv)
                            : build_replay(&rig, &args, clock);
     if (!built) {
         return 1;
+    }
+
+    // The wall clock: pinned, none, a recording's own first row, or this PC's.
+    const char *wall_source = "this PC's";
+    if (!args.no_wall_time) {
+        uint64_t wall = host_wall_ms();
+        if (args.wall_time_pinned) {
+            wall = args.wall_time_ms;
+            wall_source = "--wall-time";
+        } else if (rig.earliest_utc_ms != 0u) {
+            wall = rig.earliest_utc_ms;
+            wall_source = "the recording's first row";
+        }
+        adp_clock_virtual_set_wall(&vclock, wall);
     }
 
     // --- display and input ---
@@ -596,8 +800,21 @@ int main(int argc, char **argv)
         const civil_time_t utc = civil_time_from_unix_ms(wall_ms);
         const civil_time_t local = civil_time_local(wall_ms, &sim.zone);
         printf("[sim] wall clock: %04d-%02u-%02uT%02u:%02u:%02uZ (%s), %02u:%02u in Vilnius\n",
-               (int)utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second,
-               args.wall_time_pinned ? "--wall-time" : "this PC's", local.hour, local.minute);
+               (int)utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second, wall_source,
+               local.hour, local.minute);
+    }
+    for (size_t i = 0u; i < rig.recording_count; ++i) {
+        printf("[sim] recording %s plays source id %u\n", rig.recordings[i].name,
+               (unsigned)rig.recordings[i].port.id);
+    }
+
+    static sim_recording_t recording;
+    if (args.record_dir != NULL) {
+        if (!start_recording(&recording, args.record_dir, &rig, &sim.zone, log)) {
+            return 1;
+        }
+        sim.recording = &recording;
+        printf("[sim] recording into %s/data/\n", args.record_dir);
     }
 
     air_reading_init(&sim.reading);
@@ -666,6 +883,14 @@ int main(int argc, char **argv)
 
     if (panel_model != NULL) {
         epd_model_log_summary(panel_model);
+    }
+    if (sim.recording != NULL) {
+        recorder_close(&recording.rec, clock->now_ms(clock));
+        printf("[sim] recorded %u rows, %llu bytes, %u dropped, into %s/data/\n",
+               recorder_rows_written(&recording.rec),
+               (unsigned long long)recorder_bytes_written(&recording.rec),
+               recorder_rows_dropped(&recording.rec), args.record_dir);
+        adp_files_dir_deinit(&recording.dir);
     }
 
 #ifdef HAC_SIM_GUI

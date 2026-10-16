@@ -17,15 +17,23 @@
 // (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md): the PCF8563
 // on the same bus gives the system time at boot, the console's time and
 // time_set read and set it, and the footer shows, in Vilnius time, when the
-// values on the screen were measured.
+// values on the screen were measured. Phase 3f
+// (docs/adr/0024-sd-card-recordings-and-debug-log.md): each source's samples
+// and the debug log go to the microSD card, written by a task of their own
+// (card_writer.c) -- the event loop only posts what changed -- and the
+// console's sd, sd_mount, sd_eject and rec manage it. No card is a normal
+// state: recording is simply off.
 //
-// What runs, in this order: adp_log and adp_clock, the port_clock and
-// port_log contract suites run once against the real adapters
-// (docs/adr/0005), the real display adapter (or the null one,
+// What runs, in this order: the log's tee into a ring for the card
+// (log_tee.c, first, so the boot's own lines reach the file), adp_log and
+// adp_clock, the port_clock and port_log contract suites run once against the
+// real adapters (docs/adr/0005), the real display adapter (or the null one,
 // CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), adp_i2c and the
 // boot-time bus scan -- after the display, whose init powers the sensors (see
 // bring_up_i2c()) -- then the system time from the RTC (set_clock_from_rtc()),
-// optionally the whole-panel bring-up diagnostic
+// then the card's SPI bus and its task, which mounts the card -- after the
+// rail as well (see start_card()) -- optionally the whole-panel bring-up
+// diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
 // run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
@@ -49,12 +57,15 @@
 #include "adp_display_null.h"
 #include "adp_i2c.h"
 #include "adp_log.h"
+#include "adp_sd.h"
 #include "board_config.h"
 #include "board_power.h"
 
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
 #include "domain/civil_time.h"
+#include "recording/log_file.h"
+#include "recording/recorder.h"
 #if CONFIG_HAC_BSEC
 #include "bme68x_bsec_source.h"
 #else
@@ -71,9 +82,11 @@
 #include "port_clock_contract.h"
 #include "port_log_contract.h"
 
+#include "card_writer.h"
 #include "console.h"
 #include "epd_calibration.h"
 #include "event_loop.h"
+#include "log_tee.h"
 #include "wall_clock.h"
 
 // Phase 2a's figure was 6144: ~2 KB IDF/vsnprintf baseline, ~400 B
@@ -90,11 +103,26 @@
 #define EVENT_LOOP_TASK_PRIORITY 5
 #define EVENT_LOOP_TASK_CORE 1
 
+// The card's task (card_writer.c): FATFS and the SD driver under the
+// recorder's and the log's formatting. 6 KB until its own low-water mark,
+// which it logs, says otherwise. Below the event loop, on the other core:
+// whatever the card makes it wait, the screen and the sensors do not.
+#define CARD_WRITER_TASK_STACK_BYTES 6144u
+#define CARD_WRITER_TASK_PRIORITY 3
+#define CARD_WRITER_TASK_CORE 0
+
 // The sources' ids, which every measurement carries as its source_id and the
 // priorities below are written in -- the same two the simulator gives the
 // same two sensors (apps/simulator/main.c).
 #define SCD4X_SOURCE_ID 1u
 #define BME68X_SOURCE_ID 2u
+
+// The tags the two sources' recordings carry in their names
+// (core/recording/record_files.h): data/<day>_scd4x.csv,
+// data/<day>_bme68x.csv. The simulator's --recording reads a file's source
+// from them (apps/simulator/main.c), so they and the ids above go together.
+#define SCD4X_RECORDING_TAG "scd4x"
+#define BME68X_RECORDING_TAG "bme68x"
 
 // The BME68x source this image measures with: the one Bosch's BSEC2 drives,
 // in a build with the library (components/hac_drivers/Kconfig), or the
@@ -107,11 +135,14 @@ typedef bme68x_bsec_source_t bme68x_composed_t;
 typedef bme68x_bsec_source_config_t bme68x_composed_config_t;
 #define BME68X_INTERVAL_MS HAC_BSEC_PERIOD_MS
 #define SENSORS_TEXT "SCD4x and BME68x (BSEC2 IAQ) through the sensor manager"
+// BSEC rates its IAQ (docs/adr/0021): the recording keeps the verdict.
+#define BME68X_ACCURACY_CAPS SENS_CAP_IAQ
 #else
 typedef bme68x_source_t bme68x_composed_t;
 typedef bme68x_source_config_t bme68x_composed_config_t;
 #define BME68X_INTERVAL_MS SENSOR_MANAGER_DEFAULT_INTERVAL_MS
 #define SENSORS_TEXT "SCD4x and BME68x through the sensor manager"
+#define BME68X_ACCURACY_CAPS 0
 #endif
 
 // CHOICE: the local time the footer and the console show is Vilnius's -- EET,
@@ -494,16 +525,22 @@ typedef struct {
     adp_display_t *display;
 #endif
     uint64_t next_sample_log_ms;
+    recorder_watch_t watch;
+    recorder_event_t events[SENSOR_MANAGER_MAX_SOURCES];
 } reading_hook_ctx_t;
 
-// event_loop.h's hook, after every poll: the measured temperature to the
-// display adapter for EPDiy's waveform selection -- through the adapter's own
-// function, not port_display (adp_display.h) -- and, once a minute, every
-// source's sample to the log.
+// event_loop.h's hook, after every poll: each new sample or failure to the
+// card's task, which records it -- a copy into its queue, never a wait on the
+// card; the measured temperature to the display adapter for EPDiy's waveform
+// selection -- through the adapter's own function, not port_display
+// (adp_display.h) -- and, once a minute, every source's sample to the log.
 static void on_reading(void *ctx_v, const sensor_manager_t *sensors, const air_reading_t *reading,
                        uint64_t now_ms)
 {
     reading_hook_ctx_t *ctx = (reading_hook_ctx_t *)ctx_v;
+    const size_t n = recorder_watch(&ctx->watch, sensors, now_ms, reading->wall_time_ms,
+                                    ctx->events, SENSOR_MANAGER_MAX_SOURCES);
+    card_writer_post(ctx->events, n);
 #if !CONFIG_HAC_DISPLAY_NULL
     adp_display_set_temperature(ctx->display, reading->temperature_c.status == VAL_OK,
                                 reading->temperature_c.value);
@@ -514,6 +551,49 @@ static void on_reading(void *ctx_v, const sensor_manager_t *sensors, const air_r
         log_samples(sensors, ctx->log);
         ctx->next_sample_log_ms = now_ms + SAMPLE_LOG_INTERVAL_MS;
     }
+}
+
+// The card: its SPI bus, the recorder with the two sources' tags, the log's
+// files, and the task that owns them all. The recorder and the log file hold
+// their buffers -- some 13 KB -- in PSRAM; only the task's stack is internal.
+// Without the memory or the task, recording is off and the rest runs.
+//
+// Called once the switched 3V3 is up and settled, never before, though the
+// card itself runs from the always-on VDD3V3: whatever the card's task does
+// touches PSRAM (FATFS's buffers) and the card's current is on VDD3V3, and
+// neither belongs in the rail's inrush. Not, as first read, the cause of the
+// boot resets of 2026-10-16: an image that started the card here still reset
+// at the same point, with nothing of the card running yet -- the log's hook
+// writing PSRAM in the inrush is the reading that fits both images, and
+// log_tee_hold() is its answer (docs/hardware/board_notes.md, open item "A
+// reboot loop when the switched 3V3 comes up"). The log loses only the lines
+// held then, and says how many.
+static void start_card(adp_sd_t *sd, const port_clock_t *clock, const port_log_t *log,
+                       const time_zone_t *zone)
+{
+    (void)adp_sd_init(sd, log);
+    recorder_t *rec = heap_caps_calloc(1u, sizeof(recorder_t), MALLOC_CAP_SPIRAM);
+    log_file_t *log_file = heap_caps_calloc(1u, sizeof(log_file_t), MALLOC_CAP_SPIRAM);
+    if (rec == NULL || log_file == NULL) {
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "no memory for the recorder: recording off",
+                       NULL, 0u);
+        return;
+    }
+    const recorder_config_t cfg = recorder_config_default();
+    recorder_init(rec, adp_sd_port(sd), log, zone, &cfg);
+    (void)recorder_add_source(rec, SCD4X_SOURCE_ID, SCD4X_RECORDING_TAG, 0);
+    (void)recorder_add_source(rec, BME68X_SOURCE_ID, BME68X_RECORDING_TAG, BME68X_ACCURACY_CAPS);
+    log_file_init(log_file, adp_sd_port(sd), zone);
+
+    const card_writer_deps_t deps = {
+        .clock = clock,
+        .log = log,
+        .sd = sd,
+        .recorder = rec,
+        .log_file = log_file,
+    };
+    (void)card_writer_start(&deps, CARD_WRITER_TASK_STACK_BYTES, CARD_WRITER_TASK_PRIORITY,
+                            CARD_WRITER_TASK_CORE);
 }
 
 void app_main(void)
@@ -533,6 +613,10 @@ void app_main(void)
     static reading_hook_ctx_t s_hook;
     static time_zone_t s_zone;
     static wall_clock_source_t s_wall_source;
+    static adp_sd_t s_sd;
+
+    // Before anything logs: every line from here on reaches the card's file.
+    const hal_status_t tee = log_tee_start((esp_log_level_t)CONFIG_HAC_LOG_FILE_LEVEL);
 
     adp_log_init(&s_log);
     const port_log_t *log = adp_log_port(&s_log);
@@ -540,28 +624,38 @@ void app_main(void)
     adp_clock_init(&s_clock, log);
     const port_clock_t *clock = adp_clock_port(&s_clock);
 
+    // The zone first: the card's task names its files by the local day.
+    s_zone = time_zone_eu(LOCAL_STANDARD_OFFSET_MIN);
+
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 3e: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, " SENSORS_TEXT ", the RTC",
+                   "phase 3f: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 3e: EPDiy driving the panel, " SENSORS_TEXT ", the RTC",
+                   "phase 3f: EPDiy driving the panel, " SENSORS_TEXT ", the RTC, the microSD card",
 #endif
                    NULL, 0u);
 
     log_reset_reason(log);
     log_memory_budget(log);
+    if (tee != HAL_OK) {
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "no memory for the log's ring: no log file",
+                       NULL, 0u);
+    }
     run_contract_suites(clock, log);
 
 #if CONFIG_HAC_DISPLAY_NULL
     const hal_status_t display_status =
         adp_display_null_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
+    log_tee_hold(true);  // nothing in PSRAM while the rail comes up: see log_tee_hold()
     board_power_switched_3v3_on(log);  // what EPDiy's init does for the sensors otherwise
     bring_up_i2c(&s_i2c, clock, log);  // after the rail: see bring_up_i2c()
+    log_tee_hold(false);
     s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
+    start_card(&s_sd, clock, log, &s_zone);  // after the rail too: see start_card()
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_null_init failed", fields, 1u);
@@ -569,10 +663,16 @@ void app_main(void)
     }
     port_display_t *display = adp_display_null_port(&s_display);
 #else
+    // EPDiy's init raises PWR_EN and logs a line microseconds later, in the
+    // rail's inrush: nothing in PSRAM until the rail has settled (see
+    // log_tee_hold()), which bring_up_i2c() waits out first.
+    log_tee_hold(true);
     const hal_status_t display_status =
         adp_display_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
     bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
+    log_tee_hold(false);
     s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
+    start_card(&s_sd, clock, log, &s_zone);  // after the rail too: see start_card()
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_init failed", fields, 1u);
@@ -621,7 +721,6 @@ void app_main(void)
 #endif
     s_hook.next_sample_log_ms = 0u;
 
-    s_zone = time_zone_eu(LOCAL_STANDARD_OFFSET_MIN);
     event_loop_deps_t deps = {
         .clock = clock,
         .display = display,

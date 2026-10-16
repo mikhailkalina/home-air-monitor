@@ -19,6 +19,11 @@ set(HAC_CORE_SOURCES
     ${HAC_ROOT}/core/domain/measurement.c
     ${HAC_ROOT}/core/app/sensor_manager.c
     ${HAC_ROOT}/core/app/update_policy.c
+    ${HAC_ROOT}/core/recording/log_file.c
+    ${HAC_ROOT}/core/recording/record_files.c
+    ${HAC_ROOT}/core/recording/record_format.c
+    ${HAC_ROOT}/core/recording/record_text.c
+    ${HAC_ROOT}/core/recording/recorder.c
     ${HAC_ROOT}/core/ui/framebuffer.c
     ${HAC_ROOT}/core/ui/gfx.c
     ${HAC_ROOT}/core/ui/view_model.c

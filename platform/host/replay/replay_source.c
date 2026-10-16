@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "domain/civil_time.h"
+#include "recording/record_format.h"
+
 // --- small helpers -----------------------------------------------------------
 
 typedef struct {
@@ -15,8 +18,26 @@ typedef struct {
     size_t len;
 } token_t;
 
-#define REPLAY_MAX_COLUMNS 16u
-#define REPLAY_COL_KIND_STATUS (-1)
+// t_offset_s, utc, status, and a value, a status and an accuracy column for
+// each of the seven fields.
+#define REPLAY_MAX_COLUMNS 32u
+
+// "YYYY-MM-DDTHH:MM:SSZ" and its terminator.
+#define REPLAY_UTC_TEXT_MAX (CIVIL_ISO8601_UTC_LEN + 1u)
+
+typedef enum {
+    COL_TIME = 0,  // t_offset_s, always the first
+    COL_STATUS,
+    COL_UTC,
+    COL_VALUE,
+    COL_FIELD_STATUS,
+    COL_FIELD_ACC,
+} column_kind_t;
+
+typedef struct {
+    column_kind_t kind;
+    replay_field_t field;  // for the three per-field kinds
+} column_t;
 
 static void trim(const char **p, size_t *len)
 {
@@ -82,26 +103,44 @@ static bool parse_double_full(token_t tok, double *out)
     return true;
 }
 
-static bool map_field_name(token_t tok, replay_field_t *out)
+// A value column, or one with the given suffix ("_status", "_acc"), by the
+// names the recordings write (core/recording/record_format.h).
+static bool map_field_column(token_t tok, const char *suffix, replay_field_t *out)
 {
-    static const struct {
-        const char *name;
-        replay_field_t field;
-    } NAMES[] = {
-        {"temperature_c", REPLAY_FIELD_TEMPERATURE_C},
-        {"humidity_rh", REPLAY_FIELD_HUMIDITY_RH},
-        {"pressure_hpa", REPLAY_FIELD_PRESSURE_HPA},
-        {"co2_ppm", REPLAY_FIELD_CO2_PPM},
-        {"iaq", REPLAY_FIELD_IAQ},
-        {"voc_index", REPLAY_FIELD_VOC_INDEX},
-        {"gas_res_ohm", REPLAY_FIELD_GAS_RESISTANCE_OHM},
-    };
-
-    for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
-        if (token_eq(tok, NAMES[i].name)) {
-            *out = NAMES[i].field;
+    const size_t suffix_len = strlen(suffix);
+    for (unsigned f = 0u; f < (unsigned)REPLAY_FIELD_COUNT; ++f) {
+        const char *name = record_column_name((sensor_field_t)f);
+        const size_t name_len = strlen(name);
+        if (tok.len == name_len + suffix_len && memcmp(tok.p, name, name_len) == 0 &&
+            memcmp(tok.p + name_len, suffix, suffix_len) == 0) {
+            *out = (replay_field_t)f;
             return true;
         }
+    }
+    return false;
+}
+
+static bool map_column(token_t tok, column_t *out)
+{
+    if (token_eq(tok, "status")) {
+        out->kind = COL_STATUS;
+        return true;
+    }
+    if (token_eq(tok, "utc")) {
+        out->kind = COL_UTC;
+        return true;
+    }
+    if (map_field_column(tok, "", &out->field)) {
+        out->kind = COL_VALUE;
+        return true;
+    }
+    if (map_field_column(tok, "_status", &out->field)) {
+        out->kind = COL_FIELD_STATUS;
+        return true;
+    }
+    if (map_field_column(tok, "_acc", &out->field)) {
+        out->kind = COL_FIELD_ACC;
+        return true;
     }
     return false;
 }
@@ -112,9 +151,13 @@ static bool map_status_word(token_t tok, replay_row_status_t *out)
         const char *word;
         replay_row_status_t status;
     } WORDS[] = {
-        {"ok", REPLAY_ROW_OK},       {"warmup", REPLAY_ROW_WARMUP},
-        {"stale", REPLAY_ROW_STALE}, {"error", REPLAY_ROW_ERROR},
-        {"nan", REPLAY_ROW_NAN},     {"out_of_range", REPLAY_ROW_OUT_OF_RANGE},
+        {"ok", REPLAY_ROW_OK},
+        {"warmup", REPLAY_ROW_WARMUP},
+        {"stale", REPLAY_ROW_STALE},
+        {"error", REPLAY_ROW_ERROR},
+        {"unavailable", REPLAY_ROW_UNAVAILABLE},
+        {"nan", REPLAY_ROW_NAN},
+        {"out_of_range", REPLAY_ROW_OUT_OF_RANGE},
     };
 
     for (size_t i = 0; i < sizeof(WORDS) / sizeof(WORDS[0]); i++) {
@@ -124,6 +167,22 @@ static bool map_status_word(token_t tok, replay_row_status_t *out)
         }
     }
     return false;
+}
+
+static bool parse_utc(token_t tok, uint64_t *out)
+{
+    if (tok.len == 0u) {
+        *out = 0u;
+        return true;
+    }
+    char text[REPLAY_UTC_TEXT_MAX];
+    if (tok.len >= sizeof(text)) {
+        return false;
+    }
+    memcpy(text, tok.p, tok.len);
+    text[tok.len] = '\0';
+    civil_time_t t;
+    return civil_time_parse_iso8601_utc(text, &t) && civil_time_to_unix_ms(&t, out) && *out != 0u;
 }
 
 static hal_status_t timeline_push_row(replay_timeline_t *tl, const replay_row_t *row)
@@ -149,14 +208,137 @@ static hal_status_t timeline_push_row(replay_timeline_t *tl, const replay_row_t 
 
 // --- the parser --------------------------------------------------------------
 
+// The header: t_offset_s first, then any recognized column once each, and no
+// per-field status or accuracy without the field's value.
+static hal_status_t parse_header(const token_t *tokens, size_t count, column_t *columns,
+                                 replay_timeline_t *out)
+{
+    if (count == 0 || !token_eq(tokens[0], "t_offset_s")) {
+        return HAL_ERR_INVALID_ARG;  // the mandatory first column is missing
+    }
+    columns[0].kind = COL_TIME;
+    bool seen_status = false;
+    bool seen_field_status[REPLAY_FIELD_COUNT] = {false};
+    for (size_t i = 1; i < count; i++) {
+        if (!map_column(tokens[i], &columns[i])) {
+            return HAL_ERR_INVALID_ARG;  // unrecognized column name
+        }
+        bool *seen = NULL;
+        switch (columns[i].kind) {
+            case COL_STATUS:
+                seen = &seen_status;
+                break;
+            case COL_UTC:
+                seen = &out->utc_present;
+                break;
+            case COL_VALUE:
+                seen = &out->field_present[columns[i].field];
+                break;
+            case COL_FIELD_STATUS:
+                seen = &seen_field_status[columns[i].field];
+                break;
+            case COL_FIELD_ACC:
+                seen = &out->accuracy_present[columns[i].field];
+                break;
+            case COL_TIME:
+            default:
+                return HAL_ERR_INVALID_ARG;
+        }
+        if (*seen) {
+            return HAL_ERR_INVALID_ARG;  // duplicate column
+        }
+        *seen = true;
+    }
+    for (unsigned f = 0u; f < (unsigned)REPLAY_FIELD_COUNT; ++f) {
+        if ((seen_field_status[f] || out->accuracy_present[f]) && !out->field_present[f]) {
+            return HAL_ERR_INVALID_ARG;  // a field's status or accuracy without the field
+        }
+    }
+    return HAL_OK;
+}
+
+static hal_status_t parse_row(const token_t *tokens, size_t count, const column_t *columns,
+                              replay_row_t *row)
+{
+    memset(row, 0, sizeof(*row));
+
+    if (!parse_double_full(tokens[0], &row->t_offset_s)) {
+        return HAL_ERR_INVALID_ARG;  // malformed t_offset_s
+    }
+
+    // Pass 1: the row's status, since every field's defaults to it.
+    row->status = REPLAY_ROW_OK;
+    for (size_t i = 1; i < count; i++) {
+        if (columns[i].kind == COL_STATUS) {
+            if (tokens[i].len > 0 && !map_status_word(tokens[i], &row->status)) {
+                return HAL_ERR_INVALID_ARG;  // unrecognized status word
+            }
+            break;
+        }
+    }
+    for (unsigned f = 0u; f < (unsigned)REPLAY_FIELD_COUNT; ++f) {
+        row->field_status[f] = row->status;
+    }
+
+    // Pass 2: every field's own status and accuracy, and the row's time.
+    for (size_t i = 1; i < count; i++) {
+        const replay_field_t field = columns[i].field;
+        switch (columns[i].kind) {
+            case COL_FIELD_STATUS:
+                if (tokens[i].len > 0 && !map_status_word(tokens[i], &row->field_status[field])) {
+                    return HAL_ERR_INVALID_ARG;
+                }
+                break;
+            case COL_FIELD_ACC:
+                if (!record_accuracy_from_word(tokens[i].p, tokens[i].len, &row->accuracy[field])) {
+                    return HAL_ERR_INVALID_ARG;  // unrecognized accuracy word
+                }
+                break;
+            case COL_UTC:
+                if (!parse_utc(tokens[i], &row->utc_ms)) {
+                    return HAL_ERR_INVALID_ARG;  // not YYYY-MM-DDTHH:MM:SSZ
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Pass 3: the values. A blank cell is only meaningful where its field is
+    // "ok"; for any other status the number is never used, so a scenario
+    // author -- or the recorder -- may leave it out.
+    for (size_t i = 1; i < count; i++) {
+        if (columns[i].kind != COL_VALUE) {
+            continue;
+        }
+        const replay_field_t field = columns[i].field;
+        if (tokens[i].len == 0) {
+            if (row->field_status[field] == REPLAY_ROW_OK) {
+                return HAL_ERR_INVALID_ARG;  // a live field with no value
+            }
+            continue;
+        }
+        if (!parse_double_full(tokens[i], &row->value[field])) {
+            return HAL_ERR_INVALID_ARG;  // malformed number
+        }
+    }
+    return HAL_OK;
+}
+
 hal_status_t replay_parse_buffer(const char *data, size_t len, replay_timeline_t *out)
 {
     memset(out, 0, sizeof(*out));
 
-    int col_kind[REPLAY_MAX_COLUMNS];  // index 0 (t_offset_s) is implicit and unused here
+    column_t columns[REPLAY_MAX_COLUMNS];
     size_t header_col_count = 0;
     bool have_header = false;
     hal_status_t status = HAL_OK;
+
+    // NUL bytes at the very end are what a FAT file can hold past its last
+    // write after a power cut: not data.
+    while (len > 0 && data[len - 1] == '\0') {
+        len--;
+    }
 
     const char *cursor = data;
     const char *end = data + len;
@@ -167,6 +349,8 @@ hal_status_t replay_parse_buffer(const char *data, size_t len, replay_timeline_t
         const char *line = cursor;
         size_t line_len = (size_t)(line_end - cursor);
         cursor = nl ? nl + 1 : end;
+        // A last line with no line end may be a write cut short.
+        const bool unterminated = (nl == NULL);
 
         if (line_len > 0 && line[line_len - 1] == '\r') {
             line_len--;
@@ -187,76 +371,24 @@ hal_status_t replay_parse_buffer(const char *data, size_t len, replay_timeline_t
         }
 
         if (!have_header) {
-            if (count == 0 || !token_eq(tokens[0], "t_offset_s")) {
-                status = HAL_ERR_INVALID_ARG;  // the mandatory first column is missing
+            status = parse_header(tokens, count, columns, out);
+            if (status != HAL_OK) {
                 goto fail;
-            }
-            for (size_t i = 1; i < count; i++) {
-                replay_field_t field;
-                if (token_eq(tokens[i], "status")) {
-                    col_kind[i] = REPLAY_COL_KIND_STATUS;
-                } else if (map_field_name(tokens[i], &field)) {
-                    if (out->field_present[field]) {
-                        status = HAL_ERR_INVALID_ARG;  // duplicate column
-                        goto fail;
-                    }
-                    out->field_present[field] = true;
-                    col_kind[i] = (int)field;
-                } else {
-                    status = HAL_ERR_INVALID_ARG;  // unrecognized column name
-                    goto fail;
-                }
             }
             header_col_count = count;
             have_header = true;
             continue;
         }
 
-        if (count != header_col_count) {
-            status = HAL_ERR_INVALID_ARG;  // row does not match the header's shape
-            goto fail;
-        }
-
         replay_row_t row;
-        memset(&row, 0, sizeof(row));
-
-        if (!parse_double_full(tokens[0], &row.t_offset_s)) {
-            status = HAL_ERR_INVALID_ARG;  // malformed t_offset_s
-            goto fail;
-        }
-
-        // Pass 1: resolve the row's status, since it decides whether the
-        // numeric columns are allowed to be blank in pass 2.
-        row.status = REPLAY_ROW_OK;
-        for (size_t i = 1; i < count; i++) {
-            if (col_kind[i] == REPLAY_COL_KIND_STATUS) {
-                if (tokens[i].len > 0 && !map_status_word(tokens[i], &row.status)) {
-                    status = HAL_ERR_INVALID_ARG;  // unrecognized status word
-                    goto fail;
-                }
+        status = (count == header_col_count) ? parse_row(tokens, count, columns, &row)
+                                             : HAL_ERR_INVALID_ARG;  // not the header's shape
+        if (status != HAL_OK) {
+            if (unterminated) {
+                status = HAL_OK;  // a row cut short by a power cut: dropped
                 break;
             }
-        }
-
-        // Pass 2: numeric columns. A blank cell is only meaningful when the
-        // row is "ok"; on a fault row, the number is never used, so a
-        // scenario author may leave it out.
-        for (size_t i = 1; i < count; i++) {
-            if (col_kind[i] == REPLAY_COL_KIND_STATUS) {
-                continue;
-            }
-            replay_field_t field = (replay_field_t)col_kind[i];
-            if (tokens[i].len == 0) {
-                if (row.status == REPLAY_ROW_OK) {
-                    status = HAL_ERR_INVALID_ARG;  // a live field with no value
-                    goto fail;
-                }
-                continue;
-            }
-            if (!parse_double_full(tokens[i], &row.value[field])) {
-                status = HAL_ERR_INVALID_ARG;  // malformed number
-                goto fail;
-            }
+            goto fail;
         }
 
         status = timeline_push_row(out, &row);
@@ -271,6 +403,7 @@ hal_status_t replay_parse_buffer(const char *data, size_t len, replay_timeline_t
     }
 
     out->loop_period_s = (out->row_count > 1) ? out->rows[out->row_count - 1].t_offset_s : 0.0;
+    out->first_utc_ms = out->rows[0].utc_ms;
     return HAL_OK;
 
 fail:
@@ -321,6 +454,28 @@ void replay_timeline_dispose(replay_timeline_t *timeline)
     memset(timeline, 0, sizeof(*timeline));
 }
 
+sensor_caps_t replay_timeline_caps(const replay_timeline_t *tl)
+{
+    unsigned caps = 0u;
+    for (unsigned f = 0u; f < (unsigned)REPLAY_FIELD_COUNT; ++f) {
+        if (tl->field_present[f]) {
+            caps |= (unsigned)record_field_cap((sensor_field_t)f);
+        }
+    }
+    return (sensor_caps_t)caps;
+}
+
+sensor_caps_t replay_timeline_accuracy_caps(const replay_timeline_t *tl)
+{
+    unsigned caps = 0u;
+    for (unsigned f = 0u; f < (unsigned)REPLAY_FIELD_COUNT; ++f) {
+        if (tl->accuracy_present[f]) {
+            caps |= (unsigned)record_field_cap((sensor_field_t)f);
+        }
+    }
+    return (sensor_caps_t)caps;
+}
+
 // --- playback ------------------------------------------------------------
 
 // Finds the two rows bracketing `phase` (virtual seconds within
@@ -360,33 +515,42 @@ static void sample_field(const replay_timeline_t *tl, replay_field_t field, size
     }
 
     const replay_row_t *r0 = &tl->rows[i0];
-    switch (r0->status) {
+    switch (r0->field_status[field]) {
         case REPLAY_ROW_OK:
             break;
         case REPLAY_ROW_WARMUP:
             *out = measurement_status(VAL_WARMUP, ts_ms, id);
-            return;
+            break;
         case REPLAY_ROW_STALE:
             *out = measurement_status(VAL_STALE, ts_ms, id);
-            return;
+            break;
+        case REPLAY_ROW_UNAVAILABLE:
+            *out = measurement_status(VAL_UNAVAILABLE, ts_ms, id);
+            break;
         case REPLAY_ROW_NAN:
             *out =
                 measurement_ok((float)NAN, ts_ms, id);  // measurement_ok() rejects it as VAL_ERROR
-            return;
+            break;
         case REPLAY_ROW_ERROR:
         case REPLAY_ROW_OUT_OF_RANGE:
         default:
             *out = measurement_status(VAL_ERROR, ts_ms, id);
-            return;
+            break;
+    }
+    if (r0->field_status[field] != REPLAY_ROW_OK) {
+        out->accuracy = r0->accuracy[field];
+        return;
     }
 
-    // r0 is "ok". Interpolate towards r1 only when it is "ok" too: a step
-    // towards a fault value would misrepresent the fault as a gradual change.
+    // The field is "ok" in r0. Interpolate towards r1 only where it is "ok"
+    // there too: a step towards a fault value would misrepresent the fault
+    // as a gradual change.
     double value = r0->value[field];
-    if (interpolate && i0 != i1 && tl->rows[i1].status == REPLAY_ROW_OK) {
+    if (interpolate && i0 != i1 && tl->rows[i1].field_status[field] == REPLAY_ROW_OK) {
         value += frac * (tl->rows[i1].value[field] - value);
     }
     *out = measurement_ok((float)value, ts_ms, id);
+    out->accuracy = r0->accuracy[field];
 }
 
 void replay_timeline_sample(const replay_timeline_t *tl, uint64_t elapsed_ms, bool interpolate,

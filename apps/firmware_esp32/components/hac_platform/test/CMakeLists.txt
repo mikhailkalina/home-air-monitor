@@ -17,6 +17,7 @@ idf_component_register(
         ${HAC_ROOT}/tests/contract/esp32/test_port_log_contract.c
         ${HAC_ROOT}/tests/contract/esp32/test_port_i2c_contract.c
         ${HAC_ROOT}/tests/contract/esp32/test_port_sensor_contract.c
+        ${HAC_ROOT}/tests/contract/esp32/test_port_files_contract.c
     PRIV_REQUIRES unity hac_platform hac_contract hac_drivers
 )
 

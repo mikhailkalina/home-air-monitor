@@ -21,6 +21,19 @@
 //                UTC, so summer time leaves nothing ambiguous: writes the RTC
 //                (which clears its VL bit) and sets the system time. Until
 //                phase 4's SNTP, this is how the clock gets set.
+//
+// Phase 3f's (docs/adr/0024-sd-card-recordings-and-debug-log.md), every line
+// starting "SD" or "REC", each answered by the card's own task
+// (card_writer.h), so nothing here waits on the card itself:
+//
+//   sd           mounted or not -- and why not -- the card, its size and
+//                what is free, and the files in data/ and log/
+//   sd_mount     mount now, with ESP-IDF's SD driver lines shown
+//   sd_eject     flush and close every file and unmount: safe to remove; no
+//                automatic mount until sd_mount
+//   rec          recording on or off, the file each source is written to,
+//                rows and bytes since boot and what was dropped, the log
+//                file's, and what the card costs the event loop
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
 #define HAC_APPS_FIRMWARE_ESP32_CONSOLE_H

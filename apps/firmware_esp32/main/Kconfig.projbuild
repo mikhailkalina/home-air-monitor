@@ -156,4 +156,34 @@ menu "Home Air Monitor"
 
     endif
 
+    choice HAC_LOG_FILE_LEVEL_CHOICE
+        prompt "Level of the debug log written to the microSD card"
+        default HAC_LOG_FILE_LEVEL_INFO
+        help
+            Phase 3f (docs/adr/0024-sd-card-recordings-and-debug-log.md,
+            apps/firmware_esp32/main/log_tee.c): everything ESP_LOG prints
+            also goes, through a ring in PSRAM, to log/<YYYY-MM-DD>.log on
+            the card. This is that file's level, set apart from the
+            console's (CONFIG_LOG_DEFAULT_LEVEL, INFO).
+
+            A level more verbose than the console's raises ESP-IDF's default
+            level to it so the lines reach the file, and keeps them off the
+            console: the console prints what it printed before. DEBUG costs
+            the formatting of every debug line in the firmware -- the event
+            loop's tick among them -- and the card's space.
+
+        config HAC_LOG_FILE_LEVEL_WARN
+            bool "Warnings and errors"
+        config HAC_LOG_FILE_LEVEL_INFO
+            bool "Info (what the console shows)"
+        config HAC_LOG_FILE_LEVEL_DEBUG
+            bool "Debug"
+    endchoice
+
+    config HAC_LOG_FILE_LEVEL
+        int
+        default 2 if HAC_LOG_FILE_LEVEL_WARN
+        default 3 if HAC_LOG_FILE_LEVEL_INFO
+        default 4 if HAC_LOG_FILE_LEVEL_DEBUG
+
 endmenu
