@@ -7,8 +7,10 @@
 
 // --- string building -------------------------------------------------------
 //
-// core/ has no stdio, so there is no snprintf here. These four helpers are the
-// whole of it: they never write past `cap` and always leave `dst` terminated.
+// core/ has no stdio, so there is no snprintf here. These three helpers are
+// the whole of it, with str_append_2d() and format_updated() for the
+// "updated" line below: they never write past `cap` and always leave `dst`
+// terminated.
 
 static size_t str_append(char *dst, size_t cap, size_t len, const char *src)
 {
@@ -265,30 +267,39 @@ const char *view_model_iaq_level_text(iaq_level_t level)
     return "";
 }
 
-// --- age -------------------------------------------------------------------
+// --- the time of the last update --------------------------------------------
 
-#define VM_SECOND_MS 1000u
-#define VM_MINUTE_MS 60000u
-#define VM_HOUR_MS 3600000u
+#define VM_NO_TIME_TEXT "--:--"
 
-static void format_age(char *dst, size_t cap, uint64_t age_ms)
+// Two digits, with a leading zero.
+static size_t str_append_2d(char *dst, size_t cap, size_t len, uint8_t value)
 {
-    if (cap == 0u) {
-        return;
-    }
-    dst[0] = '\0';
+    const char digits[3] = {(char)('0' + (int)(value / 10u % 10u)),
+                            (char)('0' + (int)(value % 10u)), '\0'};
+    return str_append(dst, cap, len, digits);
+}
 
-    size_t len;
-    if (age_ms < VM_MINUTE_MS) {
-        len = str_append_u32(dst, cap, 0u, (uint32_t)(age_ms / VM_SECOND_MS));
-        (void)str_append(dst, cap, len, " s");
-    } else if (age_ms < VM_HOUR_MS) {
-        len = str_append_u32(dst, cap, 0u, (uint32_t)(age_ms / VM_MINUTE_MS));
-        (void)str_append(dst, cap, len, " min");
-    } else {
-        len = str_append_u32(dst, cap, 0u, (uint32_t)(age_ms / VM_HOUR_MS));
-        (void)str_append(dst, cap, len, " h");
+// "HH:MM", or "DD.MM HH:MM" when `measured` is on an earlier day than `now`;
+// both local.
+static void format_updated(char *dst, size_t cap, const civil_time_t *measured,
+                           const civil_time_t *now)
+{
+    size_t len = 0u;
+    if (cap != 0u) {
+        dst[0] = '\0';
     }
+    const int64_t measured_day =
+        civil_days_from_date(measured->year, measured->month, measured->day);
+    const int64_t today = civil_days_from_date(now->year, now->month, now->day);
+    if (measured_day < today) {
+        len = str_append_2d(dst, cap, len, measured->day);
+        len = str_append(dst, cap, len, ".");
+        len = str_append_2d(dst, cap, len, measured->month);
+        len = str_append(dst, cap, len, " ");
+    }
+    len = str_append_2d(dst, cap, len, measured->hour);
+    len = str_append(dst, cap, len, ":");
+    (void)str_append_2d(dst, cap, len, measured->minute);
 }
 
 // --- assembly --------------------------------------------------------------
@@ -316,8 +327,16 @@ static void count_status(const measurement_f32_t *m, uint8_t *errors, uint8_t *s
 }
 
 // The footer's line, worst news first: errors, warm-up, staleness, then a
-// number its source has not calibrated -- named by its label when there is
-// one, "IAQ not calibrated" -- and only then "all sensors OK".
+// number its source has not calibrated -- named when there is one, "IAQ not
+// calibrated", counted when there are several, "2 not calibrated" -- and only
+// then "all sensors OK".
+//
+// Every one of them fits beside the widest "updated" text, "updated 01.01
+// 00:04" (tests/unit/test_screen_home_layout.c). Two did not, and were
+// shortened when the dated form arrived: "N readings not calibrated" and
+// "Temperature not calibrated", both a few pixels too wide -- neither on
+// the device yet, where only BSEC rates its IAQ
+// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
 static void build_status_text(view_model_t *vm, const char *low_accuracy_label)
 {
     char *dst = vm->status_text;
@@ -346,13 +365,14 @@ static void build_status_text(view_model_t *vm, const char *low_accuracy_label)
     }
     if (vm->low_accuracy_count > 0u) {
         const size_t len = str_append_u32(dst, cap, 0u, vm->low_accuracy_count);
-        (void)str_append(dst, cap, len, " readings not calibrated");
+        (void)str_append(dst, cap, len, " not calibrated");
         return;
     }
     (void)str_append(dst, cap, 0u, "all sensors OK");
 }
 
-void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t now_ms)
+void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t now_ms,
+                      const time_zone_t *zone)
 {
     memset(vm, 0, sizeof(*vm));
 
@@ -388,39 +408,42 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
     vm->net_connected = reading->net_connected;
     vm->net_text = reading->net_connected ? "Wi-Fi" : "offline";
 
-    // The "last update" line reports the freshest thing on the screen: if any
-    // one quantity is current, the picture as a whole is current.
+    // The "updated" line: when the freshest value carrying a number was
+    // measured, on the wall clock the reading carries.
     uint64_t youngest_ms = MEASUREMENT_AGE_UNKNOWN;
-    bool any_fresh = false;
     for (size_t i = 0u; i < (size_t)VM_FIELD_COUNT; ++i) {
         if (!vm->fields[i].has_value) {
             continue;
         }
-        any_fresh = any_fresh || shown[i]->status == VAL_OK;
         const uint64_t age = measurement_age_ms(shown[i], now_ms);
         if (age < youngest_ms) {
             youngest_ms = age;
         }
     }
 
-    if (any_fresh) {
+    const uint64_t wall_ms = reading->wall_time_ms;
+    if (wall_ms != 0u && youngest_ms != MEASUREMENT_AGE_UNKNOWN && youngest_ms <= wall_ms) {
+        const civil_time_t measured = civil_time_local(wall_ms - youngest_ms, zone);
+        const civil_time_t today = civil_time_local(wall_ms, zone);
         vm->has_updated = true;
-        (void)str_append(vm->updated_text, sizeof(vm->updated_text), 0u, "just now");
-    } else if (youngest_ms == MEASUREMENT_AGE_UNKNOWN) {
-        vm->has_updated = false;
-        (void)str_append(vm->updated_text, sizeof(vm->updated_text), 0u, "--");
+        format_updated(vm->updated_text, sizeof(vm->updated_text), &measured, &today);
     } else {
-        vm->has_updated = true;
-        vm->updated_is_age = true;
-        format_age(vm->updated_text, sizeof(vm->updated_text), youngest_ms);
+        vm->has_updated = false;
+        (void)str_append(vm->updated_text, sizeof(vm->updated_text), 0u, VM_NO_TIME_TEXT);
     }
 
+    // What the footer calls a reading: its label, but "Temp." for the one too
+    // long to share the line with a dated "updated" text.
+    static const char *const k_footer_names[VM_FIELD_COUNT] = {
+        [VM_FIELD_TEMPERATURE] = "Temp.",
+    };
     const char *low_accuracy_label = NULL;
     for (size_t i = 0u; i < (size_t)VM_FIELD_COUNT; ++i) {
         count_status(shown[i], &vm->error_count, &vm->stale_count, &vm->warmup_count,
                      &vm->low_accuracy_count);
         if (low_accuracy_label == NULL && vm->fields[i].mark == VM_MARK_LOW_ACCURACY) {
-            low_accuracy_label = vm->fields[i].label;
+            low_accuracy_label =
+                (k_footer_names[i] != NULL) ? k_footer_names[i] : vm->fields[i].label;
         }
     }
 

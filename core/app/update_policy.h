@@ -6,12 +6,11 @@
 // point of the module:
 //
 //   * update_policy_config_t -- what the *product* wants: redraw when CO2 has
-//     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %, or
-//     when two minutes have passed while the data on the screen is getting
-//     older (docs/requirements.md 9.1), and no more than once per sensor
-//     cycle. IAQ has no delta: it redraws when its band changes
-//     (core/domain/air_quality.h) -- the screen names the band -- and when a
-//     number's accuracy crosses what the screen marks
+//     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %
+//     (docs/requirements.md 9.1), when a status the screen shows changes,
+//     and no more than once per sensor cycle. IAQ has no delta: it redraws
+//     when its band changes (core/domain/air_quality.h) -- the screen names
+//     the band -- and when a number's accuracy crosses what the screen marks
 //     (measurement_low_accuracy()), as a status change does
 //     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md);
 //   * update_policy_limits_t -- what the *panel* tolerates: how often a full
@@ -20,6 +19,15 @@
 //     ED047TC1 constant in this file, and there must never be one: a second
 //     panel reports different numbers through the same port and this logic is
 //     unchanged.
+//
+// Nothing is redrawn because time passed. Nothing on the screen changes with
+// time alone -- the footer says when the values on it were measured, not how
+// long ago (core/ui/view_model.h) -- so a redraw on a timer would draw the
+// same picture. Requirements 9.1's "time since last update > 2 min -> update
+// display" is departed from on purpose, and the periodic redraw ADR 0019 kept
+// is gone (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
+// Data getting older is still shown: VAL_STALE is a status, and its arrival
+// redraws like any other status change.
 //
 // The module is pure. It performs no I/O, allocates nothing, and takes every
 // notion of "now" from the port_clock handed to update_policy_init(), which is
@@ -44,7 +52,6 @@ extern "C" {
 #define UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM 50.0f
 #define UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C 0.2f
 #define UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH 1.0f
-#define UPDATE_POLICY_DEFAULT_MAX_INTERVAL_MS 120000u
 
 // CHOICE: at most one redraw per this interval -- one sensor cycle
 // (SENSOR_MANAGER_DEFAULT_INTERVAL_MS). The two sensors are read at different
@@ -65,14 +72,6 @@ typedef struct {
     float co2_delta_ppm;
     float temperature_delta_c;
     float humidity_delta_rh;
-
-    // Redraw this long after the last one even if nothing moved, so the
-    // "updated N ago" line keeps counting -- but only while it does count:
-    // while nothing shown is fresh and something is stale. With fresh data
-    // the line says "just now" and a redraw would change nothing, so none is
-    // made (docs/adr/0019-partials-past-the-budget.md). 0 disables the
-    // periodic redraw.
-    uint32_t max_interval_ms;
 
     // No redraw sooner than this after the last one, except the first frame:
     // a redraw that becomes due earlier waits, and goes out with whatever
@@ -102,9 +101,10 @@ typedef enum {
     UPDATE_REASON_CO2,
     UPDATE_REASON_TEMPERATURE,
     UPDATE_REASON_HUMIDITY,
-    UPDATE_REASON_IAQ,     // the IAQ's band changed
-    UPDATE_REASON_STATUS,  // a value_status_t, the accuracy mark or a link flag changed
-    UPDATE_REASON_PERIODIC,
+    UPDATE_REASON_IAQ,  // the IAQ's band changed
+    // A value_status_t, the accuracy mark, a link flag, or whether the wall
+    // time is known, changed.
+    UPDATE_REASON_STATUS,
 } update_reason_t;
 
 typedef struct {
@@ -134,9 +134,9 @@ typedef struct {
     bool deferred_by_min_interval;
 
     // When to call update_policy_evaluate() again in the absence of new data:
-    // now_ms when a redraw is due, the deferral point when one is blocked, the
-    // periodic deadline otherwise, UPDATE_POLICY_NO_DEADLINE when no timer is
-    // pending.
+    // now_ms when a redraw is due, the point it may go out when it is held or
+    // deferred, UPDATE_POLICY_NO_DEADLINE otherwise -- only new data can
+    // change the answer then.
     uint64_t next_deadline_ms;
 } update_decision_t;
 

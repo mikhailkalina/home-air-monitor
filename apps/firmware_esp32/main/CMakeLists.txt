@@ -15,6 +15,9 @@ idf_component_register(
         # Pure over port_i2c, and tested on the host from this location
         # (tests/unit/test_i2c_scan.c) as duration_stats.c is.
         i2c_scan.c
+        # Pure over port_i2c and the PCF8563 driver, and tested on the host
+        # from this location (tests/unit/test_wall_clock.c).
+        wall_clock.c
         console.c
     INCLUDE_DIRS .
     REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console

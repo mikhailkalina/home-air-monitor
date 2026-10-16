@@ -3,11 +3,12 @@
 // The home screen at the panel's real 960x540, byte-compared against
 // tests/golden/screen_home_*.bin.
 //
-// Five readings, chosen because they are the ones the requirements care
+// Seven readings, chosen because they are the ones the requirements care
 // about and the ones a rendering change is most likely to break:
 //
 //   normal   every quantity fresh -- the picture the device shows most of the
-//            time, IAQ 84 with its band, "Good", under it
+//            time, IAQ 84 with its band, "Good", under it, and "updated
+//            14:07" in Vilnius time
 //   error    one sensor down, requirements 15.1: the fault must be on the glass
 //   warmup   a cold start, requirements 13.1: no garbage numbers before the
 //            SCD41 and the BME68x have settled
@@ -16,6 +17,11 @@
 //   iaq_not_calibrated  BSEC's IAQ at accuracy 1, as every boot has it for
 //            hours: the number, its band, the question mark, and the footer
 //            saying so (docs/adr/0021-measurement-accuracy-and-iaq-levels.md)
+//   updated_yesterday  every quantity stale since late the evening before:
+//            the clock marks, and the footer's dated form, "updated 15.10
+//            23:58" (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md)
+//   no_wall_time  the normal reading on a device whose clock is not set:
+//            "updated --:--"
 //
 // Run with UPDATE_GOLDEN=1 to adopt an intentional rendering change:
 //   UPDATE_GOLDEN=1 ./build/host-debug/tests/golden/test_golden_screen_home
@@ -27,6 +33,10 @@
 #error "HAC_DUMP_DIR must be defined by the build (see tests/golden/CMakeLists.txt)"
 #endif
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include "domain/civil_time.h"
 #include "golden_check.h"
 #include "hac_test.h"
 #include "ui/framebuffer.h"
@@ -39,20 +49,35 @@
 #define PANEL_STRIDE (PANEL_WIDTH / 2)  // GRAY4, two pixels per byte
 
 #define SAMPLE_TS_MS 60000u
-#define RENDER_TS_MS 72000u  // 12 s after the sample: fresh, so "updated just now"
+#define RENDER_TS_MS 72000u  // 12 s after the sample: fresh
+
+// The wall time read with RENDER_TS_MS: 2026-10-16T11:07:42Z, 14:07:42 in
+// Vilnius -- so the sample was taken at 14:07:30, "updated 14:07".
+#define RENDER_WALL_MS 1792148862000u
+
+// The device's zone (apps/firmware_esp32/main/main.c).
+#define VILNIUS_STANDARD_MIN 120
 
 static uint8_t g_pixels[PANEL_STRIDE * PANEL_HEIGHT];
 
-static void render_and_check(const air_reading_t *reading, const char *name)
+// `render_ts_ms` is the monotonic time the reading's wall time was read at.
+static void render_at_and_check(const air_reading_t *reading, uint64_t render_ts_ms,
+                                const char *name)
 {
     framebuffer_t fb;
     framebuffer_init(&fb, g_pixels, sizeof(g_pixels), PANEL_WIDTH, PANEL_HEIGHT, PIXFMT_GRAY4);
 
+    const time_zone_t vilnius = time_zone_eu(VILNIUS_STANDARD_MIN);
     view_model_t vm;
-    view_model_build(&vm, reading, RENDER_TS_MS);
+    view_model_build(&vm, reading, render_ts_ms, &vilnius);
     screen_home_render(&fb, &vm);
 
     HAC_CHECK(golden_check_framebuffer(&fb, HAC_GOLDEN_DIR, HAC_DUMP_DIR, name));
+}
+
+static void render_and_check(const air_reading_t *reading, const char *name)
+{
+    render_at_and_check(reading, RENDER_TS_MS, name);
 }
 
 // A settled room: CO2 in the "Moderate" band, everything else nominal.
@@ -72,6 +97,7 @@ static air_reading_t base_reading(void)
     r.wifi_rssi_dbm = -61;
     r.uptime_s = 3600u;
     r.boot_count = 1u;
+    r.wall_time_ms = RENDER_WALL_MS;
     return r;
 }
 
@@ -115,6 +141,28 @@ static void iaq_not_calibrated(void)
     render_and_check(&r, "screen_home_iaq_not_calibrated");
 }
 
+static void updated_yesterday(void)
+{
+    air_reading_t r = base_reading();
+
+    // The readings on the glass were last measured at 23:58:10 the evening
+    // before: 14 h 9 min 32 s before the wall time read with them, 14:07:42.
+    const uint64_t age_ms = (14u * 3600u + 9u * 60u + 32u) * 1000u;
+    measurement_f32_t *fields[] = {&r.co2_ppm, &r.temperature_c, &r.humidity_rh, &r.pressure_hpa,
+                                   &r.iaq};
+    for (size_t i = 0u; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        fields[i]->status = VAL_STALE;
+    }
+    render_at_and_check(&r, SAMPLE_TS_MS + age_ms, "screen_home_updated_yesterday");
+}
+
+static void no_wall_time(void)
+{
+    air_reading_t r = base_reading();
+    r.wall_time_ms = 0u;  // the RTC held nothing valid and nobody has set it
+    render_and_check(&r, "screen_home_no_wall_time");
+}
+
 static void everything_warming_up(void)
 {
     air_reading_t r;
@@ -138,5 +186,7 @@ int main(void)
     HAC_RUN(everything_warming_up);
     HAC_RUN(without_bsec);
     HAC_RUN(iaq_not_calibrated);
+    HAC_RUN(updated_yesterday);
+    HAC_RUN(no_wall_time);
     return hac_test_summary();
 }

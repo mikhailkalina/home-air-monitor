@@ -41,7 +41,7 @@ ever purchased, re-check the silkscreen before assuming it matches.
 | Display driver IC | ED047TC1 |
 | Resolution | **960 × 540 px, landscape** in firmware terms — see “Display orientation” below. The vendor listing quotes 540 × 960, which is the glass orientation, not the one the driver presents |
 | Gray levels | 16 (4 bpp, matches `PIXFMT_GRAY4`) |
-| RTC | PCF8563, on I²C |
+| RTC | PCF8563, on I²C at `0x51`, with a rechargeable backup cell -- see "The RTC" below |
 | Battery | charger HX6610S (`U9`, schematic v2.4), with a red "charging" and a green "full" LED of its own; no gauge IC -- the level is a plain divider on GPIO14 (see "Pin assignments" and "Power rails and connectors" below) |
 | Touch | present on this unit (H716 variant) — answers at I²C `0x5D`, as a GT911 does with INT low at reset (phase 2d bus scan, 2026-10-13); the part itself is not yet read back — see open items |
 
@@ -187,7 +187,7 @@ where the sensors take their power. Sources:
 |---|---|---|---|
 | `VBUS` | USB-C, before the Schottky `D8` | only with USB plugged in | the charger; pins 2 and 4 of the 40-pin header |
 | `5V` | `VBUS` through `D8`, or the battery through P-MOSFET `Q5` while `VBUS` is absent (3.7-4.2 V then) | whenever the board is powered | the LDO |
-| `VDD3V3` | LDO `U13` (ME6217-3V3) from `5V` | whenever the board is powered | the ESP32-S3 module, the RTC, the 74HCT4094 (`VCC` and `OE`), the touch connector `P2`, the I2C pull-ups |
+| `VDD3V3` | LDO `U13` (ME6217-3V3) from `5V` | whenever the board is powered | the ESP32-S3 module, the RTC (through `D3`, as `VCC_RTC` -- "The RTC" below), the 74HCT4094 (`VCC` and `OE`), the touch connector `P2`, the I2C pull-ups |
 | `3V3` | `VDD3V3` through P-MOSFET `Q4`, switched by `PWR_EN` (NPN `Q2` pulls the gate) | while `PWR_EN` is high | pin 1 ("V") of the 4-pin connectors `P4`/`P5`, the blue LED `LED7` (through 2 kOhm), and the boost `U2` (LT1945): its `VIN`, and `SHDN1`/`SHDN2` through 100 kOhm |
 | +22 V, -20 V | boost `U2` | while `3V3` is up -- see below | the panel; ±15 V derived from them by `U1`/`U6` (78L15/79L15) |
 
@@ -317,6 +317,34 @@ modules from the seller's photographs:
   2038457, option 6334266, with pads GND, VDD, SCL and SDA. The same listing
   sells a purple SCD40, which has no single-shot mode and a narrower range,
   so the variant is read back from the sensor rather than assumed.
+
+### The RTC
+
+**From the v2.4 schematic, the owner's reading of it, 2026-10-16** (phase
+3e, `docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`); not
+measured:
+
+- **Supply**: the PCF8563's `VDD` is `VCC_RTC`, which is `VDD3V3` through
+  `D3`, a 1N4148, with an MS412FE rechargeable lithium cell behind it on the
+  RTC's side of the diode. So the RTC runs whenever the board is powered, is
+  **not on `PWR_EN`** -- no reset, software or hardware, stops it, and
+  clearing `PWR_EN` for deep sleep would not either -- and the cell should
+  keep it running with the board unpowered, charged through the diode while
+  it is powered. **Seen 2026-10-16**: on this unit the cell is fitted and
+  kept VL clear through more than a minute with no power at all; longer
+  outages are untested ("The RTC on the board" in the open items).
+- **INT** goes to IO9 with a 10 kOhm pull-up to `VDD3V3`
+  (`BOARD_RTC_INT_GPIO`): the open-drain alarm and timer interrupt, unused --
+  a wake-source candidate for phase 5's deep sleep.
+- **CLKOUT** is pulled up and goes nowhere the firmware uses.
+- The bus: the shared I2C at `0x51` (`BOARD_RTC_I2C_ADDRESS`), found by
+  every boot scan since phase 2d.
+
+The firmware keeps **UTC** in it, never local time, reads it once at boot
+after the bus is up, and sets the system time from it when it is valid --
+answering, VL clear, running, decodable, and no earlier than 2026
+(`apps/firmware_esp32/main/wall_clock.c`, ADR 0023). The console's `time`
+says what it holds; `time_set` writes it.
 
 ## Sensors on the bus
 
@@ -805,6 +833,31 @@ layout settles, not before.
       not show: it begins at the boot after. If it recurs, keep the terminal logging
       across the reset: ESP-IDF prints "Brownout detector was triggered"
       before it restarts.
+      **Caught, 2026-10-16** (ELF `dd1e81a7b...`, the phase-3e BSEC firmware,
+      the owner's log of 20:25 local, right after flashing): a boot that itself
+      reported `previous reset reason=BROWNOUT` ran to `epdiy-i80: i80 row
+      output ready` and then printed `BOD: Brownout detector was triggered`,
+      and the ROM restarted it (`rst:0x3 (RTC_SW_SYS_RST)`); the boot after
+      that ran normally. So at least two brownouts in a row, **each at the
+      same point as the 2026-10-15 loop**: after EPDiy's last log line before
+      it first writes the 74HCT4094 -- which raises `PWR_EN`, and with it the
+      switched `3V3` feeding the panel's boost and the sensors -- and before
+      its next one (`epd: Space used for waveform LUT`). The bus is not
+      involved: nothing touches it before that point since 2026-10-15. So
+      the log points back to reading (2) above for these resets -- the
+      switched rail's inrush pulling `VDD3V3` under the brownout threshold,
+      some boots and not others -- placed by the order of the log lines, not
+      measured. USB alone, no battery (the owner). **Again at 20:54 local**:
+      after a power cut, a boot reset by the terminal reopening the port
+      (`previous reset reason=usb`) browned out at the same line; the one
+      after it ran. Both runs began with a reset from the USB host --
+      esptool's after flashing, the terminal's after a power cut -- and
+      browned out in the boots right after it, but the terminal's reset at
+      20:36 was followed by a boot that ran: too few to call a pattern. What
+      would settle it: the 3.3 V rail on a scope at `PWR_EN`'s rise; the
+      cheap mitigations to weigh, in phase 5's power work at the latest: a
+      slower rise of the switched rail, or more bulk capacitance on
+      `VDD3V3`.
       **What follows, until the mechanism is known:** nothing may drive the
       bus while `PWR_EN` is low and the sensors are on the switched rail.
       That binds phase 5 above all: clearing `PWR_EN` for deep sleep, or
@@ -1045,6 +1098,12 @@ layout settles, not before.
       - *Gas*: 119-127 kOhm in clean air, against 153-165 kOhm in the first
         run on the same heater profile, at 2-3 % higher humidity.
       - *Stack*: the low-water mark stayed at 3,476 bytes free.
+      **Third run 2026-10-16** (ELF `dd1e81a7b...`, phase 3e, 10 minutes,
+      the owner's log of 20:25 local): IAQ's band flapping at 50 again, and
+      more of it -- 13 of the first 19 redraws (98-238 s from boot) were
+      `reason=iaq` while the index sat at 50-58, so the partial-refresh budget
+      was spent in 5 minutes and the 21st redraw, at 325 s, came out full.
+      Still the owner's call (ADR 0021: watch it before adding a hysteresis).
       - *A brownout before this boot*: `previous reset reason=BROWNOUT
         rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
         the image was flashed. The brownout itself is not in the logs. See the
@@ -1085,8 +1144,110 @@ layout settles, not before.
       third was not exercised. To settle the first two: raise the
       `adp_i2c` tag to `DEBUG` (its `transfer failed ... status=` line names
       `NOT_FOUND` for the address, `IO` for a data byte), or a scope.
-- [ ] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
-      timestamps, or is only used for scheduling.
+- [x] Whether the RTC (PCF8563) is wired to survive deep sleep for real-time
+      timestamps, or is only used for scheduling. **Answered by the
+      schematic 2026-10-16** ("The RTC"): it runs from `VCC_RTC`, not from
+      `PWR_EN`'s rail, with a backup cell, so deep sleep does not stop it;
+      since phase 3e it is the device's wall clock (ADR 0023). Whether the
+      cell holds it with the board unpowered is the item below.
+- [ ] **The RTC on the board (phase 3e).** Built 2026-10-16 (ELF
+      `e26c8ec48...`, and `dd1e81a7b...` with BSEC), verified on the host only
+      (`docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`).
+      The boot log's `main: wall clock source=... rtc=... rtc_unix_ms=...
+      kept_across_reset=...` line and the console's `time` answer each check:
+      - *What the RTC holds before anything here set it*: `time` at the first
+        boot -- `rtc: VL set` and a 2000s date if the chip lost power since
+        the vendor's firmware last wrote it, `rtc: implausible year` if it
+        kept a time this firmware rejects, a valid time if the factory demo
+        set one and the cell kept it. The footer shows that time or
+        `updated --:--` accordingly.
+      - *Setting it*: `time_set <YYYY-MM-DDTHH:MM:SSZ>` in UTC, then `time`:
+        `source="console"`, the RTC `valid` and within a second. The footer
+        turns from `--:--` into the time at the next poll (a status change),
+        follows the redraws after that, and nothing redraws while the
+        readings hold still.
+      - *The backup cell*: remove all power -- USB and battery -- for some
+        minutes, then boot. `rtc: valid` with the time right means the cell
+        is fitted and holds; `rtc: VL set` means it is not, or is flat (it
+        charges while the board is powered, so try again after a day on
+        USB). Record either outcome here.
+      - *A software reset*: `restart` with the clock set; the next boot's line
+        should read `kept_across_reset=true` (ESP-IDF keeps its system time in
+        RTC registers a CPU reset does not clear -- read, not seen) and then
+        `source=rtc`.
+      - *Drift*: an ESTIMATE of about a minute a month (a 32.768 kHz
+        crystal's ±20 ppm) until phase 4's SNTP corrects it. `time` against a
+        reference a week or two after `time_set` gives this unit's figure.
+      - *The autumn change*: 2026-10-25 at 01:00 UTC; if the device runs
+        through it, its next redraw shows the hour step, 03:59 -> 03:00 in
+        Vilnius.
+      **First run 2026-10-16** (ELF `dd1e81a7b...`, the BSEC image, the
+      owner's log of 20:25 local):
+      - *What the RTC held*: `rtc: VL set`, 2000-01-27T05:06:30Z at boot,
+        registers `08 00 A5 07 05 27 05 01 00` -- VL set, Control_status_1
+        at its power-on value (TESTC), nothing ever written. `wall clock
+        source=none`, so the footer had no time. And it was **running**: a
+        minute later `time` read 05:07:25. Read back, not established: a
+        power-on of the chip on about **2026-09-20 at 12:19 UTC** -- 26 days
+        5 h 6 min before this boot, if it started from 2000-01-01 00:00 with
+        weekday 0 (the register's 5 is that plus 26 days; the calendar's
+        2000-01-27 was a Thursday, 4) -- and the chip counting ever since.
+        If the board was ever without USB and battery after that date, the
+        backup cell carried it through; if it never was, nothing follows.
+      - *Setting it*: `time_set` with a bad argument was refused
+        (`"2026-10-16T17:28:402>" is not YYYY-MM-DDTHH:MM:SSZ`); the next,
+        `time_set 2026-10-16T17:35:40Z`, gave `rtc=ok system=ok`, local
+        20:35:40 UTC+03:00, `source="console"`, and the registers `00 00 40
+        35 17 16 05 10 26` -- VL and TESTC clear, weekday 5, a Friday. The
+        footer's status redraw followed 1 s later (`reason=status`), its
+        rectangle 381 rows tall, from the headline's top to the footer:
+        EPDiy's difference pass took 75 ms, 196 us a row as
+        `EPD_SIM_DIFF_PER_ROW_US` has it, and the whole flush 648 ms.
+      - *Quiet readings, no redraws*: none between 329 and 566 s of uptime,
+        nor between the time_set's redraw and the next reset, 37 s later.
+        No `reason=periodic` anywhere.
+      - *A short unplug*: the owner unplugged USB (the only supply; no
+        battery) and plugged it back, within the 37 s after the time_set's
+        redraw. The first boot in the log after it is **not the power-on
+        one**: it reports `previous reset reason=usb rom_code=21`, a reset
+        from the USB host -- the terminal reopening the port, as on
+        2026-10-15 -- so the power-on boot before it ran unlogged, while the
+        terminal was reconnecting. That boot read the RTC and set the system
+        time, and the reset after it kept it (`kept_across_reset=true`, the
+        system time in RTC-domain registers a digital-core reset does not
+        clear, as read in ESP-IDF's source). Then `source=rtc rtc=rtc:
+        valid`, 17:36:19Z; `time` a few seconds later: system and RTC
+        17:36:25Z, agreeing to the second. (Read at first, wrongly, as an
+        unplug that did not cut the power; the owner confirmed USB alone.)
+        The SCD41 came back `found_measuring=false`.
+      - *Cost*: `free_internal_after_epd_init=217247`, 252 bytes under
+        phase 3d's 217,499; the event loop's stack low-water mark unchanged at
+        3,476 bytes free.
+      - *On the glass* (the owner, by eye): as expected -- "updated --:--"
+        before time_set, the time after.
+      **Second run 2026-10-16, the backup cell** (same ELF, the owner's log
+      of 20:52 local): USB -- the only supply, no battery -- out for more
+      than a minute, then back. The log again starts after the power-on
+      boot: a boot reset by the terminal (`previous reset reason=usb`) that
+      browned out when `PWR_EN` rose ("A reboot loop ..." in the open items),
+      then one after the brownout that ran: `wall clock source=rtc rtc=rtc:
+      valid rtc_unix_ms=1792173275000 kept_across_reset=true`, 17:54:35Z.
+      **The RTC came through the power cut with VL clear**, so its supply
+      never fell below what its oscillator needs: the cell is fitted and
+      held it, for one to two minutes at least. Twice confirmed: the
+      unlogged power-on boot found it valid too, or nothing would have set
+      the system time that the later boots kept. Not shown by the log: that
+      it kept *counting* -- the RTC is the only clock across the gap. VL
+      clear makes a stopped oscillator unlikely; `time` against a reference
+      clock settles it, and is the drift's first data point. One reference
+      before the cut agrees: the log file's name, 20:52:05 local, against
+      17:52:06Z worked out for its first line from the RTC-set clock.
+      Still open: `time` against a reference (a stopped clock during the cut
+      would show as the outage's length behind; otherwise, the drift since
+      time_set); a longer outage -- hours -- for the cell's capacity; the
+      cell's charge after days unpowered; `restart` itself (`esp_restart()`);
+      the autumn change. A tip for these: YAT's own time stamps on each line
+      give the log an outside clock.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings
       while Wi-Fi is active. The ESP32-S3 TRM documents ADC2 as unreliable
       under Wi-Fi; confirm on this board before phase 3/4 tries to read

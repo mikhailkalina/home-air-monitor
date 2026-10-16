@@ -8,6 +8,11 @@ Accepted. Verified on the host: unit tests, the layout test, and golden
 frames looked at before they were adopted. Built into the BSEC firmware
 (ELF `a3fca4872...`); not yet seen on the panel.
 
+Amended by ADR 0023 (2026-10-16): two of the footer's notes are shorter, to
+fit beside the dated "updated DD.MM HH:MM" -- "N not calibrated" for
+several, and "Temp." for the temperature's label in the note. "IAQ not
+calibrated" is unchanged.
+
 ## Context
 
 The first run of BSEC on the board (ADR 0020, 2026-10-16) showed IAQ at

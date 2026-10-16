@@ -74,7 +74,8 @@ cmake --preset host-asan && cmake --build build/host-asan && ctest --test-dir bu
 cmake --preset host-bsec && cmake --build build/host-bsec && ctest --test-dir build/host-bsec
 HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC did
 
-# Run the simulator (--sensors fake-i2c: the real drivers over device models)
+# Run the simulator (--sensors fake-i2c: the real drivers over device models; the footer's
+# clock starts at the PC's time, or --wall-time 2026-10-25T00:58:00Z, or --no-wall-time)
 ./build/host-debug/apps/simulator/simulator \
     --scenario-co2 scenarios/co2_spike_meeting.csv \
     --scenario-env scenarios/normal_day.csv --time-scale 60
@@ -306,9 +307,9 @@ Also on this branch, at the owner's request after watching the board (ADR 0019, 
 allows a full refresh, and the next redraw due after that is full -- the screen no longer
 freezes, and nothing is redrawn only because the interval elapsed. At most one redraw per 5 s
 sensor cycle (`min_redraw_interval_ms`), so both sensors' readings of a cycle cost one partial
-refresh: at most 20 partials and at least 105 s between full refreshes. The 2-minute periodic
-redraw runs only while the data on screen is getting older; with fresh data the footer says
-"updated just now" and the screen changes only when the readings do. The simulator's panel model
+refresh: at most 20 partials and at least 105 s between full refreshes. The screen changes only
+when the readings do (the periodic redraw this branch kept is gone since phase 3e, ADR 0023).
+The simulator's panel model
 performs and counts such partials and rescues only past the 40 the panel was tested with. And
 the home screen's text is as large as its widest strings allow -- CO2 at 160px, the grid's
 readings at 72px, labels and units at 32px, bar and footer at 40px, 3px rules -- with
@@ -346,8 +347,34 @@ of the question mark, redraws; and "ppm" and the CO2 mark moved to the label's l
 ppm", where no reading draws, after the moving unit left residue on the panel. The layout test
 holds the last by pixels. Not yet seen on the panel.
 
-Next: the board run of phase 3d, the rest of phase 3c's measurements, and this unit's own
-figures for the remaining estimates.
+Phase 3e on branch `phase-3e-rtc-wall-clock` (ADR 0023): the device has a wall clock. The
+PCF8563 at `0x51` -- powered from `VCC_RTC`, `VDD3V3` through a diode with a rechargeable cell
+behind it, so not on `PWR_EN` (`board_notes.md`, "The RTC") -- holds UTC, never local time;
+`drivers/pcf8563/` reads and sets it over `port_i2c` (BCD, the VL bit, 2000-2099, a decode
+failure for anything else), with no port: one RTC, and the simulator's wall time is
+`adp_clock_virtual`'s. `adp_clock`'s `wall_ms()` is ESP-IDF's system time (`gettimeofday`), 0
+before 2026 -- what nothing set -- so phase 4's SNTP needs nothing there; the composition sets
+it from the RTC at boot when the chip says the time is valid. Console: `time` and `time_set
+<YYYY-MM-DDTHH:MM:SSZ>` (UTC). `core/domain/civil_time.c` converts to local time without
+`time.h`, from a zone rule the composition passes in: Vilnius, `time_zone_eu(120)`. The footer
+says "updated HH:MM" -- the local minute the freshest value on screen was measured, "DD.MM
+HH:MM" from an earlier day, "--:--" without a clock -- never an age, and `update_policy` has no
+periodic redraw any more: nothing on the screen changes with time alone, and staleness is a
+status change. Departs from requirements 9.1's two-minute example. Measured on the simulator's
+panel model: no scenario's refresh count changes; a redraw in a new minute spans headline and
+footer, +105 ms, +2.9 % of panel time on `co2_spike_meeting.csv`. Two footer notes shortened to
+fit the dated form ("N not calibrated", "Temp. not calibrated"). Simulator: the PC's time at
+start, or `--wall-time`, or `--no-wall-time`. Verified on the host. On the board, 2026-10-16:
+the RTC held 2000-01-27 with VL set and was ignored; `time_set` wrote it, the footer showed
+the time, nothing redrew while the readings held still, and after more than a minute with no
+power at all the RTC was still valid -- the backup cell is fitted and holds. The first boot after
+a power cut is not in the terminal's log: the terminal reopening the port resets the chip again
+(`reason=usb`). Still owed (`board_notes.md`, open item "The RTC on the board"): `time` against a
+reference, longer outages, the drift. Two logs caught brownouts at the moment `PWR_EN` rises
+(open item "A reboot loop when the switched 3V3 comes up").
+
+Next: the board run of phases 3d and 3e, the rest of phase 3c's measurements, and this unit's
+own figures for the remaining estimates.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

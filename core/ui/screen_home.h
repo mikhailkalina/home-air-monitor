@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // The MVP home screen of docs/requirements.md 14.4: CO2, temperature,
-// humidity, pressure, IAQ, battery and link status, the time since the last
-// reading, and the sensor error / stale indicators.
+// humidity, pressure, IAQ, battery and link status, the local time of the last
+// update, and the sensor error / stale indicators.
 //
 // It draws a view_model_t and nothing else. Any question of the form "what
 // should this say when ..." is answered in core/ui/view_model.c, which is why

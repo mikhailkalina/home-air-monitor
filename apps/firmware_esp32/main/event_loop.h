@@ -22,6 +22,7 @@
 
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
+#include "domain/civil_time.h"
 #include "domain/measurement.h"
 #include "port_clock.h"
 #include "port_display.h"
@@ -43,6 +44,7 @@ typedef struct {
     const port_log_t *log;
     update_policy_t *policy;    // already update_policy_init()-ed by the caller
     sensor_manager_t *sensors;  // already sensor_manager_init()-ed, sources added
+    const time_zone_t *zone;    // the local time the footer shows
 
     event_loop_reading_fn on_reading;  // may be NULL
     void *on_reading_ctx;

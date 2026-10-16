@@ -13,14 +13,19 @@
 // the ids and priorities below, the same as the simulator's. Phase 3d
 // (docs/adr/0020-bsec-iaq.md): with CONFIG_HAC_BSEC the BME68x is measured as
 // Bosch's BSEC2 asks instead, and IAQ joins its readings; without it, as
-// before, the IAQ cell shows raw gas resistance.
+// before, the IAQ cell shows raw gas resistance. Phase 3e
+// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md): the PCF8563
+// on the same bus gives the system time at boot, the console's time and
+// time_set read and set it, and the footer shows, in Vilnius time, when the
+// values on the screen were measured.
 //
 // What runs, in this order: adp_log and adp_clock, the port_clock and
 // port_log contract suites run once against the real adapters
 // (docs/adr/0005), the real display adapter (or the null one,
 // CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), adp_i2c and the
 // boot-time bus scan -- after the display, whose init powers the sensors (see
-// bring_up_i2c()) -- optionally the whole-panel bring-up diagnostic
+// bring_up_i2c()) -- then the system time from the RTC (set_clock_from_rtc()),
+// optionally the whole-panel bring-up diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
 // run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
@@ -49,6 +54,7 @@
 
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
+#include "domain/civil_time.h"
 #if CONFIG_HAC_BSEC
 #include "bme68x_bsec_source.h"
 #else
@@ -68,6 +74,7 @@
 #include "console.h"
 #include "epd_calibration.h"
 #include "event_loop.h"
+#include "wall_clock.h"
 
 // Phase 2a's figure was 6144: ~2 KB IDF/vsnprintf baseline, ~400 B
 // view_model_t, ~400 B through the render call chain, doubled. Phase 3c puts
@@ -106,6 +113,12 @@ typedef bme68x_source_config_t bme68x_composed_config_t;
 #define BME68X_INTERVAL_MS SENSOR_MANAGER_DEFAULT_INTERVAL_MS
 #define SENSORS_TEXT "SCD4x and BME68x through the sensor manager"
 #endif
+
+// CHOICE: the local time the footer and the console show is Vilnius's -- EET,
+// UTC+2, with the EU's summer time (core/domain/civil_time.h,
+// time_zone_eu()). The simulator shows the same (apps/simulator/main.c).
+#define LOCAL_ZONE_NAME "Vilnius"
+#define LOCAL_STANDARD_OFFSET_MIN 120
 
 // CHOICE: how often each source's latest sample is logged, besides what the
 // sensor manager logs on every change of state -- often enough to compare
@@ -318,6 +331,37 @@ static void bring_up_i2c(adp_i2c_t *i2c, const port_clock_t *clock, const port_l
     console_print_i2c_scan(i2c);
 }
 
+// The system time from the PCF8563, once the bus is up: a time the chip says
+// is valid, and no earlier than ADP_CLOCK_WALL_EARLIEST_MS, sets it; VL set,
+// a stopped or undecodable clock, an implausible year or a chip that does not
+// answer leaves it as it was -- 0 after a chip reset, whatever a previous
+// boot set after a software reset (adp_clock.h), which is then what the
+// screen shows. The RTC holds UTC. Logged either way, with the chip's own
+// time, so a boot log says what the clock was set from.
+static wall_clock_source_t set_clock_from_rtc(adp_i2c_t *i2c, adp_clock_t *clock,
+                                              const port_log_t *log)
+{
+    const bool kept = clock->port.wall_ms(&clock->port) != 0u;
+    wall_clock_rtc_t rtc;
+    wall_clock_read_rtc(adp_i2c_port(i2c), BOARD_RTC_I2C_ADDRESS, ADP_CLOCK_WALL_EARLIEST_MS, &rtc);
+
+    wall_clock_source_t source = kept ? WALL_CLOCK_SOURCE_KEPT : WALL_CLOCK_SOURCE_NONE;
+    if (rtc.usable && adp_clock_set_wall_ms(clock, rtc.unix_ms) == HAL_OK) {
+        source = WALL_CLOCK_SOURCE_RTC;
+    }
+
+    const log_field_t fields[] = {
+        log_str("source", wall_clock_source_name(source)),
+        log_str("rtc", wall_clock_rtc_reason(&rtc)),
+        log_u64("rtc_unix_ms", rtc.decoded ? rtc.unix_ms : 0u),
+        log_bool("kept_across_reset", kept),
+        log_u64("wall_ms", clock->port.wall_ms(&clock->port)),
+    };
+    port_log_write(log, (source == WALL_CLOCK_SOURCE_NONE) ? LOG_LEVEL_WARN : LOG_LEVEL_INFO,
+                   "main", "wall clock", fields, sizeof(fields) / sizeof(fields[0]));
+    return source;
+}
+
 // The console is started last, once the event loop is running. Creating the
 // REPL runs linenoise's terminal probe in the CALLER's task
 // (esp_console_setup_prompt(), components/console/esp_console_common.c): it
@@ -332,9 +376,9 @@ static void bring_up_i2c(adp_i2c_t *i2c, const port_clock_t *clock, const port_l
 // The early returns above -- a display that fails to initialise, and the
 // calibration mode -- leave the console off; their logs still carry the boot
 // scan.
-static void start_console(adp_i2c_t *i2c, const port_log_t *log)
+static void start_console(const console_deps_t *deps)
 {
-    (void)console_start(i2c, log);
+    (void)console_start(deps);
 }
 
 // The board's two sensors, set up on the bus and handed to the sensor
@@ -487,6 +531,8 @@ void app_main(void)
     static bme68x_composed_t s_bme68x;
     static sensor_manager_t s_sensors;
     static reading_hook_ctx_t s_hook;
+    static time_zone_t s_zone;
+    static wall_clock_source_t s_wall_source;
 
     adp_log_init(&s_log);
     const port_log_t *log = adp_log_port(&s_log);
@@ -496,13 +542,13 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 3d: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, " SENSORS_TEXT,
+                   "phase 3e: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT ", the RTC",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 3d: EPDiy driving the panel, " SENSORS_TEXT,
+                   "phase 3e: EPDiy driving the panel, " SENSORS_TEXT ", the RTC",
 #endif
                    NULL, 0u);
 
@@ -515,6 +561,7 @@ void app_main(void)
         adp_display_null_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
     board_power_switched_3v3_on(log);  // what EPDiy's init does for the sensors otherwise
     bring_up_i2c(&s_i2c, clock, log);  // after the rail: see bring_up_i2c()
+    s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_null_init failed", fields, 1u);
@@ -525,6 +572,7 @@ void app_main(void)
     const hal_status_t display_status =
         adp_display_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
     bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
+    s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_init failed", fields, 1u);
@@ -573,16 +621,26 @@ void app_main(void)
 #endif
     s_hook.next_sample_log_ms = 0u;
 
+    s_zone = time_zone_eu(LOCAL_STANDARD_OFFSET_MIN);
     event_loop_deps_t deps = {
         .clock = clock,
         .display = display,
         .log = log,
         .policy = &s_policy,
         .sensors = &s_sensors,
+        .zone = &s_zone,
         .on_reading = on_reading,
         .on_reading_ctx = &s_hook,
     };
     event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
                      EVENT_LOOP_TASK_CORE);
-    start_console(&s_i2c, log);
+    const console_deps_t console = {
+        .bus = &s_i2c,
+        .clock = &s_clock,
+        .zone = &s_zone,
+        .zone_name = LOCAL_ZONE_NAME,
+        .wall_source = &s_wall_source,
+        .log = log,
+    };
+    start_console(&console);
 }

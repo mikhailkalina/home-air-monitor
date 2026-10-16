@@ -14,18 +14,40 @@
 // docs/hardware/board_notes.md for the phase that actually exercises deep
 // sleep; nothing here assumes an answer either way.
 //
-// wall_ms() returns 0 (unsynchronized) until phase 4 brings Wi-Fi and, with
-// it, SNTP (docs/architecture.md 10).
+// wall_ms() is ESP-IDF's system time -- gettimeofday() -- and
+// adp_clock_set_wall_ms() sets it with settimeofday(). The composition sets
+// it from the PCF8563 at boot and from the console's time_set; phase 4's SNTP
+// sets the same system time through ESP-IDF's own settimeofday(), and needs
+// nothing here (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
+//
+// Until something has set it, wall_ms() is 0, as ports/port_clock.h promises
+// for an unsynchronized clock: a system time before ADP_CLOCK_WALL_EARLIEST_MS
+// is one nobody set. At a power-on or any other chip reset ESP-IDF's system
+// time starts from the epoch -- its "boot time" lives in two RTC_CNTL store
+// registers, which such a reset clears. A software reset (esp_restart(), a
+// panic, a task watchdog) resets the CPUs only: the registers and the RTC
+// timer under them carry on, so the system time a previous boot set comes back
+// still running, before anything reads the RTC (components/newlib/src/port/
+// esp_time_impl.c, ESP-IDF 5.5; read, not yet seen on the board).
 
 #ifndef HAC_PLATFORM_ESP32_T5S3_ADP_CLOCK_H
 #define HAC_PLATFORM_ESP32_T5S3_ADP_CLOCK_H
 
+#include <stdint.h>
+
+#include "hal_status.h"
 #include "port_clock.h"
 #include "port_log.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// CHOICE: the earliest system time wall_ms() believes, 2026-01-01T00:00:00Z.
+// Nothing this firmware sets can be earlier -- none of it existed before
+// then -- and an RTC that says otherwise has not been set by it either, so
+// the composition holds the PCF8563's time to the same floor.
+#define ADP_CLOCK_WALL_EARLIEST_MS 1767225600000ull
 
 typedef struct {
     port_clock_t port;
@@ -40,6 +62,12 @@ typedef struct {
 void adp_clock_init(adp_clock_t *c, const port_log_t *log);
 
 const port_clock_t *adp_clock_port(const adp_clock_t *c);
+
+// Sets the system time -- what wall_ms() returns from then on -- to
+// `unix_ms`, milliseconds since the epoch, UTC. HAL_ERR_INVALID_ARG, with the
+// system time unchanged, for a time before ADP_CLOCK_WALL_EARLIEST_MS;
+// HAL_ERR_IO if settimeofday() refuses it.
+hal_status_t adp_clock_set_wall_ms(adp_clock_t *c, uint64_t unix_ms);
 
 #ifdef __cplusplus
 }

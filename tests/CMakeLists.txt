@@ -18,6 +18,7 @@ set(HAC_UNIT_TESTS
     test_fake_clock
     test_measurement
     test_air_quality
+    test_civil_time
     test_framebuffer
     test_gfx
     test_update_policy
@@ -73,6 +74,17 @@ target_link_libraries(test_i2c_scan PRIVATE hac_platform_host hac_test_support)
 hac_apply_warnings(test_i2c_scan)
 add_test(NAME test_i2c_scan COMMAND test_i2c_scan)
 
+# The firmware's wall clock -- which RTC readings set the system time, and
+# time_set's write -- against the fake bus, from where the firmware compiles it.
+add_executable(test_wall_clock
+    unit/test_wall_clock.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/wall_clock.c
+)
+target_include_directories(test_wall_clock PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_wall_clock PRIVATE hac_drivers hac_platform_host hac_test_support)
+hac_apply_warnings(test_wall_clock)
+add_test(NAME test_wall_clock COMMAND test_wall_clock)
+
 # The SCD41 command-level model against the datasheet, and the SCD4x driver --
 # Sensirion's code behind sensor_source_t -- against the model, over the fake
 # bus (docs/adr/0015-scd4x-driver.md).
@@ -99,6 +111,13 @@ add_executable(test_bme68x_source unit/test_bme68x_source.c)
 target_link_libraries(test_bme68x_source PRIVATE hac_drivers hac_platform_host hac_test_support)
 hac_apply_warnings(test_bme68x_source)
 add_test(NAME test_bme68x_source COMMAND test_bme68x_source)
+
+# The PCF8563 real-time clock driver against the fake bus's register file,
+# which is the chip as it is (drivers/pcf8563/pcf8563.h).
+add_executable(test_pcf8563 unit/test_pcf8563.c)
+target_link_libraries(test_pcf8563 PRIVATE hac_drivers hac_platform_host hac_test_support)
+hac_apply_warnings(test_pcf8563)
+add_test(NAME test_pcf8563 COMMAND test_pcf8563)
 
 # How BSEC's accuracy and gas statuses become value_status_t
 # (docs/adr/0020-bsec-iaq.md). Pure and free of Bosch's headers, so it runs
