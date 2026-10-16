@@ -5,6 +5,8 @@
 // runs on the fake clock, so "two minutes elapse" and "the partial budget runs
 // out over twenty redraws" cost microseconds.
 
+#include <string.h>
+
 #include "app/update_policy.h"
 #include "fake_clock.h"
 #include "hac_test.h"
@@ -233,6 +235,104 @@ static void a_status_change_alone_reaches_the_glass(void)
 
     HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+}
+
+// --- IAQ: its band, and the accuracy mark ---------------------------------------
+
+static air_reading_t with_iaq(fixture_t *f, float iaq, value_accuracy_t accuracy)
+{
+    air_reading_t r = reading_at(f, 620.0f, 22.0f, 45.0f);
+    r.iaq = measurement_ok(iaq, f->clock.now_ms, 2u);
+    r.iaq.accuracy = accuracy;
+    return r;
+}
+
+// Draws `r` as the frame on the glass.
+static void draw(fixture_t *f, const air_reading_t *r)
+{
+    update_decision_t d;
+    update_policy_evaluate(&f->policy, r, &d);
+    update_policy_commit(&f->policy, r, &d);
+}
+
+static void an_iaq_moving_within_its_band_leaves_the_panel_alone(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = with_iaq(&f, 51.0f, ACC_HIGH);
+    draw(&f, &r);
+    fake_clock_advance(&f.clock, 5000u);
+
+    r = with_iaq(&f, 100.0f, ACC_HIGH);  // "Good" both, 49 points apart
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+}
+
+static void an_iaq_crossing_into_another_band_redraws(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = with_iaq(&f, 100.0f, ACC_HIGH);
+    draw(&f, &r);
+    fake_clock_advance(&f.clock, 5000u);
+
+    r = with_iaq(&f, 101.0f, ACC_HIGH);  // "Good" to "Fair", one point
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_IAQ);
+    HAC_CHECK(strcmp(update_policy_reason_name(d.reason), "iaq") == 0);
+}
+
+static void an_iaq_gaining_its_number_is_a_status_change(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    r.iaq = measurement_status(VAL_WARMUP, f.clock.now_ms, 2u);
+    r.iaq.accuracy = ACC_UNRELIABLE;
+    draw(&f, &r);
+    fake_clock_advance(&f.clock, 5000u);
+
+    r = with_iaq(&f, 50.0f, ACC_LOW);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+}
+
+// Low to medium takes the question mark off the screen; medium to high, and
+// back, draws the same -- BSEC goes back and forth between them every few
+// minutes on the host, and none of that may cost a partial refresh.
+static void only_an_accuracy_change_the_screen_shows_redraws(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = with_iaq(&f, 60.0f, ACC_LOW);
+    draw(&f, &r);
+    fake_clock_advance(&f.clock, 5000u);
+
+    update_decision_t d;
+    r = with_iaq(&f, 60.0f, ACC_MEDIUM);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+    update_policy_commit(&f.policy, &r, &d);
+    fake_clock_advance(&f.clock, 5000u);
+
+    r = with_iaq(&f, 60.0f, ACC_HIGH);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    r = with_iaq(&f, 60.0f, ACC_MEDIUM);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+
+    // A source that gives no verdict and one that rates itself high draw the
+    // same too.
+    r = with_iaq(&f, 60.0f, ACC_NOT_REPORTED);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
 }
 
 static void the_partial_budget_forces_a_full_refresh(void)
@@ -654,6 +754,10 @@ int main(void)
     HAC_RUN(one_fresh_quantity_stops_the_timer);
     HAC_RUN(with_no_number_on_the_screen_there_is_no_timer);
     HAC_RUN(a_status_change_alone_reaches_the_glass);
+    HAC_RUN(an_iaq_moving_within_its_band_leaves_the_panel_alone);
+    HAC_RUN(an_iaq_crossing_into_another_band_redraws);
+    HAC_RUN(an_iaq_gaining_its_number_is_a_status_change);
+    HAC_RUN(only_an_accuracy_change_the_screen_shows_redraws);
     HAC_RUN(the_partial_budget_forces_a_full_refresh);
     HAC_RUN(past_the_budget_it_refreshes_partially_until_a_full_refresh_is_allowed);
     HAC_RUN(a_budget_spent_exactly_waits_for_the_next_change);

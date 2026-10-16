@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "bme68x_common.h"
 #include "bme68x_limits.h"
 
 // Bosch's float output (bme68x_defs.h's default) is what the conversions
@@ -30,80 +31,12 @@ static uint64_t now_ms(const bme68x_source_t *s)
     return s->cfg.clock->now_ms(s->cfg.clock);
 }
 
-static const char *status_name(hal_status_t status)
-{
-    switch (status) {
-        case HAL_OK:
-            return "ok";
-        case HAL_ERR_TIMEOUT:
-            return "timeout";
-        case HAL_ERR_IO:
-            return "io";
-        case HAL_ERR_NOT_FOUND:
-            return "not_found";
-        case HAL_ERR_INVALID_ARG:
-            return "invalid_arg";
-        case HAL_ERR_NO_MEM:
-            return "no_mem";
-        case HAL_ERR_UNSUPPORTED:
-            return "unsupported";
-        case HAL_ERR_BUSY:
-            return "busy";
-        case HAL_ERR_NOT_READY:
-            return "not_ready";
-        default:
-            return "?";
-    }
-}
-
-const char *bme68x_variant_name(uint8_t variant_id)
-{
-    switch (variant_id) {
-        case BME68X_VARIANT_GAS_LOW:
-            return "BME680";
-        case BME68X_VARIANT_GAS_HIGH:
-            return "BME688";
-        default:
-            return "unknown";
-    }
-}
-
-static void format_id(uint8_t id, char *out)
-{
-    static const char HEX[] = "0123456789abcdef";
-    out[0] = '0';
-    out[1] = 'x';
-    out[2] = HEX[(id >> 4) & 0xFu];
-    out[3] = HEX[id & 0xFu];
-    out[4] = '\0';
-}
-
-// What one of Bosch's int8_t results was, as the port saw it.
-static hal_status_t vendor_status(const bme68x_source_t *s, int8_t rslt)
-{
-    switch (rslt) {
-        case BME68X_OK:
-            return HAL_OK;
-        case BME68X_E_COM_FAIL:
-            return bme68x_hal_status(&s->dev);
-        case BME68X_E_DEV_NOT_FOUND:
-            return HAL_ERR_UNSUPPORTED;  // it answered, with the wrong chip id
-        case BME68X_W_NO_NEW_DATA:
-            return HAL_ERR_NOT_READY;
-        case BME68X_E_NULL_PTR:
-        case BME68X_E_INVALID_LENGTH:
-            return HAL_ERR_INVALID_ARG;
-        default:
-            return HAL_ERR_IO;
-    }
-}
-
 static void log_failure(const bme68x_source_t *s, const char *msg, const char *step,
                         hal_status_t status)
 {
     const log_field_t fields[] = {
         log_str("step", step),
-        log_str("status", status_name(status)),
+        log_str("status", bme68x_status_name(status)),
         log_u64("address", s->cfg.address),
     };
     port_log_write(s->cfg.log, LOG_LEVEL_WARN, LOG_TAG, msg, fields,
@@ -218,50 +151,6 @@ static hal_status_t fail(bme68x_source_t *s, sensor_sample_t *out, hal_status_t 
     return status;
 }
 
-// This unit's calibration, once per source, in the fake model's own field
-// names (platform/host/i2c_models/bme680_model.h), so the lines can become
-// the model's calibration for this board: the model ships a published set,
-// not this sensor's (docs/hardware/board_notes.md, open item "The BME68x's
-// estimates"). Five lines, as a log line carries six fields at most.
-static void log_calibration(const bme68x_source_t *s)
-{
-    const struct bme68x_calib_data *c = &s->dev.calib;
-    const log_field_t t_heat[] = {
-        log_u64("par_t1", c->par_t1),
-        log_i64("par_t2", c->par_t2),
-        log_i64("par_t3", c->par_t3),
-        log_u64("res_heat_range", c->res_heat_range),
-        log_i64("res_heat_val", c->res_heat_val),
-        log_i64("range_switching_error", c->range_sw_err),
-    };
-    const log_field_t p_low[] = {
-        log_u64("par_p1", c->par_p1), log_i64("par_p2", c->par_p2), log_i64("par_p3", c->par_p3),
-        log_i64("par_p4", c->par_p4), log_i64("par_p5", c->par_p5),
-    };
-    const log_field_t p_high[] = {
-        log_i64("par_p6", c->par_p6), log_i64("par_p7", c->par_p7),   log_i64("par_p8", c->par_p8),
-        log_i64("par_p9", c->par_p9), log_u64("par_p10", c->par_p10),
-    };
-    const log_field_t h_low[] = {
-        log_u64("par_h1", c->par_h1), log_u64("par_h2", c->par_h2), log_i64("par_h3", c->par_h3),
-        log_i64("par_h4", c->par_h4), log_i64("par_h5", c->par_h5),
-    };
-    const log_field_t h_gas[] = {
-        log_u64("par_h6", c->par_h6),  log_i64("par_h7", c->par_h7),  log_i64("par_g1", c->par_gh1),
-        log_i64("par_g2", c->par_gh2), log_i64("par_g3", c->par_gh3),
-    };
-    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (1/5)", t_heat,
-                   sizeof t_heat / sizeof t_heat[0]);
-    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (2/5)", p_low,
-                   sizeof p_low / sizeof p_low[0]);
-    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (3/5)", p_high,
-                   sizeof p_high / sizeof p_high[0]);
-    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (4/5)", h_low,
-                   sizeof h_low / sizeof h_low[0]);
-    port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "calibration (5/5)", h_gas,
-                   sizeof h_gas / sizeof h_gas[0]);
-}
-
 static hal_status_t src_init(sensor_source_t *self)
 {
     bme68x_source_t *s = self_of(self);
@@ -276,59 +165,41 @@ static hal_status_t src_init(sensor_source_t *self)
     s->gas_failing = false;
     s->chip_id = 0u;
     s->variant_id = 0u;
-    format_id(0u, s->chip_id_text);
-    format_id(0u, s->variant_id_text);
+    bme68x_format_id(0u, s->chip_id_text);
+    bme68x_format_id(0u, s->variant_id_text);
 
-    // The supply may have risen only just now (bme68x_limits.h).
-    s->cfg.clock->delay_ms(s->cfg.clock, HAC_BME68X_POWER_UP_MS);
-
-    memset(&s->dev, 0, sizeof s->dev);
+    // Start-up time, soft reset, ids, calibration, asleep (bme68x_common.h).
+    // The reset puts a sensor a software reset left configured, or
+    // measuring, back to its power-on state (bme68x_source.h, "Resets").
     s->hal.bus = s->cfg.bus;
     s->hal.clock = s->cfg.clock;
     s->hal.address = s->cfg.address;
-    bme68x_hal_bind(&s->dev, &s->hal);
-    s->dev.amb_temp = HAC_BME68X_HEATER_AMBIENT_C;
-
-    // Soft reset, chip id, variant id, calibration. The reset puts a sensor
-    // a software reset left configured, or measuring, back to its power-on
-    // state (bme68x_source.h, "Resets").
-    hal_status_t status = vendor_status(s, bme68x_init(&s->dev));
+    const char *step = "init";
+    hal_status_t status = bme68x_bring_up(&s->dev, &s->hal, &step);
     s->chip_id = s->dev.chip_id;
-    format_id(s->chip_id, s->chip_id_text);
+    bme68x_format_id(s->chip_id, s->chip_id_text);
+    if (status == HAL_ERR_UNSUPPORTED) {
+        const log_field_t fields[] = {
+            log_str("chip_id", s->chip_id_text),
+            log_u64("address", s->cfg.address),
+        };
+        port_log_write(s->cfg.log, LOG_LEVEL_WARN, LOG_TAG, "not a BME68x", fields,
+                       sizeof fields / sizeof fields[0]);
+        return status;
+    }
     if (status != HAL_OK) {
-        if (status == HAL_ERR_UNSUPPORTED) {
-            const log_field_t fields[] = {
-                log_str("chip_id", s->chip_id_text),
-                log_u64("address", s->cfg.address),
-            };
-            port_log_write(s->cfg.log, LOG_LEVEL_WARN, LOG_TAG, "not a BME68x", fields,
-                           sizeof fields / sizeof fields[0]);
-        } else {
-            log_failure(s, "sensor not usable", "init", status);
-        }
+        log_failure(s, "sensor not usable", step, status);
         return status;
     }
     s->variant_id = (uint8_t)s->dev.variant_id;
-    format_id(s->variant_id, s->variant_id_text);
-
-    // Asleep, as a reset leaves it, before anything that goes through
-    // Bosch's unbounded wait for sleep mode (bme68x_source.h).
-    uint8_t mode = BME68X_SLEEP_MODE;
-    status = vendor_status(s, bme68x_get_op_mode(&mode, &s->dev));
-    if (status == HAL_OK && mode != BME68X_SLEEP_MODE) {
-        status = HAL_ERR_IO;  // the reset did not take
-    }
-    if (status != HAL_OK) {
-        log_failure(s, "sensor not usable", "reset", status);
-        return status;
-    }
+    bme68x_format_id(s->variant_id, s->variant_id_text);
 
     s->conf.os_temp = HAC_BME68X_OS_TEMPERATURE;
     s->conf.os_pres = HAC_BME68X_OS_PRESSURE;
     s->conf.os_hum = HAC_BME68X_OS_HUMIDITY;
     s->conf.filter = HAC_BME68X_FILTER;
     s->conf.odr = BME68X_ODR_NONE;
-    status = vendor_status(s, bme68x_set_conf(&s->conf, &s->dev));
+    status = bme68x_vendor_status(&s->dev, bme68x_set_conf(&s->conf, &s->dev));
     if (status != HAL_OK) {
         log_failure(s, "sensor not usable", "set_conf", status);
         return status;
@@ -338,7 +209,8 @@ static hal_status_t src_init(sensor_source_t *self)
     s->heater.enable = BME68X_ENABLE;
     s->heater.heatr_temp = HAC_BME68X_HEATER_TEMPERATURE_C;
     s->heater.heatr_dur = HAC_BME68X_HEATER_DURATION_MS;
-    status = vendor_status(s, bme68x_set_heatr_conf(BME68X_FORCED_MODE, &s->heater, &s->dev));
+    status = bme68x_vendor_status(&s->dev,
+                                  bme68x_set_heatr_conf(BME68X_FORCED_MODE, &s->heater, &s->dev));
     if (status != HAL_OK) {
         log_failure(s, "sensor not usable", "set_heatr_conf", status);
         return status;
@@ -360,7 +232,7 @@ static hal_status_t src_init(sensor_source_t *self)
     port_log_write(s->cfg.log, LOG_LEVEL_INFO, LOG_TAG, "sensor ready", fields,
                    sizeof fields / sizeof fields[0]);
     if (!s->calibration_logged) {
-        log_calibration(s);
+        bme68x_log_calibration(s->cfg.log, LOG_TAG, &s->dev.calib);
         s->calibration_logged = true;
     }
     s->initialized = true;
@@ -379,16 +251,13 @@ static hal_status_t src_start(sensor_source_t *self)
     }
 
     // Asleep first: Bosch's bme68x_set_op_mode() would otherwise wait for it
-    // with no bound (bme68x_source.h).
-    uint8_t mode = BME68X_SLEEP_MODE;
-    hal_status_t status = vendor_status(s, bme68x_get_op_mode(&mode, &s->dev));
+    // with no bound (bme68x_common.h). HAL_ERR_BUSY: still measuring, past
+    // Bosch's estimate.
+    hal_status_t status = bme68x_check_asleep(&s->dev);
     if (status != HAL_OK) {
         return status;
     }
-    if (mode != BME68X_SLEEP_MODE) {
-        return HAL_ERR_BUSY;  // still measuring, past Bosch's estimate
-    }
-    status = vendor_status(s, bme68x_set_op_mode(BME68X_FORCED_MODE, &s->dev));
+    status = bme68x_vendor_status(&s->dev, bme68x_set_op_mode(BME68X_FORCED_MODE, &s->dev));
     if (status != HAL_OK) {
         return status;
     }
@@ -433,7 +302,7 @@ static hal_status_t src_read(sensor_source_t *self, sensor_sample_t *out)
     memset(&data, 0, sizeof data);
     uint8_t fields = 0u;
     hal_status_t status =
-        vendor_status(s, bme68x_get_data(BME68X_FORCED_MODE, &data, &fields, &s->dev));
+        bme68x_vendor_status(&s->dev, bme68x_get_data(BME68X_FORCED_MODE, &data, &fields, &s->dev));
     if (status == HAL_OK && fields == 0u) {
         status = HAL_ERR_NOT_READY;
     }
@@ -487,8 +356,8 @@ hal_status_t bme68x_source_setup(bme68x_source_t *s, const bme68x_source_config_
     }
     memset(s, 0, sizeof *s);
     s->cfg = *cfg;
-    format_id(0u, s->chip_id_text);
-    format_id(0u, s->variant_id_text);
+    bme68x_format_id(0u, s->chip_id_text);
+    bme68x_format_id(0u, s->variant_id_text);
 
     s->port.name = LOG_TAG;
     s->port.id = cfg->id;

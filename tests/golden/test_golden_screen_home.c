@@ -3,15 +3,19 @@
 // The home screen at the panel's real 960x540, byte-compared against
 // tests/golden/screen_home_*.bin.
 //
-// Four readings, chosen because they are the four the requirements care
-// about and the four a rendering change is most likely to break:
+// Five readings, chosen because they are the ones the requirements care
+// about and the ones a rendering change is most likely to break:
 //
-//   normal   every quantity fresh -- the picture the device shows most of the time
+//   normal   every quantity fresh -- the picture the device shows most of the
+//            time, IAQ 84 with its band, "Good", under it
 //   error    one sensor down, requirements 15.1: the fault must be on the glass
 //   warmup   a cold start, requirements 13.1: no garbage numbers before the
 //            SCD41 and the BME68x have settled
 //   no_bsec  no BSEC linked, requirements 17.2: raw gas resistance in the IAQ
 //            cell, under its own name
+//   iaq_not_calibrated  BSEC's IAQ at accuracy 1, as every boot has it for
+//            hours: the number, its band, the question mark, and the footer
+//            saying so (docs/adr/0021-measurement-accuracy-and-iaq-levels.md)
 //
 // Run with UPDATE_GOLDEN=1 to adopt an intentional rendering change:
 //   UPDATE_GOLDEN=1 ./build/host-debug/tests/golden/test_golden_screen_home
@@ -99,6 +103,18 @@ static void without_bsec(void)
     render_and_check(&r, "screen_home_no_bsec");
 }
 
+static void iaq_not_calibrated(void)
+{
+    air_reading_t r = base_reading();
+
+    // BSEC running, its scale not yet trimmed to the room: a reading in the
+    // "lightly polluted" band, on a scale its source rates ACC_LOW.
+    r.iaq = measurement_ok(128.0f, SAMPLE_TS_MS, 2u);
+    r.iaq.accuracy = ACC_LOW;
+    r.gas_resistance_ohm = measurement_ok(153000.0f, SAMPLE_TS_MS, 2u);
+    render_and_check(&r, "screen_home_iaq_not_calibrated");
+}
+
 static void everything_warming_up(void)
 {
     air_reading_t r;
@@ -121,5 +137,6 @@ int main(void)
     HAC_RUN(one_sensor_in_error);
     HAC_RUN(everything_warming_up);
     HAC_RUN(without_bsec);
+    HAC_RUN(iaq_not_calibrated);
     return hac_test_summary();
 }

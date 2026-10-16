@@ -3,7 +3,9 @@
 // The home screen sets every text as large as the widest thing it can say
 // allows (screen_home.h). This holds it to that: it renders the widest and
 // deepest strings each field can show -- "40000" ppm, "-40.0" C, "1100" hPa,
-// "warm", "ERR", "n/a", the error box in the footer -- on the 960x540 panel,
+// "warm", "ERR", "n/a", an IAQ's widest bands beside the question mark, the
+// error box and the longest "... not calibrated" in the footer -- on the
+// 960x540 panel,
 // and checks by pixels that nothing reaches the margins, the band, a grid
 // separator or a rule, and that the left and right halves of the status bar
 // and the footer never meet. A larger font, a longer label or a moved
@@ -15,6 +17,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "domain/measurement.h"
 #include "hac_test.h"
@@ -248,6 +251,127 @@ static void the_widest_numbers_gone_stale_fit(void)
     check_layout("widest numbers, stale");
 }
 
+// IAQ in its widest bands -- "Moderate", then "Excellent" -- beside the
+// question mark of a scale not yet calibrated, and the widest number, "500",
+// in "Poor" (docs/adr/0021-measurement-accuracy-and-iaq-levels.md).
+static void the_widest_iaq_bands_fit(void)
+{
+    const float values[] = {200.0f, 50.0f, 500.0f};
+    for (size_t i = 0u; i < sizeof(values) / sizeof(values[0]); ++i) {
+        air_reading_t r = widest_numbers();
+        r.iaq = measurement_ok(values[i], RENDER_TS_MS, SOURCE_ID);
+        r.iaq.accuracy = ACC_LOW;
+        render(&r);
+        check_layout("widest IAQ bands, not calibrated");
+    }
+}
+
+// The footer's longest word on accuracy: one reading not calibrated, named
+// by the longest label, and every grid reading at once.
+static void the_longest_calibration_notes_fit(void)
+{
+    air_reading_t r = widest_numbers();
+    r.temperature_c.accuracy = ACC_LOW;
+    render(&r);
+    check_layout("Temperature not calibrated");
+
+    r.co2_ppm.accuracy = ACC_LOW;
+    r.humidity_rh.accuracy = ACC_LOW;
+    r.pressure_hpa.accuracy = ACC_LOW;
+    r.iaq = measurement_ok(200.0f, RENDER_TS_MS, SOURCE_ID);
+    r.iaq.accuracy = ACC_LOW;
+    render(&r);
+    check_layout("5 readings not calibrated");
+}
+
+// The headline's unit and mark never share a pixel with any reading, and
+// never move. When "ppm" followed the reading, a four-digit reading was drawn
+// over the place a three-digit one had left the unit, and the unit was drawn
+// somewhere new: a partial refresh drove the letters' pixels each time, and
+// the panel kept them (screen_home.c, draw_headline()).
+//
+// The reading's own ink is what differs between the screen drawn with it and
+// without it; everything else in the headline -- label, unit, mark -- is what
+// the screen draws without it.
+
+#define HEAD_TOP (SCREEN_HOME_BAR_RULE_Y + SCREEN_HOME_RULE_PX)
+#define HEAD_LEFT SCREEN_HOME_MARGIN
+#define HEAD_RIGHT (PANEL_W - SCREEN_HOME_MARGIN - SCREEN_HOME_BANNER_W)
+
+static uint8_t g_full[PANEL_H][PANEL_W];
+static bool g_reading_ink[PANEL_H][PANEL_W];  // any reading's, so far
+static uint8_t g_rest[PANEL_H][PANEL_W];      // the first OK reading's rest
+
+static void render_headline_parts(const air_reading_t *r, bool record_rest, bool *rest_same)
+{
+    view_model_t vm;
+    view_model_build(&vm, r, RENDER_TS_MS);
+    screen_home_render(&g_fb, &vm);
+    for (int32_t y = HEAD_TOP; y < SCREEN_HOME_HEAD_RULE_Y; ++y) {
+        for (int32_t x = HEAD_LEFT; x < HEAD_RIGHT; ++x) {
+            g_full[y][x] = framebuffer_get_pixel(&g_fb, x, y);
+        }
+    }
+    vm.fields[VM_FIELD_CO2].text[0] = '\0';
+    screen_home_render(&g_fb, &vm);
+    for (int32_t y = HEAD_TOP; y < SCREEN_HOME_HEAD_RULE_Y; ++y) {
+        for (int32_t x = HEAD_LEFT; x < HEAD_RIGHT; ++x) {
+            const uint8_t rest = framebuffer_get_pixel(&g_fb, x, y);
+            if (g_full[y][x] != rest) {
+                g_reading_ink[y][x] = true;
+            }
+            if (record_rest) {
+                g_rest[y][x] = rest;
+            } else if (rest_same != NULL && rest != g_rest[y][x]) {
+                *rest_same = false;
+            }
+        }
+    }
+}
+
+static void the_co2_unit_and_mark_stay_off_every_reading(void)
+{
+    memset(g_reading_ink, 0, sizeof g_reading_ink);
+
+    // Readings with no mark: the rest of the headline is the same for all.
+    const float readings[] = {938.0f, 400.0f, 1002.0f, 9999.0f, 40000.0f};
+    for (size_t i = 0u; i < sizeof(readings) / sizeof(readings[0]); ++i) {
+        air_reading_t r = widest_numbers();
+        r.co2_ppm = measurement_ok(readings[i], RENDER_TS_MS, SOURCE_ID);
+        bool same = true;
+        render_headline_parts(&r, i == 0u, &same);
+        HAC_CHECK(same);  // "CO2 ppm" where it was
+    }
+    // And the placeholders, whose marks join the rest.
+    const value_status_t statuses[] = {VAL_ERROR, VAL_WARMUP, VAL_UNAVAILABLE};
+    for (size_t i = 0u; i < sizeof(statuses) / sizeof(statuses[0]); ++i) {
+        air_reading_t r = widest_numbers();
+        r.co2_ppm = measurement_status(statuses[i], RENDER_TS_MS, SOURCE_ID);
+        render_headline_parts(&r, false, NULL);
+    }
+
+    // No ink but the reading's lies where any reading can be: checked for the
+    // first reading's rest and for each placeholder's, rendered again.
+    bool apart = true;
+    for (size_t k = 0u; k <= sizeof(statuses) / sizeof(statuses[0]); ++k) {
+        air_reading_t r = widest_numbers();
+        r.co2_ppm = (k == 0u) ? measurement_ok(readings[0], RENDER_TS_MS, SOURCE_ID)
+                              : measurement_status(statuses[k - 1u], RENDER_TS_MS, SOURCE_ID);
+        view_model_t vm;
+        view_model_build(&vm, &r, RENDER_TS_MS);
+        vm.fields[VM_FIELD_CO2].text[0] = '\0';
+        screen_home_render(&g_fb, &vm);
+        for (int32_t y = HEAD_TOP; y < SCREEN_HOME_HEAD_RULE_Y; ++y) {
+            for (int32_t x = HEAD_LEFT; x < HEAD_RIGHT; ++x) {
+                if (g_reading_ink[y][x] && inked(x, y)) {
+                    apart = false;
+                }
+            }
+        }
+    }
+    HAC_CHECK(apart);
+}
+
 int main(void)
 {
     const size_t size = framebuffer_required_size(PANEL_W, PANEL_H, PIXFMT_GRAY4);
@@ -262,6 +386,9 @@ int main(void)
     HAC_RUN(every_field_failed_fits);
     HAC_RUN(nothing_provided_fits);
     HAC_RUN(the_widest_numbers_gone_stale_fit);
+    HAC_RUN(the_widest_iaq_bands_fit);
+    HAC_RUN(the_longest_calibration_notes_fit);
+    HAC_RUN(the_co2_unit_and_mark_stay_off_every_reading);
 
     free(g_pixels);
     return hac_test_summary();

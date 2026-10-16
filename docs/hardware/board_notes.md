@@ -797,6 +797,14 @@ layout settles, not before.
       pull-ups on, a probe just timed out against lines held low -- or the
       extra current that put into the unpowered sensors' protection diodes.
       The battery's margin hid it, which is why it looked like the supply.
+      **A brownout again, 2026-10-16** (ELF `a3fca4872...`, the BSEC
+      firmware): the boot of 16:48 reported `previous reset reason=BROWNOUT
+      rom_code=3`, once; that boot then ran 21 minutes. **USB power alone --
+      no battery** (the owner). What the board was doing when the supply
+      sagged -- starting, raising `PWR_EN`, a full refresh -- the log does
+      not show: it begins at the boot after. If it recurs, keep the terminal logging
+      across the reset: ESP-IDF prints "Brownout detector was triggered"
+      before it restarts.
       **What follows, until the mechanism is known:** nothing may drive the
       bus while `PWR_EN` is low and the sensors are on the switched rail.
       That binds phase 5 above all: clearing `PWR_EN` for deep sleep, or
@@ -916,6 +924,144 @@ layout settles, not before.
       300 C was not reached in 100 ms from a cold plate. Whether it is once
       the plate has cycled for a while, the firmware's minute-by-minute
       `bme68x: sample ... gas_ohm=` shows: a number, or `error`.
+- [ ] **BSEC on the board (phase 3d).** Built 2026-10-16 with BSEC 2.6.1.0
+      (`docs/adr/0020-bsec-iaq.md`), verified on the host only. The firmware
+      with `sdkconfig.bsec` logs what each question needs; the first run
+      answers them:
+      - *It runs at all*: the banner says `BSEC2 IAQ`, and `bme68x_bsec:
+        sensor ready ... bsec=2.6.1.0 config=bme680_iaq_33v_3s_4d
+        state=fresh`; then `heater profile` lines -- on the host 380 C,
+        150 C, 200 C for 1000 ms each, then 320 C for 197 ms -- and `iaq
+        accuracy from=- to=unreliable`, then `to=low` within about a minute
+        (17 measurements on the host) and `gas sensor status ...
+        run_in_done=true`. A board that stays at `unreliable` is the timing
+        question below, or the sensor.
+      - *How late the calls come*: every `BSEC called late late_ms=...
+        late_calls=...` line. Expected: one per full refresh at least, and
+        some partial refreshes'. BSEC tolerates 187 ms. The ADR's
+        "Timing" section says what follows if IAQ never reaches `medium` or
+        `high`, or flickers with the refreshes: the flush off the event
+        loop's task.
+      - *Accuracy*: `medium` and `high` need BSEC to have seen the air both
+        clean and polluted -- an open window, then breath or a marker pen
+        near the sensor. Note how long each took, and that every reboot
+        starts again from `unreliable` (the item below).
+      - *Temperature*: BSEC's heat-compensated temperature, in the
+        `bme68x_bsec: sample` line once a minute, beside the SCD41's and a
+        reference thermometer. The difference gives `HAC_BSEC_DEVICE_HEAT_C`
+        (`drivers/bme68x/bme68x_bsec_limits.h`, an ESTIMATE of 0) its first
+        value, as phase 3c's temperature item does for the forced-mode
+        driver's offset.
+      - *The module's supply*: the configuration assumes 3.3 V at the chip.
+        A meter on the module's VCC pad and, if its regulator's output is
+        reachable, there: a reading near 1.8 V would call for the `18v`
+        configuration (`cmake/bsec.cmake`).
+      - *Cost*: the `memory budget` line (BSEC adds 1,476 bytes of instance
+        and state and a 4,096-byte work buffer, all static) and the event
+        loop's `stack low-water mark`, now with BSEC's calls on that stack.
+      - *The test app*: `idf.py -T hac_platform -B build-bsec -D
+        SDKCONFIG=build-bsec/sdkconfig -D HAC_BSEC=ON build` adds `contract
+        port_sensor bme68x_bsec_source+BME68x` lines to the run.
+      **First run 2026-10-16** (ELF `6d984c914...`, 21 minutes from a USB
+      reset, the owner's log of 16:11, no reference thermometer, nothing done
+      to the air):
+      - *It runs*: banner and `sensor ready ... bsec=2.6.1.0
+        config=bme680_iaq_33v_3s_4d state=fresh` as expected; the heater
+        profiles at the same calls as on the host -- 380 C from the first,
+        150 C at 13.9 s, 200 C at 16.9 s, 320 C for 197 ms from 22.9 s.
+      - *Run-in*: `run_in_done=true` and accuracy `low` together at the 66th
+        measurement (197 s), against the 17th on the host's model: the real
+        element took four times as long. Accuracy stayed `low` to the end of
+        the log; `medium` and `high` were not tried for (no polluted air).
+      - *Late calls*: two in 21 minutes. 459 ms, the boot's first full
+        refresh (3.4 s); 490 ms, a 588 ms partial refresh that started just
+        before a call. No full refresh came after boot -- 14 partial ones,
+        under the budget of 20 -- so the steady state's full refreshes are
+        still to be seen.
+      - *IAQ at accuracy `low`*: 48-51 for five minutes after the run-in,
+        then 55-81 for the next twelve, while the gas resistance went from
+        153 kOhm to a 164.5 kOhm peak (8 min) and back to 158-162, humidity
+        from 51 to 54 %, and CO2 fell from 790 to 734 ppm. An index scaled
+        to the cleanest air BSEC has seen since boot, not an absolute one.
+      - *Gas resistance* with BSEC's 320 C / 197 ms: 153-165 kOhm, against
+        46-79 kOhm on the forced-mode driver's 300 C / 100 ms in earlier runs
+        -- a different heater profile, so not comparable.
+      - *Temperature*: once the SCD41 had warmed up (9 min on), BSEC's
+        heat-compensated value read 0.2-0.35 C above the SCD41's, where the
+        forced-mode driver with its 0.3 C offset read about 0.45 C below it.
+        Which is nearer the air needs the reference. Humidity: BSEC
+        51.4-54.5 %, SCD41 52.6-54.5 %.
+      - *Cost*: `free_internal_after_epd_init=217499`, 5,616 bytes under phase
+        3c's 223,115 -- the 5,572 bytes of instance, state and work buffer,
+        and a little code's data. The event loop's stack low-water mark did not
+        move from 3,476 bytes free: BSEC's calls are shallower than the
+        deepest path already there.
+      Still open from this list: `medium`/`high` (an open window, then
+      breath or a marker pen), a steady-state full refresh's lateness, the
+      reference thermometer, the module's supply, the test app.
+      **Since ADR 0021** (ELF `a3fca4872...`, same day, not yet flashed) the
+      screen shows it too: IAQ's band under the number, a question mark
+      beside it and "IAQ not calibrated" in the footer while the accuracy is
+      `low`, both gone at `medium`. That is the first thing to see on the
+      panel.
+      **Second run 2026-10-16** (ELF `a3fca4872...`, 21 minutes, the owner's
+      logs of 16:48 and 17:09 -- one boot, 38 s lost between the files; the
+      owner breathed on the sensors at about 4 and 9 minutes and aired the
+      room):
+      - *Accuracy reaches `high` despite late calls*: `low` at 120 s (the
+        40th measurement), `medium` at 796 s, `high` at 955 s, then once
+        back to `medium` and up again. Two breaths of polluted air and the
+        clean air after them were enough -- not the half hour of each that
+        Bosch's text suggests.
+      - *Late calls*: 17 in 21 minutes, 310-1,630 ms. Every full refresh
+        made one (6, the boot's included, 0.47-1.63 s); the other 11 were
+        partial refreshes that began within about 0.6 s of a call. This run
+        redrew 112 times -- 60 for CO2, which the breaths moved by hundreds
+        of ppm a cycle -- far more than a quiet room. That calibration got
+        to `high` regardless answers ADR 0020's "Timing" question for this
+        rate of lateness: nothing to change for BSEC's sake yet.
+      - *The screen (ADR 0021) as designed*: a status redraw when the
+        number came (unreliable to low, 120 s) and when the question mark
+        went (low to medium, 798 s); none for the medium/high back and
+        forth. The IAQ followed the breaths: 200 at the first, 206 at the
+        second, back to 50-60 within three or four minutes.
+      - *IAQ's band redraws too often*: 20 of the 112 redraws were for a
+        change of band, several 6 s apart (419, 425, 431, 443 s; 1070,
+        1082, 1094 s) while the index sat at 50-60. BSEC's resting value in
+        clean air is exactly 50.000 -- seen in the minute samples and at
+        every accuracy change -- and 50 is the boundary between "Excellent"
+        and "Good", so the index crosses it back and forth. (The log gives
+        no IAQ at each redraw; the cadence and the minute samples make
+        flapping the likely reading.) BSEC's other anchor, 200, is also a
+        boundary. Not changed; a candidate is a hysteresis -- a band change
+        redraws only once the index has also moved some points since the
+        last frame. The owner's decision, 2026-10-16: not yet -- test longer
+        first, with this as the thing to watch (ADR 0021).
+      - *Temperature*: in the quiet last eight minutes BSEC's read 0.3-0.65 C
+        above the SCD41's (0.2-0.35 C in the first run), and the breaths
+        warmed the BME68x by up to 1.5 C where the SCD41 moved 0.3 C -- the
+        BME68x's module is the more exposed. Humidity: BSEC 1.5-3 % below
+        the SCD41. Still no reference.
+      - *Gas*: 119-127 kOhm in clean air, against 153-165 kOhm in the first
+        run on the same heater profile, at 2-3 % higher humidity.
+      - *Stack*: the low-water mark stayed at 3,476 bytes free.
+      - *A brownout before this boot*: `previous reset reason=BROWNOUT
+        rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
+        the image was flashed. The brownout itself is not in the logs. See the
+        item "A reboot loop when the switched 3V3 comes up".
+- [ ] **BSEC's state restarts at every boot.** BSEC learns the room: its
+      IAQ accuracy rises from 0 as its background calibration sees the air
+      clean and polluted, and its state holds that. Since phase 3d the state
+      survives a re-init of a failing sensor -- the source keeps it in RAM --
+      but nothing keeps it across a reboot or a deep sleep: IAQ accuracy
+      starts from `unreliable` at every boot, and the scale from the
+      library's defaults. Keeping it is `persisted_state_t`'s (phase 5,
+      `docs/architecture.md` 4.2, 180 bytes for BSEC 2.6.1.0) and NVS's
+      (phase 6), not phase 3d's. Bosch's integration example saves it every
+      few hundred samples; the cost to weigh then is flash wear against
+      calibration lost. The configuration's four-day history
+      (`bme680_iaq_33v_3s_4d`) was chosen with this in mind; revisit it
+      when the state persists.
 - [x] **Which addresses the sensors answer at.** **Resolved 2026-10-16**
       by the boot scan: the SCD4x at `0x62`, the BME68x at `0x77` (SDO high
       on this module), nothing at `0x76`, nothing unexpected ("Sensors on
@@ -1109,6 +1255,13 @@ layout settles, not before.
       off for some hours, then flash the `sdkconfig.calibration_residue`
       image and judge its first, "baseline" ramp -- one full refresh after
       the idle period -- against the phase-2c photographs.
+      **The unit no longer moves, 2026-10-16**
+      (`docs/adr/0021-measurement-accuracy-and-iaq-levels.md`): "ppm" and the
+      CO2 mark sit on the label's line, "CO2 ppm", where no reading puts ink,
+      so a partial refresh of the reading never drives their pixels. The
+      residue this item describes came from the unit moving with the
+      reading's width. Whether residue still gathers elsewhere in the
+      headline -- the digits drawn over each other -- is the board's to show.
       **Without partial refreshes too, 2026-10-13**
       (`docs/adr/0012-image-pipeline.md`, "Seen on the panel", "By eye"):
       in the slideshow test app, which drives nothing but `REFRESH_FULL`

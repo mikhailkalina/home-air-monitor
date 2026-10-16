@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# In the drivers' component rather than main/Kconfig.projbuild, so that the
+# firmware and the on-target test app (apps/firmware_esp32/test_app/), which
+# link this component but not main/, see the same symbol.
+
+menu "Home Air Monitor: sensor drivers"
+
+    config HAC_BSEC
+        bool "Compute IAQ with Bosch's BSEC2 (needs its library in third_party/bsec/)"
+        default n
+        help
+            Phase 3d (docs/adr/0020-bsec-iaq.md). Measures the BME68x through
+            drivers/bme68x/bme68x_bsec_source.c: Bosch's BSEC2 library decides
+            when the sensor measures and with which heater profile, compensates
+            temperature and humidity for the sensor's own heating, and computes
+            an index of air quality, which the home screen shows in its IAQ
+            cell. BSEC's CO2 equivalent is never computed.
+
+            Needs Bosch's BSEC2 2.6.1.0 archive, downloaded after accepting
+            Bosch's licence agreement and unpacked as it comes into
+            third_party/bsec/, which is gitignored (THIRD_PARTY_NOTICES.md).
+            It is never committed, so this is off by default: CI and a fresh
+            clone build without it, and the BME68x is then measured by
+            drivers/bme68x/bme68x_source.c and the IAQ cell shows raw gas
+            resistance (docs/requirements.md 17.2).
+
+            Build it in a directory and sdkconfig of its own, from
+            sdkconfig.bsec, so the setting never depends on an sdkconfig made
+            before the symbol existed:
+
+              idf.py -B build-bsec -D SDKCONFIG=build-bsec/sdkconfig \
+                  -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.bsec" build
+
+            An image built with this carries Bosch's proprietary library: do
+            not attach it to a release (THIRD_PARTY_NOTICES.md).
+
+endmenu

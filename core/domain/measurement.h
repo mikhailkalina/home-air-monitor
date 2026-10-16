@@ -9,7 +9,11 @@
 //     SCD41 is distinguishable from a genuine 0 ppm, and a stale value is
 //     distinguishable from a fresh one;
 //   * ageing is derived, not observed. Nothing here reads the system clock;
-//     the caller passes now_ms, which it obtained from port_clock.
+//     the caller passes now_ms, which it obtained from port_clock;
+//   * whether there is a usable number (value_status_t) and how far its
+//     source trusts it (value_accuracy_t) are two questions, answered
+//     separately: a number can be fresh and not yet calibrated, or stale and
+//     fully calibrated.
 
 #ifndef HAC_CORE_DOMAIN_MEASUREMENT_H
 #define HAC_CORE_DOMAIN_MEASUREMENT_H
@@ -31,11 +35,27 @@ typedef enum {
     VAL_ERROR,            // read failure, or a physically implausible value
 } value_status_t;
 
+// How far the source trusts its own number. Most sources give no verdict
+// (ACC_NOT_REPORTED, the zero value, so a measurement built without one says
+// nothing); Bosch's BSEC rates its IAQ (docs/adr/0020-bsec-iaq.md). The scale
+// is the core's own, four steps, and a source maps its verdict onto it; the
+// core knows no sensor's numbering. It travels with the value -- through the
+// sensor manager's merge, which still ranks by status alone, and through
+// ageing, which leaves it alone.
+typedef enum {
+    ACC_NOT_REPORTED = 0,  // the source gives no verdict
+    ACC_UNRELIABLE,        // the number is a placeholder; goes with VAL_WARMUP
+    ACC_LOW,               // a reading, on a scale not yet calibrated
+    ACC_MEDIUM,            // calibration under way
+    ACC_HIGH,              // calibrated
+} value_accuracy_t;
+
 typedef struct {
     float value;
     value_status_t status;
     uint64_t ts_ms;     // monotonic acquisition time, from port_clock
     uint8_t source_id;  // which sensor_source produced it; 0 = none
+    value_accuracy_t accuracy;
 } measurement_f32_t;
 
 typedef struct {
@@ -84,6 +104,15 @@ measurement_f32_t measurement_status(value_status_t status, uint64_t ts_ms, uint
 // True when the measurement carries a number that may be shown or published,
 // whether or not it is still fresh (VAL_OK or VAL_STALE).
 bool measurement_has_value(const measurement_f32_t *m);
+
+// True when the source rates its own number below calibrated-enough to
+// trust its scale: ACC_UNRELIABLE or ACC_LOW. False for ACC_NOT_REPORTED --
+// no verdict is not a bad one -- and for ACC_MEDIUM and ACC_HIGH, which the
+// screen does not tell apart (docs/adr/0021-measurement-accuracy-and-iaq-levels.md).
+bool measurement_low_accuracy(const measurement_f32_t *m);
+
+// "-", "unreliable", "low", "medium", "high"; never NULL.
+const char *measurement_accuracy_name(value_accuracy_t accuracy);
 
 // Time elapsed since acquisition, or MEASUREMENT_AGE_UNKNOWN.
 uint64_t measurement_age_ms(const measurement_f32_t *m, uint64_t now_ms);

@@ -70,6 +70,10 @@ ctest --test-dir build/host-debug --output-on-failure
 # Build with sanitizers
 cmake --preset host-asan && cmake --build build/host-asan && ctest --test-dir build/host-asan
 
+# With Bosch's BSEC2 (ADR 0020): needs the archive in the gitignored third_party/bsec/
+cmake --preset host-bsec && cmake --build build/host-bsec && ctest --test-dir build/host-bsec
+HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC did
+
 # Run the simulator (--sensors fake-i2c: the real drivers over device models)
 ./build/host-debug/apps/simulator/simulator \
     --scenario-co2 scenarios/co2_spike_meeting.csv \
@@ -83,6 +87,13 @@ cmake --preset host-asan && cmake --build build/host-asan && ctest --test-dir bu
 # Firmware
 . $HOME/esp/esp-idf/export.sh
 cd apps/firmware_esp32 && idf.py build
+
+# Firmware with BSEC2 IAQ, in its own build dir and sdkconfig (ADR 0020); then grep
+# CONFIG_HAC_BSEC out of build-bsec/sdkconfig and bme680_iaq_33v_3s_4d out of the .bin
+cd apps/firmware_esp32 && idf.py -B build-bsec -D SDKCONFIG=build-bsec/sdkconfig \
+    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.bsec" build
+cd apps/firmware_esp32/test_app && idf.py -T hac_platform -B build-bsec \
+    -D SDKCONFIG=build-bsec/sdkconfig -D HAC_BSEC=ON build
 
 # After adding or changing a Kconfig symbol — `idf.py build` alone is not enough
 cd apps/firmware_esp32 && idf.py reconfigure && idf.py build
@@ -123,8 +134,11 @@ build directory configured before it. Observed in phase 2c with
 - `sdkconfig` — it holds Wi-Fi SSID, password and broker address after `menuconfig`.
   Only `sdkconfig.defaults`, without credentials, belongs in the repository.
 - Any credentials, tokens, certificates or keys. Provide `credentials.h.example` instead.
-- The BSEC/BSEC2 binary (`libalgobsec.a`). It ships under a proprietary Bosch agreement and
-  must be downloaded separately into the gitignored `third_party/bsec/`.
+- Anything from Bosch's BSEC/BSEC2 archive: the binary (`libalgobsec.a`) ships under a
+  proprietary Bosch agreement, and the headers, configurations (`bsec_iaq.c`/`.config`) and
+  examples are marked "Confidential" with no redistribution of their source. Not a header,
+  not a configuration array, not an excerpt. The archive lives in the gitignored
+  `third_party/bsec/` (THIRD_PARTY_NOTICES.md, ADR 0020).
 - Build output, `managed_components/`, `dependencies.lock`, simulator frame dumps.
 
 This repository is public, so anything pushed stays in the git history permanently.
@@ -136,8 +150,8 @@ The project is Apache-2.0. Two specific hazards, both already investigated:
 
 - `Xinyuan-LilyGO/LilyGo-EPD47` is **GPL-3.0**, not LGPL. It is a source of hardware facts
   (pins, orientation, panel geometry) and must never become a build dependency: linking it
-  would put the whole image under GPL-3 and collide with the proprietary BSEC blob planned
-  for phase 3. See ADR 0007.
+  would put the whole image under GPL-3 and collide with the proprietary BSEC blob linked
+  since phase 3d in a build with `CONFIG_HAC_BSEC`. See ADR 0007.
 - EPDiy is LGPL-3.0 and is an accepted dependency. LGPL constrains relinkability of the
   LGPL part only, which is why BSEC can coexist with it. The exit, if a closed-source build
   is ever needed, is one adapter file plus a pin table.
@@ -301,8 +315,39 @@ readings at 72px, labels and units at 32px, bar and footer at 40px, 3px rules --
 `tests/unit/test_screen_home_layout.c` checking by pixels that the worst cases do not collide;
 the gas cell's label is "Gas".
 
-Next: the rest of phase 3c's measurements, then BSEC or this unit's own figures for the
-remaining estimates.
+Phase 3d on branch `phase-3d-bsec-iaq` (ADR 0020): Bosch's BSEC2 2.6.1.0 behind
+`CONFIG_HAC_BSEC` / `HAC_BSEC`, both off by default -- the archive is never committed, not
+even its headers, which Bosch marks "Confidential" (THIRD_PARTY_NOTICES.md corrected). With it,
+`drivers/bme68x/bme68x_bsec_source.c` measures the BME68x as BSEC asks: low-power mode, BSEC's
+call only once its time has come (never early), its conditioning and 320 C/197 ms heater
+profiles, heat-compensated temperature and humidity, IAQ with accuracy 0 as `VAL_WARMUP` and
+1-3 as `VAL_OK` (`bme68x_bsec_status.c`, tested in CI), gas by BSEC's run-in, BSEC's CO2
+equivalent never subscribed to. The firmware's `main.c` composes it instead of
+`bme68x_source`; the IAQ cell shows IAQ. Shared bring-up moved to `bme68x_common.c`. BSEC's
+state survives a sensor re-init in RAM, not a reboot (open item, phase 5/6). The host runs it
+against Bosch's x86-64 library (`host-bsec` preset): unit tests and the `port_sensor` contract
+over the BME680 model. Known and accepted for now: the event loop's synchronous panel flush
+makes BSEC's call late at every full refresh (3.2-3.7 s against a 187 ms tolerance); each late
+call is logged and counted, and the board decides (ADR 0020, "Timing"). First board run
+2026-10-16, 21 minutes: BSEC's profiles as on the host, run-in and accuracy `low` after 197 s,
+two late calls (459 ms at boot's full refresh, 490 ms at a partial one), accuracy still `low`
+at the end. Second run, 21 minutes with breaths and airing: accuracy `high` at 955 s through 17
+late calls (one per full refresh); IAQ's band redraws flap at 50, BSEC's clean-air resting value
+and the Excellent/Good boundary; a brownout reset before that boot (board_notes.md, open items
+"BSEC on the board" and "A reboot loop when the switched 3V3 comes up").
+
+Also on this branch, at the owner's request after that run (ADR 0021): `measurement_f32_t`
+carries `value_accuracy_t` beside its status -- a field, not new statuses; the core's own
+four-step scale, BSEC's 0-3 mapped onto it in the driver -- and a `VAL_OK` number rated
+`ACC_LOW` or `ACC_UNRELIABLE` gets a question mark and the footer "IAQ not calibrated";
+IAQ's bands (`core/domain/air_quality.h`: 50/100/150/200, judged on the rounded number) show
+under the number as "Excellent", "Good", "Fair", "Moderate", "Poor", and a change of band, or
+of the question mark, redraws; and "ppm" and the CO2 mark moved to the label's line, "CO2
+ppm", where no reading draws, after the moving unit left residue on the panel. The layout test
+holds the last by pixels. Not yet seen on the panel.
+
+Next: the board run of phase 3d, the rest of phase 3c's measurements, and this unit's own
+figures for the remaining estimates.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

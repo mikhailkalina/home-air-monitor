@@ -383,6 +383,168 @@ static void the_update_line_follows_the_gas_in_the_cell(void)
     HAC_CHECK(strcmp(vm.updated_text, "1 min") == 0);
 }
 
+// --- the IAQ band and the accuracy mark -----------------------------------------
+
+static void an_iaq_number_has_its_band_under_it(void)
+{
+    const struct {
+        float iaq;
+        iaq_level_t level;
+        const char *text;
+    } cases[] = {
+        {50.0f, IAQ_LEVEL_EXCELLENT, "Excellent"},
+        {84.0f, IAQ_LEVEL_GOOD, "Good"},
+        {128.0f, IAQ_LEVEL_LIGHTLY_POLLUTED, "Fair"},
+        {175.0f, IAQ_LEVEL_MODERATELY_POLLUTED, "Moderate"},
+        {260.0f, IAQ_LEVEL_POLLUTED, "Poor"},
+    };
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        view_model_t vm;
+        air_reading_t r = normal_reading(1000u);
+        r.iaq = measurement_ok(cases[i].iaq, 1000u, 2u);
+        view_model_build(&vm, &r, 1000u);
+        HAC_CHECK_EQ_INT(vm.iaq_level, cases[i].level);
+        HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, cases[i].text) == 0);
+        HAC_CHECK(strcmp(view_model_iaq_level_text(cases[i].level), cases[i].text) == 0);
+    }
+    HAC_CHECK(strcmp(view_model_iaq_level_text(IAQ_LEVEL_UNKNOWN), "") == 0);
+}
+
+// The band of a whole number, written out from the bounds rather than taken
+// from air_quality.c, which is what is under test.
+static iaq_level_t band_of_whole_number(int shown)
+{
+    if (shown <= AIR_QUALITY_IAQ_EXCELLENT_MAX) {
+        return IAQ_LEVEL_EXCELLENT;
+    }
+    if (shown <= AIR_QUALITY_IAQ_GOOD_MAX) {
+        return IAQ_LEVEL_GOOD;
+    }
+    if (shown <= AIR_QUALITY_IAQ_LIGHTLY_POLLUTED_MAX) {
+        return IAQ_LEVEL_LIGHTLY_POLLUTED;
+    }
+    if (shown <= AIR_QUALITY_IAQ_MODERATELY_POLLUTED_MAX) {
+        return IAQ_LEVEL_MODERATELY_POLLUTED;
+    }
+    return IAQ_LEVEL_POLLUTED;
+}
+
+// The number and the band under it never disagree: across the whole range,
+// in steps finer than the rounding, the band is the one the number shown
+// falls in.
+static void the_band_always_matches_the_number_shown(void)
+{
+    for (int step = 0; step <= 6000; ++step) {
+        const float iaq = (float)step * 0.05f;
+        view_model_t vm;
+        air_reading_t r = normal_reading(1000u);
+        r.iaq = measurement_ok(iaq, 1000u, 2u);
+        view_model_build(&vm, &r, 1000u);
+
+        int shown = 0;
+        for (const char *p = vm.fields[VM_FIELD_IAQ].text; *p != '\0'; ++p) {
+            shown = shown * 10 + (*p - '0');
+        }
+        const iaq_level_t expected = band_of_whole_number(shown);
+        if (vm.iaq_level != expected) {
+            HAC_CHECK(vm.iaq_level == expected);  // one failure, not six thousand
+            return;
+        }
+    }
+}
+
+static void without_an_iaq_number_there_is_no_band(void)
+{
+    view_model_t vm;
+    air_reading_t r = normal_reading(1000u);
+
+    r.iaq = measurement_status(VAL_WARMUP, 1000u, 2u);
+    r.iaq.accuracy = ACC_UNRELIABLE;
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK_EQ_INT(vm.iaq_level, IAQ_LEVEL_UNKNOWN);
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "") == 0);
+    HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_WARMUP);  // not the question mark
+
+    // Gas in the cell: its unit, and no IAQ band.
+    r.iaq = measurement_unavailable();
+    r.gas_resistance_ohm = measurement_ok(153000.0f, 1000u, 2u);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK_EQ_INT(vm.iaq_level, IAQ_LEVEL_UNKNOWN);
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "kOhm") == 0);
+
+    // A stale number keeps its band.
+    r.iaq = measurement_ok(128.0f, 1000u, 2u);
+    r.iaq.status = VAL_STALE;
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(strcmp(vm.fields[VM_FIELD_IAQ].unit, "Fair") == 0);
+}
+
+static void a_number_not_yet_calibrated_gets_the_question_mark(void)
+{
+    view_model_t vm;
+    air_reading_t r = normal_reading(1000u);
+    r.iaq.accuracy = ACC_LOW;
+    view_model_build(&vm, &r, 1000u);
+
+    const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
+    HAC_CHECK_EQ_INT(cell->mark, VM_MARK_LOW_ACCURACY);
+    HAC_CHECK_EQ_INT(cell->ink, VM_INK_PRIMARY);  // a reading, not a weaker one
+    HAC_CHECK(text_is(cell, "84"));
+    HAC_CHECK(strcmp(cell->unit, "Good") == 0);
+    HAC_CHECK_EQ_INT(vm.low_accuracy_count, 1);
+    HAC_CHECK(strcmp(vm.status_text, "IAQ not calibrated") == 0);
+}
+
+static void a_calibrated_or_unrated_number_has_no_mark(void)
+{
+    const value_accuracy_t accuracies[] = {ACC_NOT_REPORTED, ACC_MEDIUM, ACC_HIGH};
+    for (size_t i = 0u; i < sizeof(accuracies) / sizeof(accuracies[0]); ++i) {
+        view_model_t vm;
+        air_reading_t r = normal_reading(1000u);
+        r.iaq.accuracy = accuracies[i];
+        view_model_build(&vm, &r, 1000u);
+        HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_NONE);
+        HAC_CHECK_EQ_INT(vm.low_accuracy_count, 0);
+        HAC_CHECK(strcmp(vm.status_text, "all sensors OK") == 0);
+    }
+}
+
+// The footer gives worse news first, and any other status keeps its own mark.
+static void worse_news_comes_before_calibration(void)
+{
+    view_model_t vm;
+    air_reading_t r = normal_reading(1000u);
+    r.iaq.accuracy = ACC_LOW;
+
+    r.iaq.status = VAL_STALE;
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_STALE);
+    HAC_CHECK_EQ_INT(vm.low_accuracy_count, 0);
+    HAC_CHECK(strcmp(vm.status_text, "data is stale") == 0);
+
+    r.iaq.status = VAL_OK;
+    r.temperature_c = measurement_status(VAL_WARMUP, 1000u, 2u);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_IAQ].mark, VM_MARK_LOW_ACCURACY);
+    HAC_CHECK(strcmp(vm.status_text, "sensors warming up") == 0);
+
+    r.co2_ppm = measurement_status(VAL_ERROR, 1000u, 1u);
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK(strcmp(vm.status_text, "1 sensor error") == 0);
+}
+
+static void several_numbers_not_calibrated_are_counted(void)
+{
+    view_model_t vm;
+    air_reading_t r = normal_reading(1000u);
+    r.iaq.accuracy = ACC_LOW;
+    r.co2_ppm.accuracy = ACC_LOW;
+    view_model_build(&vm, &r, 1000u);
+    HAC_CHECK_EQ_INT(vm.low_accuracy_count, 2);
+    HAC_CHECK(strcmp(vm.status_text, "2 readings not calibrated") == 0);
+    HAC_CHECK_EQ_INT(vm.fields[VM_FIELD_CO2].mark, VM_MARK_LOW_ACCURACY);
+}
+
 int main(void)
 {
     HAC_RUN(a_normal_reading_becomes_numbers_and_units);
@@ -397,5 +559,12 @@ int main(void)
     HAC_RUN(gas_resistance_brings_its_own_status);
     HAC_RUN(an_iaq_that_is_provided_keeps_the_cell);
     HAC_RUN(the_update_line_follows_the_gas_in_the_cell);
+    HAC_RUN(an_iaq_number_has_its_band_under_it);
+    HAC_RUN(the_band_always_matches_the_number_shown);
+    HAC_RUN(without_an_iaq_number_there_is_no_band);
+    HAC_RUN(a_number_not_yet_calibrated_gets_the_question_mark);
+    HAC_RUN(a_calibrated_or_unrated_number_has_no_mark);
+    HAC_RUN(worse_news_comes_before_calibration);
+    HAC_RUN(several_numbers_not_calibrated_are_counted);
     return hac_test_summary();
 }

@@ -6,8 +6,9 @@
 // SCD41 command-level model on it, in both of its modes, and its
 // set_ambient(); and bme68x_source
 // -- Bosch's own driver -- over the same bus with the BME680 register-level
-// model. Each prints one "contract port_sensor <implementation> <check>
-// PASS|FAIL" line per check.
+// model; and, in a build with Bosch's BSEC2 library (HAC_BSEC), the same
+// sensor measured as BSEC asks, bme68x_bsec_source. Each prints one
+// "contract port_sensor <implementation> <check> PASS|FAIL" line per check.
 
 #ifndef HAC_TEST_TMP_DIR
 #error "HAC_TEST_TMP_DIR must be defined by the build (see tests/contract/CMakeLists.txt)"
@@ -27,6 +28,9 @@
 #include "i2c_models/scd41_model.h"
 #include "replay/replay_source.h"
 #include "scd4x_source.h"
+#if HAC_BSEC
+#include "bme68x_bsec_source.h"
+#endif
 
 // The SCD4x's one address (datasheet Table 8). The fake bus knows nothing
 // about the board; this is the sensor's, not board_config.h's.
@@ -213,6 +217,41 @@ static void bme68x_source_satisfies_the_sensor_source_contract(void)
     HAC_CHECK_EQ_INT((int)sensor.stats.address_nacks, 0);
 }
 
+#if HAC_BSEC
+// BSEC decides when the sensor measures; the suite's advance() moves the
+// clock as far as ready_in_ms() asks, so it waits out BSEC's 3 s, and its
+// second init() starts BSEC over -- keeping what it learnt (bme68x_bsec_source.h).
+static void bme68x_bsec_source_satisfies_the_sensor_source_contract(void)
+{
+    static adp_clock_virtual_t clock;
+    static adp_i2c_fake_t bus;
+    static bme680_model_t sensor;
+    static bme68x_bsec_source_t source;
+    adp_clock_virtual_init(&clock, 1.0);
+    adp_i2c_fake_init(&bus, &clock);
+    bme680_model_init(&sensor, clock.now_ms);
+    HAC_CHECK(adp_i2c_fake_attach(&bus, BME680_ADDR, bme680_model_port(&sensor)));
+
+    const bme68x_bsec_source_config_t cfg = {
+        .bus = adp_i2c_fake_port(&bus),
+        .clock = adp_clock_virtual_port(&clock),
+        .log = NULL,
+        .address = BME680_ADDR,
+        .id = BME680_SOURCE_ID,
+    };
+    HAC_CHECK_EQ_INT(bme68x_bsec_source_setup(&source, &cfg), HAL_OK);
+    run(&source.port, &clock, "bme68x_bsec_source+bme680_model");
+
+    // Two measurements, as BSEC asked for them, and nothing read early or
+    // written while the sensor measured.
+    HAC_CHECK_EQ_INT((int)sensor.stats.completed, 2);
+    HAC_CHECK_EQ_INT((int)source.measurements, 2);
+    HAC_CHECK_EQ_INT((int)sensor.stats.early_reads, 0);
+    HAC_CHECK_EQ_INT((int)sensor.stats.ignored_writes, 0);
+    HAC_CHECK_EQ_INT((int)sensor.stats.address_nacks, 0);
+}
+#endif
+
 // --- the suite has teeth ------------------------------------------------
 //
 // Each case wraps a working source in one that breaks exactly one rule of
@@ -398,6 +437,9 @@ int main(void)
     HAC_RUN(scd4x_source_satisfies_the_sensor_source_contract_in_single_shot_mode);
     HAC_RUN(scd4x_set_ambient_reaches_the_sensor_as_whole_hectopascals);
     HAC_RUN(bme68x_source_satisfies_the_sensor_source_contract);
+#if HAC_BSEC
+    HAC_RUN(bme68x_bsec_source_satisfies_the_sensor_source_contract);
+#endif
     HAC_RUN(the_contract_catches_a_source_reporting_outside_its_capabilities);
     HAC_RUN(the_contract_catches_a_source_reading_before_start);
     HAC_RUN(the_contract_catches_a_source_that_cannot_start_over);

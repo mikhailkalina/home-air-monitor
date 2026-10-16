@@ -25,10 +25,21 @@ if(NOT DEFINED HAC_ROOT)
 endif()
 
 set(HAC_DRIVERS_SOURCES
+    ${HAC_ROOT}/drivers/bme68x/bme68x_bsec_status.c
+    ${HAC_ROOT}/drivers/bme68x/bme68x_common.c
     ${HAC_ROOT}/drivers/bme68x/bme68x_hal.c
     ${HAC_ROOT}/drivers/bme68x/bme68x_source.c
     ${HAC_ROOT}/drivers/scd4x/scd4x_hal.c
     ${HAC_ROOT}/drivers/scd4x/scd4x_source.c
+)
+
+# The BME68x under Bosch's BSEC2 (docs/adr/0020-bsec-iaq.md), compiled only
+# where the library is: a host build with HAC_BSEC, a firmware build with
+# CONFIG_HAC_BSEC. Its includer adds Bosch's headers, the configuration and
+# the library from cmake/bsec.cmake; nothing of Bosch's BSEC is in this
+# repository.
+set(HAC_DRIVERS_BSEC_SOURCES
+    ${HAC_ROOT}/drivers/bme68x/bme68x_bsec_source.c
 )
 
 # Drivers resolve each other's headers as "scd4x/scd4x_source.h".

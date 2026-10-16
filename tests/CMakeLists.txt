@@ -17,6 +17,7 @@ set(HAC_UNIT_TESTS
     test_hal_status
     test_fake_clock
     test_measurement
+    test_air_quality
     test_framebuffer
     test_gfx
     test_update_policy
@@ -98,6 +99,27 @@ add_executable(test_bme68x_source unit/test_bme68x_source.c)
 target_link_libraries(test_bme68x_source PRIVATE hac_drivers hac_platform_host hac_test_support)
 hac_apply_warnings(test_bme68x_source)
 add_test(NAME test_bme68x_source COMMAND test_bme68x_source)
+
+# How BSEC's accuracy and gas statuses become value_status_t
+# (docs/adr/0020-bsec-iaq.md). Pure and free of Bosch's headers, so it runs
+# in every build, CI's included.
+add_executable(test_bme68x_bsec_status unit/test_bme68x_bsec_status.c)
+target_link_libraries(test_bme68x_bsec_status PRIVATE hac_drivers hac_test_support)
+hac_apply_warnings(test_bme68x_bsec_status)
+add_test(NAME test_bme68x_bsec_status COMMAND test_bme68x_bsec_status)
+
+# The BME68x under BSEC -- Bosch's library deciding when and how it measures
+# -- against the same BME680 model, over the same fake bus. Only with the
+# library (HAC_BSEC, cmake/bsec.cmake), which is never in CI.
+if(HAC_BSEC)
+    add_executable(test_bme68x_bsec_source unit/test_bme68x_bsec_source.c)
+    target_link_libraries(test_bme68x_bsec_source PRIVATE
+        hac_drivers_bsec hac_platform_host hac_test_support)
+    target_compile_definitions(test_bme68x_bsec_source PRIVATE
+        HAC_BSEC_TEST_CONFIG_NAME="${HAC_BSEC_CONFIG_NAME}")
+    hac_apply_warnings(test_bme68x_bsec_source)
+    add_test(NAME test_bme68x_bsec_source COMMAND test_bme68x_bsec_source)
+endif()
 
 # The simulator's two sensor modes on one scenario: replay sources, and both
 # drivers over the fake bus measuring platform/host/scenario_world.c -- each

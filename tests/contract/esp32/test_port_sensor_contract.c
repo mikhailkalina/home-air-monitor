@@ -14,11 +14,15 @@
 //
 // Time is real here: the suite's advance() waits on adp_clock, so a case
 // takes as long as its sensor measures -- about 12 s for the SCD4x in either
-// mode, well under a second for the BME68x.
+// mode, well under a second for the BME68x, about 5 s for the BME68x under
+// BSEC, whose first measurement heats for a second and whose second waits
+// for BSEC's next call. That case is built only with CONFIG_HAC_BSEC
+// (test_app/CMakeLists.txt, -D HAC_BSEC=ON; docs/adr/0020-bsec-iaq.md).
 
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "sdkconfig.h"
 #include "unity.h"
 
 #include "adp_clock.h"
@@ -30,6 +34,9 @@
 #include "contract_print.h"
 #include "port_sensor_contract.h"
 #include "scd4x_source.h"
+#if CONFIG_HAC_BSEC
+#include "bme68x_bsec_source.h"
+#endif
 
 // Ids for the measurements' source_id, as the firmware gives them.
 #define SCD4X_SOURCE_ID 1u
@@ -122,3 +129,24 @@ TEST_CASE("bme68x_source satisfies the port_sensor contract", "[contract][port_s
     adp_i2c_deinit(&rig.bus);
     TEST_ASSERT_EQUAL_UINT(0u, failures);
 }
+
+#if CONFIG_HAC_BSEC
+TEST_CASE("bme68x_bsec_source satisfies the port_sensor contract", "[contract][port_sensor]")
+{
+    static rig_t rig;
+    static bme68x_bsec_source_t source;
+    rig_up(&rig);
+
+    const bme68x_bsec_source_config_t cfg = {
+        .bus = adp_i2c_port(&rig.bus),
+        .clock = adp_clock_port(&rig.clock),
+        .log = adp_log_port(&rig.log),
+        .address = BOARD_BME68X_I2C_ADDRESS,
+        .id = BME68X_SOURCE_ID,
+    };
+    TEST_ASSERT_EQUAL(HAL_OK, bme68x_bsec_source_setup(&source, &cfg));
+    const unsigned failures = run(&source.port, &rig, "bme68x_bsec_source+BME68x");
+    adp_i2c_deinit(&rig.bus);
+    TEST_ASSERT_EQUAL_UINT(0u, failures);
+}
+#endif

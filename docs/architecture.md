@@ -121,7 +121,7 @@ home-air-monitor/
 ├── core/                           # ★ ALL BUSINESS LOGIC. Platform independent.
 │   ├── domain/
 │   │   ├── measurement.h/.c        # measurement_f32_t, air_reading_t, merging, validation
-│   │   ├── air_quality.h/.c        # CO₂/IAQ thresholds → Good/Moderate/Poor levels
+│   │   ├── air_quality.h/.c        # IAQ's bands (ADR 0021); the CO₂ bands are still in view_model.h
 │   │   └── device_state.h/.c       # state that must survive deep sleep
 │   ├── app/
 │   │   ├── app_core.h/.c           # state machine: event → actions; next_deadline()
@@ -151,8 +151,13 @@ home-air-monitor/
 │   ├── bme68x/
 │   │   ├── vendor/                 # Bosch BME68x Sensor API, unmodified (ADR 0016)
 │   │   ├── bme68x_hal.c            # Bosch's bus and delay callbacks over port_i2c + port_clock
+│   │   ├── bme68x_common.c         # bring-up and log lines both sources share
 │   │   ├── bme68x_limits.h         # datasheet values, estimates, choices
-│   │   └── bme68x_source.c         # the BME68x as a sensor_source_t: T, RH, p, raw gas
+│   │   ├── bme68x_source.c         # the BME68x as a sensor_source_t: T, RH, p, raw gas
+│   │   ├── bme68x_bsec_source.c    # ... measured as Bosch's BSEC2 asks, with IAQ; only with
+│   │   │                           #   the library, which is never in the repository (ADR 0020)
+│   │   ├── bme68x_bsec_limits.h    # its numbers: period, instance size, estimates
+│   │   └── bme68x_bsec_status.c    # BSEC's accuracy -> value_status_t, pure, built always
 │   ├── scd4x/
 │   │   ├── vendor/                 # Sensirion embedded-i2c-scd4x, unmodified (ADR 0015)
 │   │   ├── scd4x_hal.c             # Sensirion's HAL over port_i2c + port_clock
@@ -279,11 +284,17 @@ typedef enum {
     VAL_ERROR,            /* read failure or physically implausible value     */
 } value_status_t;
 
+typedef enum {             /* how far the source trusts its own number (ADR 0021) */
+    ACC_NOT_REPORTED = 0,  /* most sources: no verdict */
+    ACC_UNRELIABLE, ACC_LOW, ACC_MEDIUM, ACC_HIGH,
+} value_accuracy_t;
+
 typedef struct {
-    float          value;
-    value_status_t status;
-    uint64_t       ts_ms;      /* monotonic acquisition time */
-    uint8_t        source_id;  /* which sensor_source produced it */
+    float            value;
+    value_status_t   status;
+    uint64_t         ts_ms;      /* monotonic acquisition time */
+    uint8_t          source_id;  /* which sensor_source produced it */
+    value_accuracy_t accuracy;   /* beside the status, not one of them */
 } measurement_f32_t;
 
 typedef struct {
@@ -327,7 +338,7 @@ typedef struct {
     uint64_t last_display_update_ms;
     uint64_t last_publish_ms;
     air_reading_t last_published;     /* for the "changed by N" thresholds */
-    uint8_t  bsec_state[BSEC_STATE_MAX];
+    uint8_t  bsec_state[BSEC_STATE_MAX];   /* 180 bytes in BSEC 2.6.1.0 (ADR 0020) */
     uint16_t bsec_state_len;
     uint32_t crc32;
 } persisted_state_t;
@@ -964,7 +975,7 @@ Realistic reuse candidates: the ESP32-C6 (Thread/Matter), a different e-paper bo
 | **Simulator ≠ hardware** | green on a PC, but I²C timeouts, insufficient RAM or panel timing issues on the device | Contract tests on the device; an on-target smoke suite in each phase's acceptance criteria; the rule that the simulator verifies logic, not timing and not power |
 | **Leaky abstractions** | BSEC requires an opaque state blob; e-paper has panel-specific waveform modes | The port passes state as an opaque buffer; `refresh_mode_t` is the minimal common subset; panel specifics stay in the adapter, which reports only numeric constraints to the core |
 | **Over-abstraction** | a port for everything, forty vtables, nobody can follow the control flow | The rule: a port is created when there are **two** real implementations (hardware plus simulator). Otherwise it is just a function |
-| **BSEC unavailable for the host architecture** | IAQ cannot be computed on a PC | `iaq_engine` is an interface; on the host, use a simplified implementation or replay IAQ directly from the CSV. §17.2 of the requirements already suggests showing raw gas resistance in the MVP |
+| **BSEC unavailable for the host architecture** | IAQ cannot be computed on a PC | Narrower than feared: BSEC 2.6.1.0 ships an x86-64 Linux library, so with the archive the BSEC source and its tests build on such a host (`HAC_BSEC`, ADR 0020) -- never in CI, which has no archive. No `iaq_engine` interface: there is one real implementation. The simulator replays IAQ from the CSV; without BSEC the firmware shows raw gas resistance, as §17.2 of the requirements suggests |
 | **vtable overhead** | an indirect call instead of a direct one | Negligible at a measurement rate of 0.03–0.2 Hz. In hot paths (`gfx` primitives) the calls are direct; the port is only crossed at `flush` |
 | **Drift between the two builds** | a file added to only one of them | The shared `sources_core.cmake`; the firmware build runs in CI on every PR |
 

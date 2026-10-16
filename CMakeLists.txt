@@ -25,6 +25,11 @@ set(CMAKE_C_EXTENSIONS OFF)
 # With SIM_GUI=OFF, platform/host does not even look for SDL2, so the
 # ci-headless preset configures and builds on a machine that has none.
 option(SIM_GUI "Build the SDL2 simulator window" ON)
+# Off by default and in CI: Bosch's BSEC2 library is downloaded separately and
+# never committed (THIRD_PARTY_NOTICES.md). With it, the BME68x's BSEC source
+# and its tests build against the x86-64 Linux library Bosch ships
+# (docs/adr/0020-bsec-iaq.md); the simulator keeps replaying IAQ from CSV.
+option(HAC_BSEC "Build the BME68x's BSEC2 source and its tests (needs third_party/bsec/)" OFF)
 set(HAC_SANITIZERS "" CACHE STRING "Sanitizers to enable, e.g. address,undefined")
 
 include(cmake/sources_core.cmake)
@@ -52,6 +57,29 @@ hac_apply_warnings(hac_drivers)
 # win over the -W flags hac_apply_warnings() just set.
 set_source_files_properties(${HAC_DRIVERS_VENDOR_SOURCES} PROPERTIES
     COMPILE_OPTIONS "${HAC_DRIVERS_VENDOR_COMPILE_OPTIONS}")
+
+# The BME68x under BSEC, beside hac_drivers rather than in it, so that a build
+# without the library is the build it has always been. Bosch's configuration
+# (bsec_iaq.c) is compiled where it lies, under the vendored code's relaxed
+# options, and Bosch's headers are SYSTEM includes, as vendored headers are.
+if(HAC_BSEC)
+    include(cmake/bsec.cmake)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        message(FATAL_ERROR "HAC_BSEC needs a 64-bit x86 Linux host: the only desktop "
+                            "library Bosch ships that this build links is bin/gcc/Linux/m64.")
+    endif()
+    hac_bsec_require(${HAC_BSEC_LIB_LINUX_X86_64} ${HAC_BSEC_CONFIG_SOURCES})
+    add_library(hac_drivers_bsec STATIC ${HAC_DRIVERS_BSEC_SOURCES} ${HAC_BSEC_CONFIG_SOURCES})
+    target_include_directories(hac_drivers_bsec SYSTEM PRIVATE ${HAC_BSEC_INCLUDES})
+    target_compile_definitions(hac_drivers_bsec PRIVATE
+        HAC_BSEC_CONFIG_NAME="${HAC_BSEC_CONFIG_NAME}")
+    target_link_libraries(hac_drivers_bsec PUBLIC hac_drivers ${HAC_BSEC_LIB_LINUX_X86_64})
+    # Users of the source (the tests) learn that it is there.
+    target_compile_definitions(hac_drivers_bsec INTERFACE HAC_BSEC=1)
+    hac_apply_warnings(hac_drivers_bsec)
+    set_source_files_properties(${HAC_BSEC_CONFIG_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "${HAC_DRIVERS_VENDOR_COMPILE_OPTIONS}")
+endif()
 
 add_subdirectory(platform/host)
 add_subdirectory(apps/simulator)
