@@ -20,7 +20,9 @@ set(HAC_UNIT_TESTS
     test_framebuffer
     test_gfx
     test_update_policy
+    test_sensor_manager
     test_view_model
+    test_screen_home_layout
     test_adp_clock_virtual
     test_replay_source
     test_fault_inject
@@ -41,6 +43,8 @@ target_link_libraries(test_adp_clock_virtual PRIVATE hac_platform_host)
 target_link_libraries(test_replay_source PRIVATE hac_platform_host)
 target_link_libraries(test_fault_inject PRIVATE hac_platform_host)
 target_link_libraries(test_epd_model PRIVATE hac_platform_host)
+target_link_libraries(test_sensor_manager PRIVATE hac_platform_host)
+target_compile_definitions(test_sensor_manager PRIVATE HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(test_replay_source PRIVATE
     HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
     HAC_SCENARIOS_DIR="${HAC_ROOT}/scenarios"
@@ -94,6 +98,16 @@ add_executable(test_bme68x_source unit/test_bme68x_source.c)
 target_link_libraries(test_bme68x_source PRIVATE hac_drivers hac_platform_host hac_test_support)
 hac_apply_warnings(test_bme68x_source)
 add_test(NAME test_bme68x_source COMMAND test_bme68x_source)
+
+# The simulator's two sensor modes on one scenario: replay sources, and both
+# drivers over the fake bus measuring platform/host/scenario_world.c -- each
+# under core/app/sensor_manager.c, which this exercises over real drivers.
+add_executable(test_scenario_world unit/test_scenario_world.c)
+target_link_libraries(test_scenario_world PRIVATE hac_drivers hac_platform_host hac_test_support)
+target_compile_definitions(test_scenario_world PRIVATE
+    HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+hac_apply_warnings(test_scenario_world)
+add_test(NAME test_scenario_world COMMAND test_scenario_world)
 
 # The pure half of the ESP32 I2C adapter -- deadline-to-driver-wait
 # arithmetic and failure classification -- compiled from where the firmware

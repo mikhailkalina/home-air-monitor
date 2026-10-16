@@ -168,21 +168,33 @@ void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode,
     out->area_percent =
         (panel_px == 0u) ? 0u : (uint32_t)(((uint64_t)area_px * 100u + panel_px / 2u) / panel_px);
 
-    // The panel protects itself. A caller that keeps asking for partial
-    // refreshes past the budget gets a full one anyway -- which is what the
-    // hardware would need, and what a correct update_policy would have asked
-    // for on its own. Reaching this branch is a finding, not a feature.
+    // The panel protects itself, past what it was ever tested with. A caller
+    // that keeps asking for partial refreshes beyond that gets a full one
+    // anyway. Reaching this branch is a finding, not a feature. Within it, a
+    // partial refresh past the budget is performed and counted: the policy
+    // goes there on purpose while a full refresh waits for its interval
+    // (ADR 0019).
     const bool partial_mode = (mode == REFRESH_PARTIAL || mode == REFRESH_FAST_MONO);
-    if (partial_mode && m->partials_since_full >= m->max_partial_refreshes_before_full) {
+    const uint32_t ceiling = (m->max_partial_refreshes_before_full > EPD_SIM_MOST_PARTIALS_TESTED)
+                                 ? m->max_partial_refreshes_before_full
+                                 : EPD_SIM_MOST_PARTIALS_TESTED;
+    if (partial_mode &&
+        (m->max_partial_refreshes_before_full == 0u || m->partials_since_full >= ceiling)) {
         out->performed = REFRESH_FULL;
         out->forced_full = true;
         m->forced_full_count++;
+    } else if (partial_mode && m->partials_since_full >= m->max_partial_refreshes_before_full) {
+        out->past_budget = true;
+        m->past_budget_count++;
     }
 
     if (out->performed == REFRESH_FULL || out->performed == REFRESH_CLEAR) {
         m->partials_since_full = 0u;
     } else {
         m->partials_since_full++;
+        if (m->partials_since_full > m->most_partials) {
+            m->most_partials = m->partials_since_full;
+        }
     }
 
     if (out->performed == REFRESH_FULL || out->performed == REFRESH_CLEAR) {
@@ -282,20 +294,27 @@ void epd_model_log(const epd_model_t *m, const epd_flush_t *f)
         snprintf(mode, sizeof(mode), "%s", epd_refresh_mode_name(f->performed));
     }
 
-    printf("[epd] flush %-5u %-16s rect=%u,%u %ux%u (%u%%) rows=%u/%u %4u ms  partials=%u/%u  "
+    printf("[epd] flush %-5u %-16s rect=%u,%u %ux%u (%u%%) rows=%u/%u %4u ms  partials=%u/%u%s  "
            "panel-time=%.1f s\n",
            m->flush_count, mode, f->area.x, f->area.y, f->area.w, f->area.h, f->area_percent,
            f->changed_rows, f->written_rows, f->duration_ms, f->partials_since_full,
-           m->max_partial_refreshes_before_full, (double)m->simulated_ms_total / 1000.0);
+           m->max_partial_refreshes_before_full, f->past_budget ? " (past budget)" : "",
+           (double)m->simulated_ms_total / 1000.0);
 
     if (f->forced_full) {
-        printf("[epd] FORCED FULL REFRESH: the partial-refresh budget of %u was exhausted, so the "
-               "panel refreshed fully on its own.\n",
-               m->max_partial_refreshes_before_full);
+        if (m->max_partial_refreshes_before_full == 0u) {
+            printf("[epd] FORCED FULL REFRESH: this panel has no partial mode, so it refreshed "
+                   "fully on its own.\n");
+        } else {
+            printf("[epd] FORCED FULL REFRESH: one more partial refresh would have been past the "
+                   "%u this panel was ever tested with,\n"
+                   "[epd]   so it refreshed fully on its own.\n",
+                   EPD_SIM_MOST_PARTIALS_TESTED);
+        }
         printf("[epd]   The vendor warns that prolonged partial refreshing leaves residual images "
                "and damages this panel irreversibly\n"
                "[epd]   (docs/hardware/board_notes.md). Reaching this line means the refresh "
-               "strategy did not respect max_partial_refreshes_before_full;\n"
+               "strategy did not bring a full refresh in time;\n"
                "[epd]   forced full refreshes so far: %u.\n",
                m->forced_full_count);
     }
@@ -307,15 +326,17 @@ void epd_model_log_summary(const epd_model_t *m)
            "full refresh\n",
            m->flush_count, (double)m->simulated_ms_total / 1000.0, m->partials_since_full);
 
+    printf("[epd] summary: at most %u partial refreshes between two full ones (budget %u); "
+           "%u past the budget\n",
+           m->most_partials, m->max_partial_refreshes_before_full, m->past_budget_count);
     if (m->forced_full_count == 0u) {
-        printf("[epd] summary: no forced full refreshes -- the refresh strategy stayed inside\n"
-               "[epd]          the panel budget of %u\n",
-               m->max_partial_refreshes_before_full);
+        printf("[epd] summary: no forced full refreshes -- the refresh strategy brought a full\n"
+               "[epd]          refresh in time\n");
     } else {
         printf(
             "[epd] summary: %u FORCED full refresh(es). On the real panel this is the failure\n"
-            "[epd]          mode the vendor warns about: the refresh strategy must respect\n"
-            "[epd]          max_partial_refreshes_before_full instead of relying on the panel.\n",
+            "[epd]          mode the vendor warns about: the refresh strategy must bring a full\n"
+            "[epd]          refresh in time instead of relying on the panel.\n",
             m->forced_full_count);
     }
 }

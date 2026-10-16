@@ -12,3 +12,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"
 # A failing assertion prints where it failed; this app's output is read from
 # a pasted log, with no debugger attached.
 CONFIG_UNITY_ENABLE_BACKTRACE_ON_FAIL=y
+
+# The test cases run on app_main's own task, and since phase 3c the
+# port_sensor ones run both sensor drivers there -- Bosch's and Sensirion's
+# code, the I2C adapter and the log under them -- which the firmware runs on
+# its 8 KB event-loop task instead. The firmware's 3584-byte default is no
+# measure for that, so the test task gets the event loop's size. A change
+# here reaches only a fresh sdkconfig (CLAUDE.md): delete
+# test_app/sdkconfig before building after editing it.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

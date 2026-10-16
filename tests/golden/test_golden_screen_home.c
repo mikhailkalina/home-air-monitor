@@ -35,7 +35,7 @@
 #define PANEL_STRIDE (PANEL_WIDTH / 2)  // GRAY4, two pixels per byte
 
 #define SAMPLE_TS_MS 60000u
-#define RENDER_TS_MS 72000u  // 12 s after the sample, so "updated 12 s ago"
+#define RENDER_TS_MS 72000u  // 12 s after the sample: fresh, so "updated just now"
 
 static uint8_t g_pixels[PANEL_STRIDE * PANEL_HEIGHT];
 

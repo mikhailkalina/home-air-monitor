@@ -7,12 +7,14 @@
 // from a test that wants to flip a fault mid-run.
 //
 // It wraps `inner` and forwards every call unmodified except read(), whose
-// behaviour depends on the currently selected fault_kind_t.
+// behaviour depends on the currently selected fault_kind_t -- and, for
+// FAULT_ABSENT, init() and start() too.
 
 #ifndef HAC_PLATFORM_HOST_REPLAY_FAULT_INJECT_H
 #define HAC_PLATFORM_HOST_REPLAY_FAULT_INJECT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "domain/measurement.h"
 #include "port_sensor.h"
@@ -27,7 +29,17 @@ typedef enum {
     FAULT_BUS_TIMEOUT,   // read() fails as if the bus stopped answering: HAL_ERR_TIMEOUT
     FAULT_STUCK,         // read() succeeds but always returns the last good sample
     FAULT_FORCE_STATUS,  // read() succeeds but every capable field is forced to one status
+    FAULT_ABSENT,        // unplugged: init(), start() and read() fail with HAL_ERR_NOT_FOUND
+    FAULT_SILENT,        // read() always says HAL_ERR_NOT_READY: a sensor that stopped measuring
 } fault_kind_t;
+
+// How often each call reached the wrapper, faulted or not.
+typedef struct {
+    uint32_t inits;
+    uint32_t starts;
+    uint32_t reads;
+    uint32_t set_ambients;
+} fault_inject_calls_t;
 
 typedef struct {
     sensor_source_t port;  // the composed source handed to the sensor manager
@@ -38,10 +50,13 @@ typedef struct {
 
     sensor_sample_t last_good;
     bool have_last_good;
+
+    fault_inject_calls_t calls;
 } fault_inject_t;
 
 // Wraps `inner` (must outlive `fi` and stay unmoved). Starts with FAULT_NONE:
-// a freshly created fault_inject_t is transparent.
+// a freshly created fault_inject_t is transparent. It offers set_ambient()
+// exactly when `inner` does, and forwards it unmodified.
 void fault_inject_init(fault_inject_t *fi, sensor_source_t *inner);
 
 // Selects what read() does from here on. FAULT_FORCE_STATUS additionally

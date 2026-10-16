@@ -25,7 +25,7 @@ typedef struct {
     int8_t x_offset;         // added to the cursor to get the bitmap's left edge
     int8_t y_offset;         // added to the baseline y to get the bitmap's top edge
     uint8_t x_advance;       // distance the cursor moves after this glyph
-    uint16_t bitmap_offset;  // byte offset of this glyph's rows in bitmap_data
+    uint32_t bitmap_offset;  // byte offset of this glyph's rows in bitmap_data
 } font_glyph_t;
 
 // Covers codepoints [first_codepoint, first_codepoint + glyph_count). A

@@ -173,7 +173,8 @@ home-air-monitor/
 │   │   ├── adp_telemetry_mqtt.c    # esp-mqtt
 │   │   ├── adp_storage.c           # NVS + LittleFS
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
-│   │   └── adp_log.c               # ESP_LOG
+│   │   ├── adp_log.c               # ESP_LOG
+│   │   └── board_power.c           # PWR_EN without EPDiy: the sensors' rail (null display, test app)
 │   │                               # (no adp_sensors.c: the wrappers are in drivers/, ADR 0014)
 │   │
 │   ├── host/
@@ -181,6 +182,7 @@ home-air-monitor/
 │   │   ├── adp_i2c_fake.c          # a bus of I²C device models (for drivers)
 │   │   ├── i2c_models/             # register file; SCD41 command-level model (ADR 0015);
 │   │   │                           #   BME680 register-level model (ADR 0016)
+│   │   ├── scenario_world.c        # the room the models measure, from the scenario CSVs (ADR 0017)
 │   │   ├── adp_display_sdl.c       # 960×540 window at 1:1 + e-paper emulation
 │   │   ├── adp_display_png.c       # headless: dump frames to PNG (for CI)
 │   │   ├── adp_input_sdl.c         # mouse/keyboard → touch events
@@ -414,12 +416,16 @@ struct sensor_source_s {
     hal_status_t (*read)(sensor_source_t *self, sensor_sample_t *out);
     hal_status_t (*suspend)(sensor_source_t *self);            /* before deep sleep   */
     void         (*deinit)(sensor_source_t *self);
+    hal_status_t (*set_ambient)(sensor_source_t *self,         /* optional: NULL      */
+                                const sensor_ambient_t *ambient);
 
     void *impl;
 };
 ```
 
 This is the **substitution point for the simulator**: on hardware, `impl` is the SCD41 driver over I²C; on a PC it is CSV playback. The core sees the same `sensor_source_t` either way.
+
+Two promises were added when the sensor manager arrived (phase 3c, `ports/port_sensor.h` has the full life cycle): `init()` may be called again at any time without `deinit()`, and starts the source over, which is how a failing or replugged sensor is recovered (ADR 0017); and `set_ambient()`, optional, hands a source conditions measured elsewhere — the SCD41 takes the BME68x's pressure for its CO2 compensation (ADR 0018).
 
 ### 5.4 The I²C bus — a second, lower substitution point
 
@@ -444,7 +450,7 @@ struct port_i2c_s {
 | `sensor_source_t` | the whole sensor | business logic: thresholds, fault tolerance, UI, publishing |
 | `port_i2c_t` | the bus | the drivers themselves: Sensirion CRC, BME68x commands, NACK/timeout handling |
 
-Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against device models on the fake bus: a register file, or a command-level model where the protocol needs one, as the SCD41's does — ADR 0015; the BME680's is a register map whose raw values invert the datasheet's compensation — ADR 0016). The second mode catches driver bugs without hardware.
+Both modes are available on a PC: `--sensors replay` (fast, data from a file) and `--sensors fake-i2c` (the real drivers against device models on the fake bus: a register file, or a command-level model where the protocol needs one, as the SCD41's does — ADR 0015; the BME680's is a register map whose raw values invert the datasheet's compensation — ADR 0016). In fake-i2c mode the models measure a room played from the same scenario files (`platform/host/scenario_world.c`), so the two modes show the same scenario and a test holds them to it (ADR 0017). The second mode catches driver bugs without hardware.
 
 The sketch above is the shape; the precise promises — what a zero-length transfer does, how `to_ms` is honoured, which error points at the device and which at the bus — are written in `ports/port_i2c.h` and checked by `tests/contract/port_i2c_contract.c` against both implementations (ADR 0011).
 
@@ -663,19 +669,18 @@ The difference between firmware and simulator lives entirely in **these two file
 
 ### 6.3 Sensor manager and fault tolerance
 
-`core/app/sensor_manager.c` implements §4.3 of the requirements declaratively:
+`core/app/sensor_manager.c` implements §4.3 of the requirements declaratively. The priorities are data, and they are the composition's, not the core's — the core holds no source ids and no sensor names:
 
 ```c
-static const source_priority_t PRIORITY[] = {
-    { .field = FIELD_CO2,         .order = { 1, 0 } },    /* SCD41 only              */
-    { .field = FIELD_TEMPERATURE, .order = { 2, 1, 0 } }, /* BME68x, SCD41 on failure */
-    { .field = FIELD_HUMIDITY,    .order = { 2, 1, 0 } },
-    { .field = FIELD_PRESSURE,    .order = { 2, 0 } },
-    { .field = FIELD_IAQ,         .order = { 2, 0 } },
-};
+/* apps/firmware_esp32/main/main.c, and the same in apps/simulator/main.c */
+static const uint8_t prefer_bme68x[] = {BME68X_SOURCE_ID, SCD4X_SOURCE_ID};
+sensor_manager_set_priority(&mgr, SENSOR_FIELD_TEMPERATURE, prefer_bme68x, 2u); /* SCD41 on failure */
+sensor_manager_set_priority(&mgr, SENSOR_FIELD_HUMIDITY,    prefer_bme68x, 2u);
+sensor_manager_set_priority(&mgr, SENSOR_FIELD_PRESSURE,    only_bme68x,   1u);
+sensor_manager_set_priority(&mgr, SENSOR_FIELD_CO2,         only_scd4x,    1u); /* SCD41 only */
 ```
 
-The logic: poll the sources, take for each field the first source reporting `VAL_OK`, mark the rest `VAL_ERROR`/`VAL_STALE`, and record `source_id`. The §15.1 requirement that "the device must not hang when a single sensor fails" becomes a 20-line unit test instead of a field trial involving a desoldered sensor.
+The logic: drive each source through `init()`, `start()`, `ready_in_ms()` and `read()` on its own schedule; for each field take, among the sources its priority names, the best status — `VAL_OK`, then `VAL_STALE`, `VAL_WARMUP`, `VAL_ERROR`, `VAL_UNAVAILABLE` — and of equals the one named first; record `source_id`. A failing source's fields become `VAL_ERROR` at once, a fallback takes over where there is one, and three failures in a row start the source over with `init()` after a doubling backoff. The poll never waits and returns its next deadline, which the event loops combine with `update_policy`'s. The §15.1 requirement that "the device must not hang when a single sensor fails" is a unit test instead of a field trial involving a desoldered sensor (`tests/unit/test_sensor_manager.c`). ADR 0017 has the details and the reasoning.
 
 ---
 

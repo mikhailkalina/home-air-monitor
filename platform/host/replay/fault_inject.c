@@ -48,12 +48,20 @@ static void force_sample_status(sensor_sample_t *s, sensor_caps_t caps, value_st
 static hal_status_t fi_init(sensor_source_t *self)
 {
     fault_inject_t *fi = self_of(self);
+    fi->calls.inits++;
+    if (fi->kind == FAULT_ABSENT) {
+        return HAL_ERR_NOT_FOUND;  // nothing answers at the address
+    }
     return fi->inner->init(fi->inner);
 }
 
 static hal_status_t fi_start(sensor_source_t *self)
 {
     fault_inject_t *fi = self_of(self);
+    fi->calls.starts++;
+    if (fi->kind == FAULT_ABSENT) {
+        return HAL_ERR_NOT_FOUND;
+    }
     return fi->inner->start(fi->inner);
 }
 
@@ -66,7 +74,14 @@ static uint32_t fi_ready_in_ms(const sensor_source_t *self)
 static hal_status_t fi_read(sensor_source_t *self, sensor_sample_t *out)
 {
     fault_inject_t *fi = self_of(self);
+    fi->calls.reads++;
 
+    if (fi->kind == FAULT_ABSENT) {
+        return HAL_ERR_NOT_FOUND;
+    }
+    if (fi->kind == FAULT_SILENT) {
+        return HAL_ERR_NOT_READY;  // nothing new, however long the caller waits
+    }
     if (fi->kind == FAULT_BUS_NACK) {
         return HAL_ERR_IO;  // as if the device NACKed: no I/O succeeded at all
     }
@@ -106,6 +121,16 @@ static void fi_deinit(sensor_source_t *self)
     fi->inner->deinit(fi->inner);
 }
 
+static hal_status_t fi_set_ambient(sensor_source_t *self, const sensor_ambient_t *ambient)
+{
+    fault_inject_t *fi = self_of(self);
+    fi->calls.set_ambients++;
+    if (fi->kind == FAULT_ABSENT) {
+        return HAL_ERR_NOT_FOUND;
+    }
+    return fi->inner->set_ambient(fi->inner, ambient);
+}
+
 void fault_inject_init(fault_inject_t *fi, sensor_source_t *inner)
 {
     memset(fi, 0, sizeof(*fi));
@@ -121,6 +146,7 @@ void fault_inject_init(fault_inject_t *fi, sensor_source_t *inner)
     fi->port.read = fi_read;
     fi->port.suspend = fi_suspend;
     fi->port.deinit = fi_deinit;
+    fi->port.set_ambient = (inner->set_ambient != NULL) ? fi_set_ambient : NULL;
     fi->port.impl = fi;
 }
 

@@ -188,7 +188,9 @@ static void build_gas_field(vm_field_view_t *out, const measurement_f32_t *gas)
     measurement_f32_t kohm = *gas;
     kohm.value = gas->value / VM_OHM_PER_KOHM;
     const unsigned decimals = (kohm.value < VM_GAS_ONE_DECIMAL_BELOW_KOHM) ? 1u : 0u;
-    build_field(out, &kohm, "Gas resistance", "kOhm", decimals);
+    // "Gas", not "Gas resistance": the label has a quarter of the panel at
+    // 32px (screen_home.h), and the unit below the number says what it is.
+    build_field(out, &kohm, "Gas", "kOhm", decimals);
 }
 
 // What the IAQ cell shows: IAQ wherever something provides it, else raw gas
@@ -343,21 +345,27 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
     // The "last update" line reports the freshest thing on the screen: if any
     // one quantity is current, the picture as a whole is current.
     uint64_t youngest_ms = MEASUREMENT_AGE_UNKNOWN;
+    bool any_fresh = false;
     for (size_t i = 0u; i < (size_t)VM_FIELD_COUNT; ++i) {
         if (!vm->fields[i].has_value) {
             continue;
         }
+        any_fresh = any_fresh || shown[i]->status == VAL_OK;
         const uint64_t age = measurement_age_ms(shown[i], now_ms);
         if (age < youngest_ms) {
             youngest_ms = age;
         }
     }
 
-    if (youngest_ms == MEASUREMENT_AGE_UNKNOWN) {
+    if (any_fresh) {
+        vm->has_updated = true;
+        (void)str_append(vm->updated_text, sizeof(vm->updated_text), 0u, "just now");
+    } else if (youngest_ms == MEASUREMENT_AGE_UNKNOWN) {
         vm->has_updated = false;
         (void)str_append(vm->updated_text, sizeof(vm->updated_text), 0u, "--");
     } else {
         vm->has_updated = true;
+        vm->updated_is_age = true;
         format_age(vm->updated_text, sizeof(vm->updated_text), youngest_ms);
     }
 

@@ -67,9 +67,10 @@
 
 // --- ghosting probe --------------------------------------------------------
 //
-// EPD_CAL_GHOST_SAWTOOTH: the headline walks the way
-// apps/firmware_esp32/main/bringup_reading.c's sawtooth makes it walk under
-// update_policy: one step just past the 50 ppm redraw threshold per partial
+// EPD_CAL_GHOST_SAWTOOTH: the headline walks the way phase 2's synthetic
+// bring-up data (bringup_reading.c, replaced by the real sensors in phase 3c)
+// made it walk under update_policy: one step just past the 50 ppm redraw
+// threshold per partial
 // refresh, rising then falling, crossing the Good/Moderate/Poor boundaries
 // (and so inverting the level banner) on the way. The realistic case, not the
 // worst one.

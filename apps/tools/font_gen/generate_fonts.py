@@ -27,19 +27,26 @@ OUT_DIR = ROOT / "core" / "ui" / "fonts"
 
 FIRST_CODEPOINT = 0x20
 LAST_CODEPOINT = 0x7E
-SIZES = (16, 32, 64)
+# 16 for the slideshow's caption and the test card; the home screen's sizes
+# (core/ui/screen_home.c): 32 for the grid's labels and units, 40 for the
+# status bar, footer and headline label, 48 for the CO2 unit and band, 72 for
+# the grid's readings, 160 for the CO2 reading.
+SIZES = (16, 32, 40, 48, 72, 160)
 
-# Large enough that no glyph at any generated size gets clipped by the canvas
-# itself; only the font's own ink is measured back out via getbbox().
-CANVAS = 200
-PEN = 100
 THRESHOLD = 128
 
 
-def rasterize_glyph(font, ch):
-    img = Image.new("L", (CANVAS, CANVAS), 0)
+def rasterize_glyph(font, size, ch):
+    # The canvas and pen scale with the size, so no glyph is clipped by the
+    # canvas itself -- every glyph of DejaVu Sans stays within one em of its
+    # pen in every direction -- and only the font's own ink is measured back
+    # out via getbbox(). The pen is a whole pixel, so the raster does not
+    # depend on where on the canvas it lands.
+    canvas = 4 * size
+    pen = 2 * size
+    img = Image.new("L", (canvas, canvas), 0)
     draw = ImageDraw.Draw(img)
-    draw.text((PEN, PEN), ch, font=font, fill=255, anchor="ls")
+    draw.text((pen, pen), ch, font=font, fill=255, anchor="ls")
     bbox = img.getbbox()
     advance = round(draw.textlength(ch, font=font))
 
@@ -72,8 +79,8 @@ def rasterize_glyph(font, ch):
     return {
         "width": width,
         "height": height,
-        "x_offset": x0 - PEN,
-        "y_offset": y0 - PEN,
+        "x_offset": x0 - pen,
+        "y_offset": y0 - pen,
         "advance": advance,
         "rows": rows,
     }
@@ -86,18 +93,20 @@ def emit_font(size):
     glyphs = []
     bitmap = bytearray()
     for codepoint in range(FIRST_CODEPOINT, LAST_CODEPOINT + 1):
-        g = rasterize_glyph(font, chr(codepoint))
+        g = rasterize_glyph(font, size, chr(codepoint))
 
+        # font_glyph_t's field types (core/ui/fonts/font.h). At 160px the
+        # tallest glyph reaches exactly 128 pixels above the baseline, the
+        # most an int8_t y_offset can say.
         assert 0 <= g["width"] <= 255 and 0 <= g["height"] <= 255
-        assert -128 <= g["x_offset"] <= 127 and -128 <= g["y_offset"] <= 127
+        assert -128 <= g["x_offset"] <= 127 and -128 <= g["y_offset"] <= 127, (size, chr(codepoint))
         assert 0 <= g["advance"] <= 255
-        assert len(bitmap) <= 0xFFFF
 
         glyphs.append((codepoint, g, len(bitmap)))
         for row in g["rows"]:
             bitmap.extend(row)
 
-    assert len(bitmap) <= 0xFFFF, "bitmap_offset no longer fits uint16_t"
+    assert len(bitmap) <= 0xFFFFFFFF, "bitmap_offset no longer fits uint32_t"
 
     name = f"font_dejavu_sans_{size}"
     lines = []

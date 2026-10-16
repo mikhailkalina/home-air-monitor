@@ -4,6 +4,14 @@
 // takes, when a partial refresh has to be turned into a full one, and the log
 // line that says what happened.
 //
+// Partial refreshes past the advertised budget are performed and counted: the
+// policy goes past it on purpose while a full refresh waits for its minimum
+// interval (docs/adr/0019-partials-past-the-budget.md), and the window shows
+// the ghosting that costs from the eleventh. Only past
+// EPD_SIM_MOST_PARTIALS_TESTED -- more than this panel was ever driven through
+// -- does the emulated panel refresh fully on its own, and say so as a defect
+// of the caller.
+//
 // It lives outside adp_display_sdl.c on purpose. The window makes a bad
 // refresh strategy noticeable; the log is what makes it diagnosable, and CI
 // has no window. Running headless must therefore produce the same accounting
@@ -38,6 +46,8 @@ typedef struct {
     uint32_t partials_since_full;
     uint32_t flush_count;
     uint32_t forced_full_count;  // how often the panel had to rescue the policy
+    uint32_t past_budget_count;  // partial refreshes performed past the budget
+    uint32_t most_partials;      // the most partial refreshes seen between two full ones
     uint64_t simulated_ms_total;
 } epd_model_t;
 
@@ -46,6 +56,7 @@ typedef struct {
     refresh_mode_t requested;
     refresh_mode_t performed;  // differs from `requested` when forced_full
     bool forced_full;
+    bool past_budget;       // a partial refresh performed past the advertised budget
     uint32_t changed_rows;  // rows holding a pixel the refresh changes
     uint32_t written_rows;  // rows each pass writes out (epd_model.c, written_rows())
     uint32_t duration_ms;
@@ -55,7 +66,8 @@ typedef struct {
 
 // `max_partial_refreshes_before_full` is the budget the panel advertises
 // through port_display; 0 means no usable partial mode, and every flush comes
-// out full.
+// out full. A partial refresh is turned into a full one past the larger of
+// the budget and EPD_SIM_MOST_PARTIALS_TESTED.
 void epd_model_init(epd_model_t *m, uint16_t width, uint16_t height,
                     uint32_t max_partial_refreshes_before_full);
 

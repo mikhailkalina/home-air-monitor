@@ -21,14 +21,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "domain/measurement.h"
 #include "epd_emulation.h"
 #include "epd_model.h"
 #include "hac_test.h"
 #include "ui/framebuffer.h"
 #include "ui/gfx.h"
-#include "ui/screen_home.h"
-#include "ui/view_model.h"
 
 #define PANEL_W 960
 #define PANEL_H 540
@@ -240,16 +237,31 @@ static void the_model_is_within_one_percent_of_every_measured_case(void)
     }
 }
 
+// The non-white rows of the frame the calibration run measured screen_home's
+// full refresh on: screen_home as phase 2c drew it, from the very reading the
+// run rendered (apps/firmware_esp32/main/epd_calibration.c, render_home()
+// with CO2 600 ppm, 22 C, 45 %), as [first, end) ranges. Fixed here because
+// the screen has changed since -- phase 3c's larger fonts (ADR 0019 era) --
+// and the measurement belongs to that frame, not to whatever screen_home
+// draws today; which rows hold ink is all a full refresh's duration depends
+// on (epd_model.h). Extracted 2026-10-16 by rendering commit 2eb7f7e's
+// screen_home.
+typedef struct {
+    int32_t first;
+    int32_t end;
+} row_range_t;
+
+static const row_range_t k_measured_screen_home_rows[] = {
+    {22, 37}, {50, 51}, {80, 92}, {110, 187}, {214, 215}, {236, 430}, {460, 461}, {488, 503},
+};
+
 // Full refreshes depend on content, so they are checked against content: a
 // solid frame (every row non-white, as the measured black fill and grey ramp
-// were), and screen_home rendered from the very reading the calibration run
-// rendered (apps/firmware_esp32/main/epd_calibration.c, render_home() with
-// CO2 600 ppm, 22 C, 45 %).
+// were), and the frame screen_home's full refresh was measured on.
 static void a_full_refresh_matches_the_panel_for_solid_content_and_screen_home(void)
 {
     const uint32_t solid_fill_us = 3660569u;
     const uint32_t screen_home_us = 3324863u;
-    const uint64_t now_ms = 1000u;
 
     epd_model_t m;
     epd_flush_t f;
@@ -259,14 +271,13 @@ static void a_full_refresh_matches_the_panel_for_solid_content_and_screen_home(v
     HAC_CHECK(within_percent(f.duration_ms, solid_fill_us, MODEL_TOLERANCE_PERCENT));
 
     framebuffer_t fb = white_frame();
-    air_reading_t reading;
-    air_reading_init(&reading);
-    reading.co2_ppm = measurement_ok(600.0f, now_ms, 1u);
-    reading.temperature_c = measurement_ok(22.0f, now_ms, 2u);
-    reading.humidity_rh = measurement_ok(45.0f, now_ms, 2u);
-    static view_model_t vm;
-    view_model_build(&vm, &reading, now_ms);
-    screen_home_render(&fb, &vm);
+    for (size_t i = 0u;
+         i < sizeof(k_measured_screen_home_rows) / sizeof(k_measured_screen_home_rows[0]); ++i) {
+        for (int32_t y = k_measured_screen_home_rows[i].first;
+             y < k_measured_screen_home_rows[i].end; ++y) {
+            framebuffer_set_pixel(&fb, 0, y, 0u);  // one dark pixel makes the row non-white
+        }
+    }
 
     epd_model_flush(&m, NULL, REFRESH_FULL, &fb, s_glass, &f);
     HAC_CHECK(within_percent(f.duration_ms, screen_home_us, MODEL_TOLERANCE_PERCENT));
@@ -294,7 +305,10 @@ static void partial_refreshes_are_counted_and_a_full_one_resets_the_count(void)
     HAC_CHECK_EQ_U64(m.forced_full_count, 0u);
 }
 
-static void the_panel_forces_a_full_refresh_when_the_budget_is_spent(void)
+// Past the budget a partial refresh is still a partial refresh: the policy
+// goes there on purpose while a full one waits for its interval (ADR 0019).
+// The panel performs it, and counts it.
+static void past_the_budget_the_panel_refreshes_partially_and_counts_it(void)
 {
     epd_model_t m;
     epd_flush_t f;
@@ -303,11 +317,37 @@ static void the_panel_forces_a_full_refresh_when_the_budget_is_spent(void)
 
     for (uint32_t i = 0u; i < TEST_BUDGET; ++i) {
         epd_model_flush(&m, NULL, REFRESH_PARTIAL, NULL, NULL, &f);
+        HAC_CHECK(!f.past_budget);
     }
 
-    // One partial refresh too many. The panel does not comply: it refreshes
-    // fully and says so, which is the simulator refusing to model damage it
-    // would not survive.
+    epd_model_flush(&m, NULL, REFRESH_PARTIAL, NULL, NULL, &f);
+    HAC_CHECK_EQ_INT(f.performed, REFRESH_PARTIAL);
+    HAC_CHECK(f.past_budget);
+    HAC_CHECK(!f.forced_full);
+    HAC_CHECK_EQ_U64(f.partials_since_full, (uint64_t)TEST_BUDGET + 1u);
+    HAC_CHECK_EQ_U64(m.past_budget_count, 1u);
+    HAC_CHECK_EQ_U64(m.most_partials, (uint64_t)TEST_BUDGET + 1u);
+
+    epd_model_flush(&m, NULL, REFRESH_FULL, NULL, NULL, &f);
+    HAC_CHECK_EQ_U64(f.partials_since_full, 0u);
+    HAC_CHECK_EQ_U64(m.most_partials, (uint64_t)TEST_BUDGET + 1u);  // remembered
+}
+
+// Past anything the panel was ever driven through without a full refresh
+// (ADR 0008's 40), it no longer complies: it refreshes fully and says so,
+// which is the simulator refusing to model damage nobody has measured.
+static void past_what_was_tested_the_panel_forces_a_full_refresh(void)
+{
+    epd_model_t m;
+    epd_flush_t f;
+
+    epd_model_init(&m, PANEL_W, PANEL_H, TEST_BUDGET);
+
+    for (uint32_t i = 0u; i < EPD_SIM_MOST_PARTIALS_TESTED; ++i) {
+        epd_model_flush(&m, NULL, REFRESH_PARTIAL, NULL, NULL, &f);
+        HAC_CHECK(!f.forced_full);
+    }
+
     epd_model_flush(&m, NULL, REFRESH_PARTIAL, NULL, NULL, &f);
     HAC_CHECK_EQ_INT(f.requested, REFRESH_PARTIAL);
     HAC_CHECK_EQ_INT(f.performed, REFRESH_FULL);
@@ -315,6 +355,7 @@ static void the_panel_forces_a_full_refresh_when_the_budget_is_spent(void)
     HAC_CHECK_EQ_INT(f.area.h, PANEL_H);
     HAC_CHECK_EQ_U64(f.partials_since_full, 0u);
     HAC_CHECK_EQ_U64(m.forced_full_count, 1u);
+    HAC_CHECK_EQ_U64(m.past_budget_count, EPD_SIM_MOST_PARTIALS_TESTED - TEST_BUDGET);
 }
 
 static void a_panel_with_no_partial_mode_refreshes_fully_every_time(void)
@@ -470,7 +511,8 @@ int main(void)
     HAC_RUN(the_model_is_within_one_percent_of_every_measured_case);
     HAC_RUN(a_full_refresh_matches_the_panel_for_solid_content_and_screen_home);
     HAC_RUN(partial_refreshes_are_counted_and_a_full_one_resets_the_count);
-    HAC_RUN(the_panel_forces_a_full_refresh_when_the_budget_is_spent);
+    HAC_RUN(past_the_budget_the_panel_refreshes_partially_and_counts_it);
+    HAC_RUN(past_what_was_tested_the_panel_forces_a_full_refresh);
     HAC_RUN(a_panel_with_no_partial_mode_refreshes_fully_every_time);
 
     HAC_RUN(a_full_refresh_splits_into_phases_that_add_up);

@@ -246,7 +246,11 @@ GT911's product ID register can, and is left to the touch driver.
 - **The driver logs its own errors** (`i2c.master: ... nack detected`,
   `I2C hardware timeout detected`) whenever a transfer fails. Phase 3's
   sensor polling of an absent sensor would repeat them every cycle; whether to
-  quieten the `i2c.master` tag is that phase's decision.
+  quieten the `i2c.master` tag is that phase's decision. **Decided in phase
+  3c: not quietened** (`docs/adr/0017-sensor-manager.md`, "The backoff
+  ceiling, and the I2C driver's error lines"): the sensor manager's backoff
+  bounds the repetition, and no log level keeps the bus-fault lines while
+  dropping the NACK ones.
 - **A new third-party footprint:** `esp_console` links linenoise (BSD-2-Clause)
   and argtable3 (BSD-3-Clause, with the BSD/Tcl-style notices of the code it
   bundles) into the firmware. Both ship inside ESP-IDF; both are recorded in

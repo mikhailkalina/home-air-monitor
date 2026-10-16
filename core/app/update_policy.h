@@ -7,7 +7,9 @@
 //
 //   * update_policy_config_t -- what the *product* wants: redraw when CO2 has
 //     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %, or
-//     when two minutes have passed (docs/requirements.md 9.1);
+//     when two minutes have passed while the data on the screen is getting
+//     older (docs/requirements.md 9.1), and no more than once per sensor
+//     cycle;
 //   * update_policy_limits_t -- what the *panel* tolerates: how often a full
 //     refresh may happen and how many partial refreshes may precede it. These
 //     are read out of port_display, never written down here. There is no
@@ -40,6 +42,15 @@ extern "C" {
 #define UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH 1.0f
 #define UPDATE_POLICY_DEFAULT_MAX_INTERVAL_MS 120000u
 
+// CHOICE: at most one redraw per this interval -- one sensor cycle
+// (SENSOR_MANAGER_DEFAULT_INTERVAL_MS). The two sensors are read at different
+// moments of each cycle, so without it a cycle in which both readings move
+// costs two partial refreshes 0.6 s apart (phase 3c's board log); with it, the
+// second waits for the first's cycle to end and both reach the glass in one.
+// Half the partial refreshes for the same readings, and so twice as long
+// between full ones (docs/adr/0019-partials-past-the-budget.md).
+#define UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS 5000u
+
 // Returned as next_deadline_ms when no timer is pending: only new data can
 // change the answer, so there is nothing to wake up for.
 #define UPDATE_POLICY_NO_DEADLINE UINT64_MAX
@@ -52,8 +63,17 @@ typedef struct {
     float humidity_delta_rh;
 
     // Redraw this long after the last one even if nothing moved, so the
-    // "updated N ago" line stays honest. 0 disables the periodic redraw.
+    // "updated N ago" line keeps counting -- but only while it does count:
+    // while nothing shown is fresh and something is stale. With fresh data
+    // the line says "just now" and a redraw would change nothing, so none is
+    // made (docs/adr/0019-partials-past-the-budget.md). 0 disables the
+    // periodic redraw.
     uint32_t max_interval_ms;
+
+    // No redraw sooner than this after the last one, except the first frame:
+    // a redraw that becomes due earlier waits, and goes out with whatever
+    // else changed meanwhile. 0 lets every due redraw out at once.
+    uint32_t min_redraw_interval_ms;
 } update_policy_config_t;
 
 // The panel's own constraints, copied out of port_display so that the policy
@@ -70,8 +90,8 @@ typedef enum {
 } update_action_t;
 
 // Why a redraw became due. Reported even when the action is UPDATE_NONE
-// because the panel's minimum interval deferred it, so a log can say what was
-// wanted and what stopped it.
+// because the panel's minimum interval deferred it (a panel with no partial
+// mode only), so a log can say what was wanted and what stopped it.
 typedef enum {
     UPDATE_REASON_NONE = 0,
     UPDATE_REASON_FIRST_FRAME,
@@ -90,10 +110,22 @@ typedef struct {
     // because the panel's partial-refresh budget is spent.
     bool full_forced_by_budget;
 
+    // action is UPDATE_PARTIAL although the budget is spent: a full refresh
+    // is not allowed yet -- the panel's minimum full-refresh interval has not
+    // elapsed -- and the screen is kept current meanwhile. The first redraw
+    // due after the interval is full; none is made only because the interval
+    // elapsed (docs/adr/0019-partials-past-the-budget.md).
+    bool partial_past_budget;
+
+    // action is UPDATE_NONE only because the last redraw was less than
+    // min_redraw_interval_ms ago; next_deadline_ms is when it may go out.
+    bool held_for_redraw_interval;
+
     // action is UPDATE_NONE only because a full refresh is due but the
-    // panel's minimum full-refresh interval has not elapsed. The redraw is
-    // deferred, never downgraded to a partial: downgrading is exactly the
-    // behaviour the vendor warns damages the panel.
+    // panel's minimum full-refresh interval has not elapsed -- which happens
+    // only on a panel with no usable partial mode
+    // (max_partial_refreshes_before_full == 0), where there is nothing to keep
+    // the screen current with meanwhile.
     bool deferred_by_min_interval;
 
     // When to call update_policy_evaluate() again in the absence of new data:

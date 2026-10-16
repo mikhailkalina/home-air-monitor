@@ -36,6 +36,7 @@
 #ifndef HAC_PLATFORM_ESP32_T5S3_ADP_DISPLAY_H
 #define HAC_PLATFORM_ESP32_T5S3_ADP_DISPLAY_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "hal_status.h"
@@ -52,6 +53,12 @@ typedef struct {
     framebuffer_t fb;
     uint8_t *pixels;        // EPDiy's highlevel front buffer; NOT owned here
     const port_log_t *log;  // borrowed; must outlive this adapter
+
+    // What every update hands EPDiy for its waveform's temperature range:
+    // the measured temperature, or BOARD_EPD_ASSUMED_TEMPERATURE_C without
+    // one (adp_display_set_temperature()).
+    int temperature_c;
+    bool temperature_measured;
 } adp_display_t;
 
 // Initializes EPDiy against this board's definition
@@ -71,6 +78,19 @@ hal_status_t adp_display_init(adp_display_t *d, uint16_t width, uint16_t height,
                               const port_log_t *log);
 
 port_display_t *adp_display_port(adp_display_t *d);
+
+// The room temperature for the panel's waveform selection, as the
+// composition measured it -- not through port_display, which knows nothing
+// of temperature and does not need to: this is this panel's business, and
+// the composition is what holds both the reading and the adapter. `known`
+// false (no fresh reading) falls back to BOARD_EPD_ASSUMED_TEMPERATURE_C.
+// Rounded to whole degrees, as EPDiy takes them; logged when it switches
+// between measured and assumed.
+//
+// The ED047TC1 waveform EPDiy ships declares a single temperature range, so
+// today any value draws the same way (board_config.h); this matters from the
+// first waveform with several.
+void adp_display_set_temperature(adp_display_t *d, bool known, float temperature_c);
 
 void adp_display_deinit(adp_display_t *d);
 

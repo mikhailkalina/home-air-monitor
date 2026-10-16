@@ -98,7 +98,7 @@ typedef enum {
 } vm_level_t;
 
 typedef struct {
-    const char *label;  // "CO2", "Temperature", ..., "IAQ" or "Gas resistance"
+    const char *label;  // "CO2", "Temperature", ..., "IAQ" or "Gas"
     const char *unit;   // "ppm", "C", "%", "hPa", "kOhm", ""; never NULL
     char text[VM_TEXT_MAX];
     value_status_t status;
@@ -120,11 +120,18 @@ typedef struct {
     bool net_connected;
     const char *net_text;  // "Wi-Fi" / "offline"
 
-    // Age of the freshest quantity that still carries a number, as
-    // "12 s" / "4 min" / "2 h". has_updated is false when nothing has ever
-    // been read, and updated_text is then "--".
+    // When the screen's data was measured. "just now" while any quantity
+    // shown is fresh (VAL_OK) -- the picture is current, and saying how many
+    // seconds old it was when drawn would be a number the e-paper then keeps
+    // showing long after it stopped being true. Otherwise the age of the
+    // freshest quantity that still carries a number, as "12 s" / "4 min" /
+    // "2 h", which update_policy redraws periodically while it grows.
+    // has_updated is false when nothing carries a number, and updated_text is
+    // then "--". updated_is_age says whether the text is an age (and reads
+    // "updated <text> ago").
     char updated_text[VM_TEXT_MAX];
     bool has_updated;
+    bool updated_is_age;
 
     uint8_t error_count;
     uint8_t stale_count;

@@ -46,8 +46,39 @@ typedef struct {
     measurement_f32_t gas_resistance_ohm;
 } sensor_sample_t;
 
+// What the rest of the system measured that a source can correct its own
+// readings for (docs/adr/0018-ambient-compensation-through-port-sensor.md).
+// A field the caller has no trustworthy value for is anything but VAL_OK,
+// and the source ignores it.
+typedef struct {
+    measurement_f32_t pressure_hpa;  // the SCD4x's CO2 compensation (its datasheet, 3.7.5)
+} sensor_ambient_t;
+
 typedef struct sensor_source_s sensor_source_t;
 
+// The life cycle the sensor manager (core/app/sensor_manager.h) drives, and
+// tests/contract/port_sensor_contract.c holds every implementation to:
+//
+//   init()         bring the sensor to a known state. May be called again at
+//                  any time, without deinit(), to start over -- after a
+//                  failure, or after the sensor was unplugged and plugged
+//                  back: it forgets every measurement in progress, as a
+//                  reset would.
+//   start()        begin a measurement, or -- for a sensor that measures on
+//                  its own schedule -- make sure it is measuring. Calling it
+//                  again before read() has collected the last one is
+//                  allowed: HAL_OK or HAL_ERR_BUSY, never a second
+//                  measurement on top of the first.
+//   ready_in_ms()  how long until read() is worth calling; 0 means now.
+//   read()         HAL_OK with a sample, HAL_ERR_NOT_READY with `out`
+//                  untouched, or a failure.
+//   set_ambient()  optional (NULL when the source corrects for nothing):
+//                  hand it conditions measured elsewhere. HAL_OK when taken
+//                  or when nothing in `ambient` concerns it,
+//                  HAL_ERR_INVALID_ARG for a VAL_OK value outside what it
+//                  accepts, HAL_ERR_BUSY when it cannot take one now,
+//                  HAL_ERR_NOT_READY before init(). Lost by init(), which
+//                  restores the sensor's own defaults.
 struct sensor_source_s {
     const char *name;
     uint8_t id;          // becomes measurement_f32_t::source_id on every reading
@@ -59,6 +90,7 @@ struct sensor_source_s {
     hal_status_t (*read)(sensor_source_t *self, sensor_sample_t *out);
     hal_status_t (*suspend)(sensor_source_t *self);  // before deep sleep
     void (*deinit)(sensor_source_t *self);
+    hal_status_t (*set_ambient)(sensor_source_t *self, const sensor_ambient_t *ambient);
 
     void *impl;
 };

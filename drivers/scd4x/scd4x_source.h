@@ -119,7 +119,8 @@ typedef struct {
 } scd4x_source_t;
 
 // Wires `s->port` up as a sensor_source_t named "scd4x", with CO2,
-// temperature and humidity capabilities. Touches no bus: init() does that.
+// temperature and humidity capabilities and set_ambient() for the pressure.
+// Touches no bus: init() does that.
 // `s` and everything `cfg` points to must outlive the source.
 // HAL_ERR_INVALID_ARG on a NULL bus or clock.
 hal_status_t scd4x_source_setup(scd4x_source_t *s, const scd4x_source_config_t *cfg);
@@ -127,9 +128,11 @@ hal_status_t scd4x_source_setup(scd4x_source_t *s, const scd4x_source_config_t *
 // Hands the sensor the ambient pressure for its CO2 compensation (datasheet
 // 3.7.5) -- allowed while it measures, and recommended where the pressure
 // changes. HAL_ERR_INVALID_ARG outside 700-1200 hPa or before init();
-// HAL_ERR_BUSY while a single shot is being measured. Nothing feeds it yet:
-// bme68x_source measures pressure since phase 3b, and connecting the two is
-// the composition's job.
+// HAL_ERR_BUSY while a single shot is being measured. The source's
+// set_ambient() (ports/port_sensor.h) is this, for a VAL_OK pressure; the
+// sensor manager calls it with the merged pressure -- the BME68x's on the
+// board -- after every init() and whenever it moves by a hectopascal
+// (docs/adr/0018-ambient-compensation-through-port-sensor.md).
 hal_status_t scd4x_source_set_ambient_pressure(scd4x_source_t *s, float pressure_hpa);
 
 const char *scd4x_variant_name(scd4x_variant_t variant);

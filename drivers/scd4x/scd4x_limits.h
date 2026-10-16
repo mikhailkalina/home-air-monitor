@@ -64,9 +64,10 @@
 // slowly still (90 s and 120 s), as the sensor's own 15 mA warms its
 // surroundings. On this board every hardware reset power-cycles the sensor
 // (docs/hardware/board_notes.md), so the warm-up recurs at every such boot.
-// Replaced from the first cold-start readings on the board -- this branch,
-// phase-3a-scd4x-driver, once the sensor is wired -- by where the readings
-// stop drifting.
+// Replaced from the first cold-start readings on the board by where the
+// readings stop drifting: phase 3c composes the driver into the firmware,
+// whose once-a-minute sample lines carry them (docs/hardware/board_notes.md,
+// "Checks still to do on the board").
 #define SCD4X_WARMUP_MS 60000u
 
 // ESTIMATE: how long past a single shot's 5000 ms a refused address still
@@ -74,7 +75,9 @@
 // sensor still busy after it is out of specification -- but it is the
 // sensor's clock against this board's, and nothing measures how far apart
 // they run. Replaced, like the warm-up, from the board: single shot is phase
-// 5's mode, so by that phase at the latest.
+// 5's mode, so by that phase at the latest. Two shots seen so far, both
+// ready at the first read after 5000 ms on this board's clock, so the grace
+// was never needed (the test app, 2026-10-16) -- too few to drop it.
 #define SCD4X_BUSY_GRACE_MS 1000u
 
 // CHOICE: how soon to ask again after the sensor said "not yet" -- a

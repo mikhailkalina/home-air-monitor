@@ -15,10 +15,9 @@
 
 #define EVENT_LOOP_TAG "event_loop"
 
-// A due redraw's deadline is never waited on for longer than this, even when
-// the policy reports UPDATE_POLICY_NO_DEADLINE, so a heartbeat and a
-// stack-high-water-mark line still appear during a quiet period instead of
-// only after minutes of silence.
+// No deadline is waited on for longer than this, even when neither the
+// policy nor the sensor manager has one, so the pump still wakes during a
+// quiet period instead of only after minutes of silence.
 #define EVENT_LOOP_MAX_WAIT_MS 60000u
 
 // Backoff after an iteration that wanted a redraw and did not achieve one.
@@ -32,18 +31,21 @@
 //
 // Doubling from one second to the same ceiling the idle wait uses. A failure
 // that clears itself still recovers within a second; one that does not stops
-// drowning the log and the CPU.
+// drowning the log and the CPU. Since phase 3c the pump also wakes for the
+// sensors every few seconds, so the backoff is a point before which no redraw
+// is attempted (redraw_not_before_ms), not merely a longer sleep.
 #define EVENT_LOOP_BACKOFF_FIRST_MS 1000u
 #define EVENT_LOOP_BACKOFF_MAX_SHIFT 6u
 
 #define EVENT_LOOP_QUEUE_DEPTH 8u
 
 // What docs/architecture.md 6.1's app_event_t will eventually be. Nothing
-// produces one yet in phase 2a -- there is no touch IRQ, no sensor-ready
-// signal -- so the queue exists for its shape (xQueueReceive with a timeout
-// computed from the policy's next deadline, exactly as the architecture
-// describes) rather than for traffic; a timeout and a real event are handled
-// identically below, because either one means "re-evaluate now".
+// produces one yet -- there is no touch IRQ, and the sensors are polled at
+// the sensor manager's deadlines rather than signalled -- so the queue exists
+// for its shape (xQueueReceive with a timeout computed from the next
+// deadline, exactly as the architecture describes) rather than for traffic;
+// a timeout and a real event are handled identically below, because either
+// one means "re-evaluate now".
 typedef struct {
     uint8_t kind;
     uint64_t ts_ms;
@@ -56,9 +58,14 @@ typedef struct {
     bool deferral_logged;
 
     // Consecutive iterations that wanted a redraw and did not get one onto the
-    // glass -- a failed flush, or a diff that turned out empty. Drives the
-    // backoff in wait_ms_for_deadline(); reset by any successful flush.
+    // glass -- a failed flush, or a diff that turned out empty -- and the
+    // point on the clock before which no redraw is tried again. Reset by any
+    // successful flush.
     uint32_t consecutive_no_progress;
+    uint64_t redraw_not_before_ms;
+
+    // The least free stack this task has had, in bytes, as last logged.
+    uint32_t stack_free_min_bytes;
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
@@ -69,18 +76,12 @@ typedef struct {
     framebuffer_t previous_fb;
 } event_loop_state_t;
 
-// update_decision_t::next_deadline_ms is a point on the core's own clock
-// (the same epoch port_clock_t::now_ms() reads), not a duration -- see
-// core/app/update_policy.h's field comment. "next_deadline_ms=49" alone reads
-// as "wake up in 49 ms" to anyone who has not read that comment, when what it
-// actually means is "the clock read 49 ms at the moment this fired". The
-// "_abs_ms" suffix and the adjacent now_ms field name that fact instead of
-// relying on the reader to already know it. The two will always be equal
-// here: log_decision() only runs when update_policy_evaluate() decided a
-// redraw is due *now* (update_policy.c sets next_deadline_ms = now_ms in
-// that branch), so an interval field would always read 0 -- not logged for
-// that reason. The deferred-redraw log below, where the deadline is a real
-// future point, is where the interval is worth logging.
+// One line per redraw decision. No deadline field: log_decision() runs only
+// when update_policy_evaluate() decided a redraw is due *now*, so its
+// next_deadline_ms always equals now_ms here. past_budget marks a partial
+// refresh that goes past the panel's budget while the full one waits for its
+// minimum interval (docs/adr/0019-partials-past-the-budget.md); the full
+// refresh that follows says reason=panel when nothing else changed.
 static void log_decision(const event_loop_state_t *s, const update_decision_t *d, uint64_t now_ms)
 {
     const log_field_t fields[] = {
@@ -88,16 +89,16 @@ static void log_decision(const event_loop_state_t *s, const update_decision_t *d
         log_str("reason", update_policy_reason_name(d->reason)),
         log_u64("partials", update_policy_partials_since_full(s->deps.policy)),
         log_bool("forced_full", d->full_forced_by_budget),
+        log_bool("past_budget", d->partial_past_budget),
         log_u64("now_ms", now_ms),
-        log_u64("next_deadline_abs_ms", d->next_deadline_ms),
     };
     port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "decision", fields,
                    sizeof(fields) / sizeof(fields[0]));
 }
 
-// The evaluate -> render -> flush -> commit sequence of
-// apps/simulator/main.c:253-268 (redraw()), unchanged in shape: the policy is
-// only credited with the redraw once the flush actually reaches the display.
+// The evaluate -> render -> flush -> commit sequence of apps/simulator/main.c's
+// redraw(), unchanged in shape: the policy is only credited with the redraw
+// once the flush actually reaches the display.
 // Returns true only when the flush actually reached the panel, which is what
 // the caller's backoff is keyed on.
 static bool redraw(event_loop_state_t *s, const update_decision_t *d)
@@ -176,53 +177,77 @@ static uint32_t backoff_floor_ms(uint32_t failures)
     return (floor_ms < EVENT_LOOP_MAX_WAIT_MS) ? floor_ms : EVENT_LOOP_MAX_WAIT_MS;
 }
 
-static uint32_t wait_ms_for_deadline(uint64_t next_deadline_ms, uint64_t now_ms,
-                                     uint32_t no_progress)
+static uint32_t wait_ms_until(uint64_t wake_at_ms, uint64_t now_ms)
 {
-    uint32_t wait_ms;
-
-    if (next_deadline_ms == UPDATE_POLICY_NO_DEADLINE) {
-        wait_ms = EVENT_LOOP_MAX_WAIT_MS;
-    } else if (next_deadline_ms <= now_ms) {
-        wait_ms = 0u;
-    } else {
-        const uint64_t wait = next_deadline_ms - now_ms;
-        wait_ms = (wait < EVENT_LOOP_MAX_WAIT_MS) ? (uint32_t)wait : EVENT_LOOP_MAX_WAIT_MS;
+    if (wake_at_ms <= now_ms) {
+        return 0u;
     }
+    const uint64_t wait = wake_at_ms - now_ms;  // NO_DEADLINE lands here too, and is clamped
+    return (wait < EVENT_LOOP_MAX_WAIT_MS) ? (uint32_t)wait : EVENT_LOOP_MAX_WAIT_MS;
+}
 
-    // The floor only ever delays a retry that just failed; it never defers a
-    // deadline that is genuinely in the future further than it already is.
-    const uint32_t floor_ms = backoff_floor_ms(no_progress);
-    return (wait_ms > floor_ms) ? wait_ms : floor_ms;
+// The task's least free stack so far, logged at INFO each time it reaches a
+// new low -- so the figure the stack size is chosen from is in the ordinary
+// boot log, and a quiet run adds no lines once it has settled.
+// uxTaskGetStackHighWaterMark() counts StackType_t, which ESP-IDF's Xtensa
+// port defines as uint8_t (portmacro.h): bytes, not 32-bit words.
+static void log_stack_low(event_loop_state_t *s)
+{
+    const uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (free_bytes >= s->stack_free_min_bytes) {
+        return;
+    }
+    s->stack_free_min_bytes = free_bytes;
+    const log_field_t fields[] = {log_u64("stack_free_min_bytes", free_bytes)};
+    port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "stack low-water mark", fields, 1u);
 }
 
 static void pump_task(void *arg)
 {
     event_loop_state_t *s = (event_loop_state_t *)arg;
+    const port_clock_t *clock = s->deps.clock;
 
     air_reading_init(&s->reading);
+    s->stack_free_min_bytes = UINT32_MAX;
 
     for (;;) {
-        const uint64_t now_ms = s->deps.clock->now_ms(s->deps.clock);
+        const uint64_t sensors_due = sensor_manager_poll(s->deps.sensors, &s->reading);
 
-        s->deps.read_reading(s->deps.read_reading_ctx, &s->reading, now_ms);
+        // The time after the poll, not before it: the drivers wait out their
+        // sensors' command times inside it, and a reading stamped later than
+        // the time it is aged against would count as stale
+        // (sensor_manager_poll()).
+        const uint64_t now_ms = clock->now_ms(clock);
         s->reading.uptime_s = (uint32_t)(now_ms / 1000u);
-        air_reading_apply_age(&s->reading, now_ms, s->deps.max_reading_age_ms);
+        air_reading_apply_age(&s->reading, now_ms, s->deps.sensors->cfg.max_age_ms);
+        if (s->deps.on_reading != NULL) {
+            s->deps.on_reading(s->deps.on_reading_ctx, s->deps.sensors, &s->reading, now_ms);
+        }
 
         update_decision_t decision;
         update_policy_evaluate(s->deps.policy, &s->reading, &decision);
 
         if (decision.action != UPDATE_NONE) {
-            log_decision(s, &decision, now_ms);
-            if (redraw(s, &decision)) {
-                s->consecutive_no_progress = 0u;
-            } else if (s->consecutive_no_progress < UINT32_MAX) {
-                s->consecutive_no_progress++;
+            if (now_ms >= s->redraw_not_before_ms) {
+                log_decision(s, &decision, now_ms);
+                if (redraw(s, &decision)) {
+                    s->consecutive_no_progress = 0u;
+                    s->redraw_not_before_ms = 0u;
+                } else {
+                    if (s->consecutive_no_progress < UINT32_MAX) {
+                        s->consecutive_no_progress++;
+                    }
+                    s->redraw_not_before_ms =
+                        clock->now_ms(clock) + backoff_floor_ms(s->consecutive_no_progress);
+                }
+                // What is due now that the redraw is done -- or still due,
+                // if it was not.
+                update_policy_evaluate(s->deps.policy, &s->reading, &decision);
             }
         } else if (decision.deferred_by_min_interval && !s->deferral_logged) {
-            // Said once per episode, like the simulator's equivalent line
-            // (apps/simulator/main.c:416-423): repeating it every tick would
-            // bury everything else in the log.
+            // Only a panel with no partial mode gets here (ADR 0019). Said
+            // once per episode, like the simulator's equivalent line:
+            // repeating it every tick would bury everything else in the log.
             //
             // Unlike log_decision()'s always-now deadline, this one is a real
             // future point (the panel's min-full-refresh-interval elapsing),
@@ -241,17 +266,19 @@ static void pump_task(void *arg)
             s->deferral_logged = true;
         }
 
-        const uint32_t wait_ms =
-            wait_ms_for_deadline(decision.next_deadline_ms, now_ms, s->consecutive_no_progress);
+        // The earlier of the two deadlines; a redraw still due waits out its
+        // backoff, while the sensors keep their own pace.
+        uint64_t policy_due = decision.next_deadline_ms;
+        if (decision.action != UPDATE_NONE && policy_due < s->redraw_not_before_ms) {
+            policy_due = s->redraw_not_before_ms;
+        }
+        const uint64_t wake_at = (sensors_due < policy_due) ? sensors_due : policy_due;
+        const uint32_t wait_ms = wait_ms_until(wake_at, clock->now_ms(clock));
 
-        // uxTaskGetStackHighWaterMark() returns words remaining, not bytes,
-        // on every ESP-IDF FreeRTOS port; logged every iteration so the
-        // 6144-byte stack budget can be revisited from evidence rather than
-        // kept out of superstition.
-        const UBaseType_t high_water_words = uxTaskGetStackHighWaterMark(NULL);
+        log_stack_low(s);
         const log_field_t tick_fields[] = {
-            log_u64("stack_high_water_words", high_water_words),
             log_u64("wait_ms", wait_ms),
+            log_u64("sensors_due_abs_ms", sensors_due),
             log_u64("no_progress", s->consecutive_no_progress),
         };
         port_log_write(s->deps.log, LOG_LEVEL_DEBUG, EVENT_LOOP_TAG, "tick", tick_fields,
@@ -259,10 +286,10 @@ static void pump_task(void *arg)
 
         // A timeout and a genuine queued event both mean the same thing here
         // ("re-evaluate now"), so the received event, if any, is discarded.
-        // At least one tick is always waited: a policy that reports "due
-        // now" every single iteration would otherwise spin this task at
-        // 100% CPU and starve the idle task, tripping the watchdog instead
-        // of reaching the log line that would explain why.
+        // At least one tick is always waited: a deadline that is "due now"
+        // every single iteration would otherwise spin this task at 100% CPU
+        // and starve the idle task, tripping the watchdog instead of reaching
+        // the log line that would explain why.
         const TickType_t raw_ticks = pdMS_TO_TICKS(wait_ms);
         const TickType_t wait_ticks = (raw_ticks > 0u) ? raw_ticks : (TickType_t)1u;
 

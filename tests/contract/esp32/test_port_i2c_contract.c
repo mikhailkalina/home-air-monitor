@@ -9,7 +9,12 @@
 //
 // The faults are real: adp_i2c's fault-injection functions bit-bang a read
 // from the RTC and leave it holding SDA low, and take SCL away from the
-// controller and hold it low. Expect the driver's own error lines
+// controller and hold it low.
+//
+// The switched 3V3 is raised first. Since phase 3 the sensors hang on this
+// bus and run from that rail, and the test app never runs EPDiy, whose init
+// raises it in the firmware: unpowered, they hold both lines low and no
+// check here could pass (platform/esp32_t5s3/board_power.h). Expect the driver's own error lines
 // ("i2c.master: I2C transaction unexpected nack detected", "I2C hardware
 // timeout detected", ...) in the log while this runs -- they are the faults
 // being provoked, not failures. Only the "contract port_i2c ..." lines and
@@ -23,6 +28,7 @@
 #include "adp_i2c.h"
 #include "adp_log.h"
 #include "board_config.h"
+#include "board_power.h"
 #include "contract_print.h"
 #include "port_i2c_contract.h"
 
@@ -67,6 +73,8 @@ TEST_CASE("adp_i2c satisfies the port_i2c contract", "[contract][port_i2c]")
     static adp_i2c_t bus;
     adp_log_init(&log);
     adp_clock_init(&clock, adp_log_port(&log));
+    board_power_switched_3v3_on(adp_log_port(&log));
+    adp_clock_port(&clock)->delay_ms(adp_clock_port(&clock), BOARD_SWITCHED_3V3_SETTLE_MS);
     TEST_ASSERT_EQUAL(HAL_OK, adp_i2c_init(&bus, adp_log_port(&log)));
 
     const port_i2c_contract_env_t env = {

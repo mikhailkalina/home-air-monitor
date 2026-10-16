@@ -8,6 +8,15 @@ Accepted. Verified on the host only: the sensor is not yet wired to the
 board, so nothing below has met a real SCD41. The items marked ASSUMED are
 the questions it will answer.
 
+**Update 2026-10-16, phase 3c:** the driver met the board's SCD41 in the
+test app's `port_sensor` contract (ELF `6ab6ea91b...`), in both modes, and
+passed every check: variant SCD41, serial `0x2103c5073b73`; a sensor still
+measuring at the second init() refused `get_serial_number`, which is how
+`found_measuring` read true; both single shots were ready by 5 s. What that
+does and does not settle among the ASSUMED items is in
+`docs/hardware/board_notes.md`, open item "What the SCD41 does where its
+datasheet is silent".
+
 ## Context
 
 Phase 3a brings the first sensor, the SCD41 (true CO2, plus temperature and

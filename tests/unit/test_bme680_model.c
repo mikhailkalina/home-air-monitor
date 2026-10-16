@@ -116,6 +116,7 @@ static void it_is_silent_for_its_start_up_time(void)
 static void the_nvm_holds_the_published_calibration_where_the_datasheet_puts_it(void)
 {
     rig_t *r = rig_make();
+    r->sensor.calibration = BME680_MODEL_PUBLISHED_CALIBRATION;
     uint8_t c1[23];  // 0x8A..0xA0
     uint8_t c2[14];  // 0xE1..0xEE
     uint8_t c3[5];   // 0x00..0x04
@@ -156,6 +157,26 @@ static void the_nvm_holds_the_published_calibration_where_the_datasheet_puts_it(
     HAC_CHECK_EQ_INT((int8_t)c3[0x04] >> 4, 0);    // range_switching_error, 0x04<7:4>
 }
 
+// By default the model is this board's sensor: a few of its parameters,
+// decoded as above and written out as the board logged them.
+static void by_default_it_carries_this_boards_calibration(void)
+{
+    rig_t *r = rig_make();
+    uint8_t c1[23];  // 0x8A..0xA0
+    uint8_t c2[14];  // 0xE1..0xEE
+    uint8_t c3[5];   // 0x00..0x04
+    HAC_CHECK_EQ_INT(get_regs(r, 0x8Au, c1, sizeof c1), HAL_OK);
+    HAC_CHECK_EQ_INT(get_regs(r, 0xE1u, c2, sizeof c2), HAL_OK);
+    HAC_CHECK_EQ_INT(get_regs(r, 0x00u, c3, sizeof c3), HAL_OK);
+
+    HAC_CHECK_EQ_INT(le16(c2, 0xE9u, 0xEAu, 0xE1u), 26195);                               // par_t1
+    HAC_CHECK_EQ_INT((int16_t)le16(c1, 0x94u, 0x95u, 0x8Au), 8598);                       // par_p4
+    HAC_CHECK_EQ_INT(((unsigned)c2[0xE3 - 0xE1] << 4) | (c2[0xE2 - 0xE1] & 0x0Fu), 917);  // par_h1
+    HAC_CHECK_EQ_INT((int16_t)le16(c2, 0xEBu, 0xECu, 0xE1u), -10528);                     // par_g2
+    HAC_CHECK_EQ_INT((int8_t)c3[0x00], 36);      // res_heat_val
+    HAC_CHECK_EQ_INT((int8_t)c3[0x04] >> 4, 1);  // range_switching_error, 0x04<7:4>
+}
+
 static void a_negative_range_switching_error_keeps_its_sign(void)
 {
     rig_t *r = rig_make();
@@ -182,10 +203,11 @@ static void the_compensation_reproduces_the_published_test_vectors(void)
 }
 
 // What makes bisection a valid inverse: every curve is monotonic over its
-// whole ADC range, for this calibration, at the ends of the operating range.
-static void every_compensation_is_monotonic_over_its_adc(void)
+// whole ADC range, for a calibration, at the ends of the operating range --
+// checked for both the published set and this board's, which the model
+// inverts by default.
+static void check_monotonic(const bme680_model_calibration_t *c)
 {
-    const bme680_model_calibration_t *c = &BME680_MODEL_PUBLISHED_CALIBRATION;
     bool rising = true;
     double prev = bme680_model_temperature(c, 0u, NULL);
     for (uint32_t adc = 1u; adc < (1u << 20); adc++) {
@@ -229,6 +251,12 @@ static void every_compensation_is_monotonic_over_its_adc(void)
     }
 }
 
+static void every_compensation_is_monotonic_over_its_adc(void)
+{
+    check_monotonic(&BME680_MODEL_PUBLISHED_CALIBRATION);
+    check_monotonic(&BME680_MODEL_BOARD_CALIBRATION);
+}
+
 // --- the I2C framing ---------------------------------------------------------------
 
 static void a_write_is_pairs_of_address_and_data_not_a_register_file(void)
@@ -260,7 +288,7 @@ static void a_read_auto_increments_and_wraps(void)
     uint8_t d[3];
     HAC_CHECK_EQ_INT(get_regs(r, 0xFFu, d, sizeof d), HAL_OK);
     HAC_CHECK_EQ_INT(d[0], 0x00);  // 0xFF, reserved
-    HAC_CHECK_EQ_INT(d[1], 48);    // 0x00, res_heat_val
+    HAC_CHECK_EQ_INT(d[1], 36);    // 0x00, res_heat_val (this board's)
     HAC_CHECK_EQ_INT(d[2], 0x00);  // 0x01, reserved
 }
 
@@ -553,7 +581,7 @@ static void a_soft_reset_restores_power_on_state_even_mid_measurement(void)
     HAC_CHECK_EQ_INT(get_reg(r, 0x74u), 0x00);
     HAC_CHECK_EQ_INT(get_reg(r, 0x71u), 0x00);
     HAC_CHECK_EQ_INT(get_reg(r, 0x22u), 0x80);
-    HAC_CHECK_EQ_INT(get_reg(r, 0xEAu), 26041 >> 8);  // the NVM survives
+    HAC_CHECK_EQ_INT(get_reg(r, 0xEAu), 26195 >> 8);  // the NVM survives: par_t1's MSB
 }
 
 // --- faults --------------------------------------------------------------------------
@@ -603,6 +631,7 @@ int main(void)
     HAC_RUN(it_is_a_bme680_at_its_reset_state);
     HAC_RUN(it_is_silent_for_its_start_up_time);
     HAC_RUN(the_nvm_holds_the_published_calibration_where_the_datasheet_puts_it);
+    HAC_RUN(by_default_it_carries_this_boards_calibration);
     HAC_RUN(a_negative_range_switching_error_keeps_its_sign);
     HAC_RUN(the_compensation_reproduces_the_published_test_vectors);
     HAC_RUN(every_compensation_is_monotonic_over_its_adc);

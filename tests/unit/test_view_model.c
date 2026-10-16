@@ -207,7 +207,8 @@ static void the_co2_band_follows_the_requirements(void)
     HAC_CHECK(strcmp(vm.co2_level_text, "--") == 0);
 }
 
-static void the_update_line_reports_the_freshest_quantity(void)
+// Stale data: the line is the age of the freshest quantity on the screen.
+static void the_update_line_reports_the_freshest_stale_quantity(void)
 {
     view_model_t vm;
     air_reading_t r;
@@ -215,12 +216,15 @@ static void the_update_line_reports_the_freshest_quantity(void)
     air_reading_init(&r);
     r.co2_ppm = measurement_ok(738.0f, 1000u, 1u);        // 90 s old
     r.temperature_c = measurement_ok(22.0f, 85000u, 2u);  // 6 s old
+    r.co2_ppm.status = VAL_STALE;
+    r.temperature_c.status = VAL_STALE;
 
     view_model_build(&vm, &r, 91000u);
     HAC_CHECK(vm.has_updated);
+    HAC_CHECK(vm.updated_is_age);
     HAC_CHECK(strcmp(vm.updated_text, "6 s") == 0);
 
-    view_model_build(&vm, &r, 400000u);  // co2 315 s, temperature 315 s
+    view_model_build(&vm, &r, 400000u);  // co2 399 s, temperature 315 s
     HAC_CHECK(strcmp(vm.updated_text, "5 min") == 0);
 
     view_model_build(&vm, &r, 8000000u);
@@ -230,7 +234,28 @@ static void the_update_line_reports_the_freshest_quantity(void)
     air_reading_init(&r);
     view_model_build(&vm, &r, 5000u);
     HAC_CHECK(!vm.has_updated);
+    HAC_CHECK(!vm.updated_is_age);
     HAC_CHECK(strcmp(vm.updated_text, "--") == 0);
+}
+
+// Fresh data: "just now", not a count of seconds the e-paper would go on
+// showing long after it stopped being true. One fresh quantity is enough.
+static void the_update_line_says_just_now_while_anything_is_fresh(void)
+{
+    view_model_t vm;
+    air_reading_t r;
+
+    air_reading_init(&r);
+    r.co2_ppm = measurement_ok(738.0f, 85000u, 1u);
+    view_model_build(&vm, &r, 91000u);
+    HAC_CHECK(vm.has_updated);
+    HAC_CHECK(!vm.updated_is_age);
+    HAC_CHECK(strcmp(vm.updated_text, "just now") == 0);
+
+    r.temperature_c = measurement_ok(22.0f, 1000u, 2u);
+    r.temperature_c.status = VAL_STALE;
+    view_model_build(&vm, &r, 91000u);
+    HAC_CHECK(strcmp(vm.updated_text, "just now") == 0);
 }
 
 // --- the IAQ cell without BSEC ------------------------------------------------
@@ -257,7 +282,7 @@ static void without_iaq_the_cell_shows_gas_resistance(void)
     view_model_build(&vm, &r, 1000u);
 
     const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
-    HAC_CHECK(strcmp(cell->label, "Gas resistance") == 0);
+    HAC_CHECK(strcmp(cell->label, "Gas") == 0);
     HAC_CHECK(strcmp(cell->unit, "kOhm") == 0);
     HAC_CHECK(text_is(cell, "182"));
     HAC_CHECK(cell->has_value);
@@ -291,7 +316,7 @@ static void gas_resistance_brings_its_own_status(void)
     air_reading_t r = without_bsec(0.0f, VAL_WARMUP);  // the BME68x burning in
     view_model_build(&vm, &r, 1000u);
     const vm_field_view_t *cell = &vm.fields[VM_FIELD_IAQ];
-    HAC_CHECK(strcmp(cell->label, "Gas resistance") == 0);
+    HAC_CHECK(strcmp(cell->label, "Gas") == 0);
     HAC_CHECK(text_is(cell, "warm"));
     HAC_CHECK_EQ_INT(cell->mark, VM_MARK_WARMUP);
     HAC_CHECK_EQ_INT(vm.warmup_count, 1);
@@ -347,10 +372,13 @@ static void the_update_line_follows_the_gas_in_the_cell(void)
     air_reading_init(&r);
     r.co2_ppm = measurement_ok(738.0f, 1000u, 1u);                // 90 s old
     r.gas_resistance_ohm = measurement_ok(87000.0f, 88000u, 2u);  // 3 s old
+    r.co2_ppm.status = VAL_STALE;
+    r.gas_resistance_ohm.status = VAL_STALE;
     view_model_build(&vm, &r, 91000u);
     HAC_CHECK(strcmp(vm.updated_text, "3 s") == 0);
 
     r.iaq = measurement_ok(84.0f, 1000u, 2u);  // now IAQ's cell: the gas is off screen
+    r.iaq.status = VAL_STALE;
     view_model_build(&vm, &r, 91000u);
     HAC_CHECK(strcmp(vm.updated_text, "1 min") == 0);
 }
@@ -362,7 +390,8 @@ int main(void)
     HAC_RUN(every_status_has_its_own_treatment);
     HAC_RUN(faults_are_counted_and_summarized);
     HAC_RUN(the_co2_band_follows_the_requirements);
-    HAC_RUN(the_update_line_reports_the_freshest_quantity);
+    HAC_RUN(the_update_line_reports_the_freshest_stale_quantity);
+    HAC_RUN(the_update_line_says_just_now_while_anything_is_fresh);
     HAC_RUN(without_iaq_the_cell_shows_gas_resistance);
     HAC_RUN(gas_resistance_reads_in_kohm_with_a_decimal_only_when_small);
     HAC_RUN(gas_resistance_brings_its_own_status);
