@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <math.h>
+#include <string.h>
 
 #include "domain/measurement.h"
 #include "fake_clock.h"
@@ -236,6 +237,57 @@ static void values_from_before_deep_sleep_do_not_look_fresh_after_it(void)
     HAC_CHECK_EQ_INT(r.battery_percent.status, VAL_STALE);
 }
 
+// --- accuracy ---------------------------------------------------------------
+
+static void a_measurement_says_nothing_about_its_accuracy_unless_its_source_does(void)
+{
+    const measurement_f32_t ok = measurement_ok(84.0f, 1000u, 2u);
+    const measurement_f32_t warm = measurement_status(VAL_WARMUP, 1000u, 2u);
+    const measurement_f32_t none = measurement_unavailable();
+    HAC_CHECK_EQ_INT(ok.accuracy, ACC_NOT_REPORTED);
+    HAC_CHECK_EQ_INT(warm.accuracy, ACC_NOT_REPORTED);
+    HAC_CHECK_EQ_INT(none.accuracy, ACC_NOT_REPORTED);
+
+    air_reading_t r;
+    air_reading_init(&r);
+    HAC_CHECK_EQ_INT(r.iaq.accuracy, ACC_NOT_REPORTED);
+    HAC_CHECK(!measurement_low_accuracy(&r.iaq));
+}
+
+static void only_an_unreliable_or_low_verdict_is_low_accuracy(void)
+{
+    measurement_f32_t m = measurement_ok(84.0f, 1000u, 2u);
+    const struct {
+        value_accuracy_t accuracy;
+        bool low;
+    } cases[] = {
+        {ACC_NOT_REPORTED, false}, {ACC_UNRELIABLE, true}, {ACC_LOW, true},
+        {ACC_MEDIUM, false},       {ACC_HIGH, false},
+    };
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        m.accuracy = cases[i].accuracy;
+        HAC_CHECK(measurement_low_accuracy(&m) == cases[i].low);
+    }
+}
+
+static void ageing_leaves_the_accuracy_alone(void)
+{
+    measurement_f32_t m = measurement_ok(84.0f, 1000u, 2u);
+    m.accuracy = ACC_HIGH;
+    measurement_apply_age(&m, 1000000u, 30000u);
+    HAC_CHECK_EQ_INT(m.status, VAL_STALE);
+    HAC_CHECK_EQ_INT(m.accuracy, ACC_HIGH);  // stale, and still calibrated
+}
+
+static void every_accuracy_has_a_name(void)
+{
+    HAC_CHECK(strcmp(measurement_accuracy_name(ACC_NOT_REPORTED), "-") == 0);
+    HAC_CHECK(strcmp(measurement_accuracy_name(ACC_UNRELIABLE), "unreliable") == 0);
+    HAC_CHECK(strcmp(measurement_accuracy_name(ACC_LOW), "low") == 0);
+    HAC_CHECK(strcmp(measurement_accuracy_name(ACC_MEDIUM), "medium") == 0);
+    HAC_CHECK(strcmp(measurement_accuracy_name(ACC_HIGH), "high") == 0);
+}
+
 int main(void)
 {
     HAC_RUN(a_zero_filled_reading_is_unavailable_not_zero_valued);
@@ -255,5 +307,10 @@ int main(void)
 
     HAC_RUN(a_dead_sensor_goes_stale_while_a_live_one_stays_fresh);
     HAC_RUN(values_from_before_deep_sleep_do_not_look_fresh_after_it);
+
+    HAC_RUN(a_measurement_says_nothing_about_its_accuracy_unless_its_source_does);
+    HAC_RUN(only_an_unreliable_or_low_verdict_is_low_accuracy);
+    HAC_RUN(ageing_leaves_the_accuracy_alone);
+    HAC_RUN(every_accuracy_has_a_name);
     return hac_test_summary();
 }

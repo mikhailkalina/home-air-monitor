@@ -18,15 +18,27 @@
 //   VAL_WARMUP       "warm"                    light grey,  hourglass mark
 //   VAL_UNAVAILABLE  "n/a"                     lighter grey, dashes mark
 //
-// The IAQ cell. An index of air quality needs Bosch's BSEC library, which is
-// not linked (THIRD_PARTY_NOTICES.md); without it the BME68x still measures
-// its gas sensor's raw resistance, which docs/requirements.md 17.2 asks to
-// be shown in its place. So when IAQ is VAL_UNAVAILABLE -- nothing provides
-// it -- and gas resistance is anything else, the cell shows gas resistance,
-// in kOhm, under its own label and never as IAQ (13.3), with the gas's own
-// status treatment. An IAQ in any other status keeps the cell: warming up
-// or failing, it is provided. The "updated" line and the fault counts follow
-// whichever the cell shows.
+// A VAL_OK number whose source rates it ACC_LOW or ACC_UNRELIABLE
+// (measurement_low_accuracy()) keeps its black ink and gets a question mark
+// instead of no mark: a reading, on a scale its source has not yet
+// calibrated. Any other status keeps its own mark, which says more. The
+// footer names it when nothing worse is wrong, "IAQ not calibrated"
+// (docs/adr/0021-measurement-accuracy-and-iaq-levels.md).
+//
+// The IAQ cell. An index of air quality needs Bosch's BSEC library, which a
+// build links only on request (docs/adr/0020-bsec-iaq.md); without it the
+// BME68x still measures its gas sensor's raw resistance, which
+// docs/requirements.md 17.2 asks to be shown in its place. So when IAQ is
+// VAL_UNAVAILABLE -- nothing provides it -- and gas resistance is anything
+// else, the cell shows gas resistance, in kOhm, under its own label and
+// never as IAQ (13.3), with the gas's own status treatment. An IAQ in any
+// other status keeps the cell: warming up or failing, it is provided. The
+// "updated" line and the fault counts follow whichever the cell shows.
+//
+// Under an IAQ number, where the other cells have their unit, goes its band
+// (core/domain/air_quality.h), in a word that fits the cell at 32px beside a
+// mark: "Excellent", "Good", "Fair" for lightly polluted -- Bosch's own
+// "Lightly polluted" is half again too wide -- "Moderate" and "Poor".
 
 #ifndef HAC_CORE_UI_VIEW_MODEL_H
 #define HAC_CORE_UI_VIEW_MODEL_H
@@ -34,6 +46,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "domain/air_quality.h"
 #include "domain/measurement.h"
 
 #ifdef __cplusplus
@@ -80,13 +93,15 @@ typedef enum {
 } vm_field_t;
 
 // The icon drawn beside a field. One per value_status_t, so no status can
-// render as an unannotated blank.
+// render as an unannotated blank, and one for a VAL_OK number its source has
+// not calibrated.
 typedef enum {
     VM_MARK_NONE = 0,  // VAL_OK
     VM_MARK_STALE,
     VM_MARK_ERROR,
     VM_MARK_WARMUP,
     VM_MARK_UNAVAILABLE,
+    VM_MARK_LOW_ACCURACY,  // VAL_OK, measurement_low_accuracy()
 } vm_mark_t;
 
 typedef enum {
@@ -99,7 +114,10 @@ typedef enum {
 
 typedef struct {
     const char *label;  // "CO2", "Temperature", ..., "IAQ" or "Gas"
-    const char *unit;   // "ppm", "C", "%", "hPa", "kOhm", ""; never NULL
+    // The line under the number: its unit -- "ppm", "C", "%", "hPa", "kOhm" --
+    // or, for an IAQ number, its band ("Good"); "" for an IAQ without one.
+    // Never NULL.
+    const char *unit;
     char text[VM_TEXT_MAX];
     value_status_t status;
     vm_mark_t mark;
@@ -116,6 +134,10 @@ typedef struct {
     vm_level_t co2_level;
     const char *co2_level_text;  // "Good", "Moderate", "Poor", "Very poor", "--"
     bool co2_warning;            // VM_LEVEL_POOR or worse
+
+    // The IAQ's band, IAQ_LEVEL_UNKNOWN while the cell shows no IAQ number --
+    // gas resistance in its place included. Its text is the IAQ field's unit.
+    iaq_level_t iaq_level;
 
     bool net_connected;
     const char *net_text;  // "Wi-Fi" / "offline"
@@ -136,6 +158,7 @@ typedef struct {
     uint8_t error_count;
     uint8_t stale_count;
     uint8_t warmup_count;
+    uint8_t low_accuracy_count;            // VAL_OK numbers with VM_MARK_LOW_ACCURACY
     char status_text[VM_STATUS_TEXT_MAX];  // "2 sensor errors", "all sensors OK", ...
 } view_model_t;
 
@@ -152,6 +175,10 @@ uint8_t view_model_ink_for(value_status_t status);
 // measurement carries no number.
 vm_level_t view_model_co2_level(const measurement_f32_t *co2);
 const char *view_model_level_text(vm_level_t level);
+
+// What the IAQ cell says under its number: "Excellent", "Good", "Fair",
+// "Moderate", "Poor", and "" for IAQ_LEVEL_UNKNOWN.
+const char *view_model_iaq_level_text(iaq_level_t level);
 
 #ifdef __cplusplus
 }

@@ -14,8 +14,7 @@ whenever a dependency is added or removed.
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
 | Sensirion `embedded-i2c-scd4x` (tag `1.2.0`, commit `d953712213957544b5429542381fd7629cbb3786`) | 1.2.0 | BSD-3-Clause | `drivers/scd4x/scd4x_source.c` (through `drivers/scd4x/scd4x_hal.c`) | Yes — vendored unmodified in `drivers/scd4x/vendor/`; see below |
 | Bosch BME68x Sensor API (tag `v4.4.8`, commit `80ea120a8b8ac987d7d79eb68a9ed796736be845`) | 4.4.8 | BSD-3-Clause | `drivers/bme68x/bme68x_source.c` (through `drivers/bme68x/bme68x_hal.c`) | Yes — vendored unmodified in `drivers/bme68x/vendor/`; see below |
-| Bosch BSEC2 headers & config | 2.x | BSD-3-Clause | `drivers/bme68x/bsec` | Headers only |
-| Bosch BSEC2 library binary (`libalgobsec.a`) | 2.x | **Proprietary — Bosch Sensortec license agreement** | optional IAQ backend | **No — see below** |
+| Bosch BSEC2 library (`libalgobsec.a`), its headers and the `bme680_iaq_33v_3s_4d` configuration | 2.6.1.0 | **Proprietary — Bosch Sensortec license agreement; headers and configuration marked "Confidential"** | `drivers/bme68x/bme68x_bsec_source.c`, only in a build with `CONFIG_HAC_BSEC` / `HAC_BSEC` (off by default) | **No — nothing of it, not even the headers; see below** |
 | SDL2 | 2.x | Zlib | `platform/host/adp_display_sdl.c`, `platform/host/adp_input_sdl.c`, later `platform/host/sim_gui` | No (system package; optional, see below) |
 | Eclipse Mosquitto client (`libmosquitto`) | 2.x | EPL-2.0 / EDL-1.0 | `platform/host/adp_telemetry_mqtt.c` | No (system package) |
 | Unity | 2.x | MIT | `tests/` | Vendored |
@@ -65,8 +64,9 @@ and do not use Bosch's name to promote this project.
 
 This is the open-source half of Bosch's offer and nothing more: it reads the
 sensor and compensates temperature, humidity, pressure and gas resistance.
-It computes no IAQ. That is BSEC's, below, which remains unlinked; without
-it the firmware reports raw gas resistance, as the BSEC note says.
+It computes no IAQ. That is BSEC's, below, linked only in a build that asks
+for it; without it the firmware reports raw gas resistance, as the BSEC note
+says.
 
 The calibration set the host's BME680 model starts from
 (`platform/host/i2c_models/bme680_model.c`) is a real sensor's, published in
@@ -146,8 +146,9 @@ that the firmware is flashed over USB with publicly available tooling, is a
 documentation task rather than a design change. Recorded here so it is a known
 condition rather than a discovery.
 
-**BSEC is unaffected.** The proprietary Bosch BSEC2 binary planned for phase 3
-can coexist with LGPL-3 in one image, because only the EPDiy part must stay
+**BSEC is unaffected.** The proprietary Bosch BSEC2 binary, linked since
+phase 3d in a build that asks for it (`docs/adr/0020-bsec-iaq.md`), can
+coexist with LGPL-3 in one image, because only the EPDiy part must stay
 relinkable. This is precisely why this project accepts LGPL-3 and refuses
 GPL-3 (see the LilyGo-EPD47 note below, where the whole image would be
 covered and the two could not coexist).
@@ -200,7 +201,7 @@ compiles, is not.** GPL-3.0 is viral at the whole-image level for a
 statically linked embedded firmware — pulling this repository in as a
 component would put `core/`, the UI and every reporter under GPL-3.0, and it
 would collide outright with the proprietary Bosch BSEC binary this project
-already plans to link (see below): BSEC's license does not permit GPL-3.0
+links in a build with BSEC (see below): BSEC's license does not permit GPL-3.0
 terms on the surrounding work, and GPL-3.0 does not permit a proprietary
 binary in the same image. The two cannot coexist in one firmware build.
 
@@ -211,23 +212,54 @@ must not link.
 
 ## Notes on BSEC / BSEC2
 
-The BSEC binary library is **not** redistributed in this repository. It is only
-available for download after accepting Bosch Sensortec's license agreement:
+Bosch's BSEC2 is **not** in this repository, in any part, and must never be
+committed (`third_party/bsec/` and `libalgobsec.a` are gitignored). It is
+downloaded from Bosch Sensortec after accepting their licence agreement:
 
 <https://www.bosch-sensortec.com/software-tools/software/bme680-software-bsec/>
 
-To build with IAQ support, download the archive, accept the terms, and place the
-static library and configuration under `third_party/bsec/` (gitignored). Without
-it, the firmware falls back to reporting raw gas resistance, as recommended in
-the requirements document: since phase 3b `bme68x_source` measures it and the
-home screen shows it in the IAQ cell (`docs/adr/0016-bme68x-driver.md`). No
-"simple VOC indicator" is derived from it yet; raw resistance means little
-across sensors or before burn-in, and an indicator worth the name is BSEC's
-job or phase 3c's.
+Phase 3d (`docs/adr/0020-bsec-iaq.md`) was written against **BSEC 2.6.1.0**, the
+archive `bsec2-6-1-0_generic_release_22102024` (its release notes dated
+2024-07-29), downloaded and its terms accepted by the owner on 2026-10-16. Unpack the archive, as it comes, into `third_party/bsec/`, or
+point `HAC_BSEC_DIR` at it; `cmake/bsec.cmake` names the files the builds use:
 
-Pre-built firmware binaries containing BSEC must not be attached to GitHub
-Releases without first confirming that Bosch's terms permit that form of
-redistribution.
+- `algo/bsec_IAQ/bin/esp/esp32_s3/libalgobsec.a` for the board, and
+  `algo/bsec_IAQ/bin/gcc/Linux/m64/libalgobsec.a` for the host tests;
+- `algo/bsec_IAQ/inc/` -- `bsec_datatypes.h`, `bsec_interface.h`,
+  `bsec_interface_multi.h`;
+- `algo/bsec_IAQ/config/bme680/bme680_iaq_33v_3s_4d/bsec_iaq.c` and `.h`,
+  the configuration, compiled where it lies.
+
+**What the licence covers, as checked in that archive.** It holds no licence
+file: the terms are the agreement accepted on Bosch's site. The headers, the
+configuration files and the integration examples all carry Bosch's own
+header -- "Copyright (C) Bosch Sensortec GmbH. All Rights Reserved.
+Confidential." -- with a disclaimer, and "It is not allowed to deliver the
+source code of the Software to any third party without permission of Bosch
+Sensortec." An earlier revision of this file listed "BSEC2 headers & config"
+as BSD-3-Clause, in a `drivers/bme68x/bsec` that never existed. That is not
+what this archive says, and it was corrected when the archive arrived: no
+header, no configuration array and no example code from it is copied,
+quoted or vendored here. This project's own code that calls BSEC
+(`drivers/bme68x/bme68x_bsec_source.c`) is Apache-2.0 like the rest, and is
+useless without the archive.
+
+**Builds.** Off by default (`CONFIG_HAC_BSEC`, `HAC_BSEC`), so CI and a fresh
+clone build without it, and then the firmware reports raw gas resistance in
+place of IAQ, as the requirements recommend (§17.2): `bme68x_source` measures
+it and the home screen shows it in the IAQ cell
+(`docs/adr/0016-bme68x-driver.md`). With it, the BME68x is measured as BSEC
+asks and the cell shows BSEC's IAQ.
+
+**Copyleft.** None of the image's other dependencies stands in the way of
+linking BSEC: EPDiy is LGPL-3.0, which constrains only the relinkability of
+EPDiy itself (above); LilyGo-EPD47, GPL-3.0, is never linked (above) --
+which is exactly what keeps this combination possible.
+
+**Distribution.** A firmware image built with BSEC contains Bosch's
+proprietary object code. It must not be attached to a GitHub Release, or
+given to anyone, without first confirming that Bosch's terms permit that
+form of redistribution.
 
 ## Notes on DejaVu Sans
 

@@ -47,5 +47,9 @@ target_link_libraries(test_port_sensor_contract PRIVATE
 target_compile_definitions(test_port_sensor_contract PRIVATE
     HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
 )
+# With Bosch's BSEC2 library (HAC_BSEC), the BME68x as BSEC measures it too.
+if(HAC_BSEC)
+    target_link_libraries(test_port_sensor_contract PRIVATE hac_drivers_bsec)
+endif()
 hac_apply_warnings(test_port_sensor_contract)
 add_test(NAME test_port_sensor_contract COMMAND test_port_sensor_contract)

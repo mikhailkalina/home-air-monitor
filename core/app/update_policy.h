@@ -9,7 +9,11 @@
 //     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %, or
 //     when two minutes have passed while the data on the screen is getting
 //     older (docs/requirements.md 9.1), and no more than once per sensor
-//     cycle;
+//     cycle. IAQ has no delta: it redraws when its band changes
+//     (core/domain/air_quality.h) -- the screen names the band -- and when a
+//     number's accuracy crosses what the screen marks
+//     (measurement_low_accuracy()), as a status change does
+//     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md);
 //   * update_policy_limits_t -- what the *panel* tolerates: how often a full
 //     refresh may happen and how many partial refreshes may precede it. These
 //     are read out of port_display, never written down here. There is no
@@ -98,7 +102,8 @@ typedef enum {
     UPDATE_REASON_CO2,
     UPDATE_REASON_TEMPERATURE,
     UPDATE_REASON_HUMIDITY,
-    UPDATE_REASON_STATUS,  // a value_status_t or a link flag changed
+    UPDATE_REASON_IAQ,     // the IAQ's band changed
+    UPDATE_REASON_STATUS,  // a value_status_t, the accuracy mark or a link flag changed
     UPDATE_REASON_PERIODIC,
 } update_reason_t;
 

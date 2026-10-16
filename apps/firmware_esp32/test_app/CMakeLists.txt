@@ -27,6 +27,17 @@ set(SDKCONFIG_DEFAULTS
     "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults"
 )
 
+# With -D HAC_BSEC=ON, the firmware's BSEC overlay as well: the BME68x's BSEC
+# source, and its port_sensor contract case, are built in (phase 3d,
+# docs/adr/0020-bsec-iaq.md). Needs Bosch's library in third_party/bsec/.
+# In a build directory of its own, as the firmware's BSEC image is:
+#
+#   idf.py -T hac_platform -B build-bsec -D SDKCONFIG=build-bsec/sdkconfig \
+#       -D HAC_BSEC=ON build
+if(HAC_BSEC)
+    list(APPEND SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.bsec")
+endif()
+
 # The firmware's components, not copies of them: hac_core, hac_contract,
 # hac_drivers, hac_platform and, through hac_platform's manifest, EPDiy.
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components")

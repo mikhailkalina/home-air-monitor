@@ -10,7 +10,10 @@
 // i2c_scan / i2c_recover console commands. Phase 3c
 // (docs/adr/0017-sensor-manager.md) runs both sensors -- the SCD4x and the
 // BME68x drivers over that bus -- through core/app/sensor_manager.c, with
-// the ids and priorities below, the same as the simulator's.
+// the ids and priorities below, the same as the simulator's. Phase 3d
+// (docs/adr/0020-bsec-iaq.md): with CONFIG_HAC_BSEC the BME68x is measured as
+// Bosch's BSEC2 asks instead, and IAQ joins its readings; without it, as
+// before, the IAQ cell shows raw gas resistance.
 //
 // What runs, in this order: adp_log and adp_clock, the port_clock and
 // port_log contract suites run once against the real adapters
@@ -30,6 +33,8 @@
 
 #include <stdint.h>
 
+#include "sdkconfig.h"  // CONFIG_HAC_*: which display and which BME68x source
+
 #include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "esp_system.h"
@@ -44,7 +49,11 @@
 
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
+#if CONFIG_HAC_BSEC
+#include "bme68x_bsec_source.h"
+#else
 #include "bme68x_source.h"
+#endif
 #include "domain/measurement.h"
 #include "hal_status.h"
 #include "port_clock.h"
@@ -79,6 +88,24 @@
 // same two sensors (apps/simulator/main.c).
 #define SCD4X_SOURCE_ID 1u
 #define BME68X_SOURCE_ID 2u
+
+// The BME68x source this image measures with: the one Bosch's BSEC2 drives,
+// in a build with the library (components/hac_drivers/Kconfig), or the
+// forced-mode one with a heater profile of its own. Never both: they would
+// fight over the sensor. BSEC sets its own pace -- its low-power period,
+// which the sensor manager is told -- where the forced-mode source keeps the
+// SCD4x's.
+#if CONFIG_HAC_BSEC
+typedef bme68x_bsec_source_t bme68x_composed_t;
+typedef bme68x_bsec_source_config_t bme68x_composed_config_t;
+#define BME68X_INTERVAL_MS HAC_BSEC_PERIOD_MS
+#define SENSORS_TEXT "SCD4x and BME68x (BSEC2 IAQ) through the sensor manager"
+#else
+typedef bme68x_source_t bme68x_composed_t;
+typedef bme68x_source_config_t bme68x_composed_config_t;
+#define BME68X_INTERVAL_MS SENSOR_MANAGER_DEFAULT_INTERVAL_MS
+#define SENSORS_TEXT "SCD4x and BME68x through the sensor manager"
+#endif
 
 // CHOICE: how often each source's latest sample is logged, besides what the
 // sensor manager logs on every change of state -- often enough to compare
@@ -313,9 +340,10 @@ static void start_console(adp_i2c_t *i2c, const port_log_t *log)
 // The board's two sensors, set up on the bus and handed to the sensor
 // manager with the priorities of docs/architecture.md 6.3: temperature and
 // humidity from the BME68x, the SCD41 as fallback; CO2 from the SCD41 alone;
-// pressure and gas from the BME68x alone. Nothing touches the bus here: the
-// event loop's first poll initialises both, on its own task.
-static void compose_sensors(sensor_manager_t *mgr, scd4x_source_t *scd4x, bme68x_source_t *bme68x,
+// pressure, gas and IAQ from the BME68x alone -- IAQ only where BSEC is
+// linked, and never CO2 from it. Nothing touches the bus here: the event
+// loop's first poll initialises both, on its own task.
+static void compose_sensors(sensor_manager_t *mgr, scd4x_source_t *scd4x, bme68x_composed_t *bme68x,
                             adp_i2c_t *i2c, const port_clock_t *clock, const port_log_t *log)
 {
     const scd4x_source_config_t scd4x_cfg = {
@@ -326,7 +354,7 @@ static void compose_sensors(sensor_manager_t *mgr, scd4x_source_t *scd4x, bme68x
         .id = SCD4X_SOURCE_ID,
         .mode = SCD4X_MODE_PERIODIC,  // USB power (requirements 11.2); single shot is phase 5's
     };
-    const bme68x_source_config_t bme68x_cfg = {
+    const bme68x_composed_config_t bme68x_cfg = {
         .bus = adp_i2c_port(i2c),
         .clock = clock,
         .log = log,
@@ -334,12 +362,16 @@ static void compose_sensors(sensor_manager_t *mgr, scd4x_source_t *scd4x, bme68x
         .id = BME68X_SOURCE_ID,
     };
     (void)scd4x_source_setup(scd4x, &scd4x_cfg);
+#if CONFIG_HAC_BSEC
+    (void)bme68x_bsec_source_setup(bme68x, &bme68x_cfg);
+#else
     (void)bme68x_source_setup(bme68x, &bme68x_cfg);
+#endif
 
     const sensor_manager_config_t cfg = sensor_manager_config_default();
     sensor_manager_init(mgr, clock, log, &cfg);
     (void)sensor_manager_add(mgr, &scd4x->port, SENSOR_MANAGER_DEFAULT_INTERVAL_MS);
-    (void)sensor_manager_add(mgr, &bme68x->port, SENSOR_MANAGER_DEFAULT_INTERVAL_MS);
+    (void)sensor_manager_add(mgr, &bme68x->port, BME68X_INTERVAL_MS);
 
     static const uint8_t prefer_bme68x[] = {BME68X_SOURCE_ID, SCD4X_SOURCE_ID};
     static const uint8_t only_bme68x[] = {BME68X_SOURCE_ID};
@@ -349,6 +381,7 @@ static void compose_sensors(sensor_manager_t *mgr, scd4x_source_t *scd4x, bme68x
     (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_PRESSURE, only_bme68x, 1u);
     (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_CO2, only_scd4x, 1u);
     (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_GAS_RESISTANCE, only_bme68x, 1u);
+    (void)sensor_manager_set_priority(mgr, SENSOR_FIELD_IAQ, only_bme68x, 1u);
 }
 
 static const char *status_text(value_status_t status)
@@ -404,6 +437,9 @@ static void log_samples(const sensor_manager_t *sensors, const port_log_t *log)
         if ((caps & SENS_CAP_GAS_RES) != 0u && n < LOG_FIELDS_MAX) {
             fields[n++] = value_field("gas_ohm", &s->gas_resistance_ohm);
         }
+        if ((caps & SENS_CAP_IAQ) != 0u && n < LOG_FIELDS_MAX) {
+            fields[n++] = value_field("iaq", &s->iaq);
+        }
         port_log_write(log, LOG_LEVEL_INFO, slot->source->name, "sample", fields, n);
     }
 }
@@ -448,7 +484,7 @@ void app_main(void)
     static adp_i2c_t s_i2c;
     static update_policy_t s_policy;
     static scd4x_source_t s_scd4x;
-    static bme68x_source_t s_bme68x;
+    static bme68x_composed_t s_bme68x;
     static sensor_manager_t s_sensors;
     static reading_hook_ctx_t s_hook;
 
@@ -460,13 +496,13 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 3c: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, SCD4x and BME68x through the sensor manager",
+                   "phase 3d: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT,
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 3c: EPDiy driving the panel, SCD4x and BME68x through the sensor manager",
+                   "phase 3d: EPDiy driving the panel, " SENSORS_TEXT,
 #endif
                    NULL, 0u);
 

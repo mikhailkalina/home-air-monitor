@@ -7,12 +7,13 @@
 // model exactly as the board runs it over adp_i2c
 // (docs/adr/0014-sensor-sources-live-in-drivers.md).
 //
-// No IAQ. An index of air quality needs Bosch's BSEC library, which is not
-// linked (THIRD_PARTY_NOTICES.md), so this source does not claim
-// SENS_CAP_IAQ or SENS_CAP_VOC: it reports the gas sensor's raw resistance
-// (SENS_CAP_GAS_RES), which docs/requirements.md 17.2 asks for in its place.
-// Higher means cleaner air; the number means little across sensors or
-// before burn-in.
+// No IAQ. An index of air quality needs Bosch's BSEC library, which this
+// source does not use, so it does not claim SENS_CAP_IAQ or SENS_CAP_VOC: it
+// reports the gas sensor's raw resistance (SENS_CAP_GAS_RES), which
+// docs/requirements.md 17.2 asks for in its place. Higher means cleaner air;
+// the number means little across sensors or before burn-in. A build with
+// BSEC (docs/adr/0020-bsec-iaq.md) measures the same sensor through
+// bme68x_bsec_source.h instead, never both at once.
 //
 // Forced mode, one measurement per start(): the sensor converts temperature,
 // pressure and humidity, heats its gas plate to the profile in
@@ -57,8 +58,9 @@
 // Bosch's bme68x_set_op_mode(), which every configuration call goes
 // through, waits for the sensor to report sleep mode with no bound on how
 // long. A sensor that never finished a measurement would hang it. So this
-// source reads the mode itself first, and calls into that path only once it
-// has seen the sensor asleep: start() answers HAL_ERR_BUSY instead.
+// source reads the mode itself first (bme68x_check_asleep()), and calls into
+// that path only once it has seen the sensor asleep: start() answers
+// HAL_ERR_BUSY instead.
 
 #ifndef HAC_DRIVERS_BME68X_BME68X_SOURCE_H
 #define HAC_DRIVERS_BME68X_BME68X_SOURCE_H
@@ -67,6 +69,7 @@
 #include <stdint.h>
 
 #include "bme68x.h"
+#include "bme68x_common.h"
 #include "bme68x_hal.h"
 #include "hal_status.h"
 #include "port_clock.h"
@@ -85,9 +88,6 @@ typedef struct {
     uint8_t address;        // BOARD_BME68X_I2C_ADDRESS on the board
     uint8_t id;             // becomes source_id on every reading
 } bme68x_source_config_t;
-
-// "0x" and two hex digits, for the log.
-#define BME68X_ID_TEXT_LEN 5u
 
 typedef struct {
     sensor_source_t port;
@@ -121,11 +121,6 @@ typedef struct {
 // init() does that. `s` and everything `cfg` points to must outlive the
 // source. HAL_ERR_INVALID_ARG on a NULL bus or clock.
 hal_status_t bme68x_source_setup(bme68x_source_t *s, const bme68x_source_config_t *cfg);
-
-// "BME680", "BME688" or "unknown", from the variant_id register (0xF0).
-// The BME688 datasheet gives 0x01 for itself; the BME680's datasheet has no
-// such register, and Bosch's API reads 0x00 there as a BME680.
-const char *bme68x_variant_name(uint8_t variant_id);
 
 // Relative humidity at `to_c` of air whose relative humidity is `rh` at
 // `from_c`: the same water vapour against a different saturation pressure

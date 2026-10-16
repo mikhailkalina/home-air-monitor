@@ -20,7 +20,8 @@
 
 #define BAR_BASELINE 44  // 40px: 30 above, 8 below ("Battery")
 
-#define HEAD_LABEL_BASELINE 104  // 40px "CO2": 30 above
+// 40px "CO2 ppm": 30 above, 8 below; public, for the layout test.
+#define HEAD_LABEL_BASELINE SCREEN_HOME_HEAD_LABEL_BASELINE
 #define HEAD_VALUE_BASELINE 244  // 160px: 119 above, 14 below ("n/a")
 #define HEAD_GAP 14
 
@@ -40,7 +41,7 @@
 // The marks are 16px bitmaps, expanded to sit beside text of each size.
 #define MARK_SCALE_BAR 2       // beside 40px text
 #define MARK_SCALE_GRID 2      // beside the 32px unit
-#define MARK_SCALE_HEADLINE 3  // above the 48px unit, beside the 160px number
+#define MARK_SCALE_HEADLINE 2  // beside the 40px label and unit
 
 // The four quantities under the CO2 headline, in the order they are drawn.
 static const vm_field_t k_grid_fields[] = {
@@ -54,7 +55,8 @@ static const vm_field_t k_grid_fields[] = {
 // --- status marks ----------------------------------------------------------
 //
 // 16x16, 1bpp, MSB first: the format gfx_blit_glyph1bpp() takes. One per
-// value_status_t that is not VAL_OK, so no status can render as a blank.
+// value_status_t that is not VAL_OK, so no status can render as a blank, and
+// one for a VAL_OK number its source has not calibrated.
 
 // A clock face: the value is real but no longer current.
 static const uint8_t k_mark_stale[MARK_SIZE * 2] = {
@@ -72,6 +74,13 @@ static const uint8_t k_mark_error[MARK_SIZE * 2] = {
 static const uint8_t k_mark_warmup[MARK_SIZE * 2] = {
     0x00, 0x00, 0x3f, 0xfc, 0x3f, 0xfc, 0x1f, 0xf8, 0x0f, 0xf0, 0x07, 0xe0, 0x02, 0x40, 0x01, 0x80,
     0x01, 0x80, 0x02, 0x40, 0x04, 0x20, 0x08, 0x10, 0x10, 0x08, 0x3f, 0xfc, 0x3f, 0xfc, 0x00, 0x00,
+};
+
+// A question mark: a reading, on a scale its source has not yet calibrated
+// (view_model.h, VM_MARK_LOW_ACCURACY).
+static const uint8_t k_mark_low_accuracy[MARK_SIZE * 2] = {
+    0x00, 0x00, 0x07, 0xe0, 0x0f, 0xf0, 0x1c, 0x38, 0x18, 0x18, 0x00, 0x18, 0x00, 0x38, 0x00, 0x70,
+    0x00, 0xe0, 0x01, 0xc0, 0x01, 0x80, 0x01, 0x80, 0x00, 0x00, 0x01, 0x80, 0x01, 0x80, 0x00, 0x00,
 };
 
 // A broken bar: this quantity is not provided at all.
@@ -132,6 +141,9 @@ static void draw_mark_scaled(framebuffer_t *fb, int32_t x, int32_t y, vm_mark_t 
             return;
         case VM_MARK_UNAVAILABLE:
             blit_mark(fb, x, y, k_mark_unavailable, scale, ink(fb, gray));
+            return;
+        case VM_MARK_LOW_ACCURACY:
+            blit_mark(fb, x, y, k_mark_low_accuracy, scale, ink(fb, gray));
             return;
     }
 }
@@ -195,23 +207,26 @@ static void draw_status_bar(framebuffer_t *fb, const view_model_t *vm)
 static void draw_headline(framebuffer_t *fb, const view_model_t *vm)
 {
     const vm_field_view_t *co2 = &vm->fields[VM_FIELD_CO2];
-    const font_t *unit_font = &font_dejavu_sans_48;
+    const font_t *label_font = &font_dejavu_sans_40;
+    const font_t *band_font = &font_dejavu_sans_48;
 
-    gfx_draw_text(fb, SCREEN_HOME_MARGIN, HEAD_LABEL_BASELINE, &font_dejavu_sans_40, co2->label,
-                  ink(fb, VM_INK_SECONDARY));
-
-    int32_t x = gfx_draw_text(fb, SCREEN_HOME_MARGIN, HEAD_VALUE_BASELINE, &font_dejavu_sans_160,
-                              co2->text, ink(fb, co2->ink));
-    x += HEAD_GAP;
-    (void)gfx_draw_text(fb, x, HEAD_VALUE_BASELINE, unit_font, co2->unit,
-                        ink(fb, VM_INK_SECONDARY));
-
-    // The mark stands on the unit rather than after it: beside it, a
-    // five-digit reading would run it into the band.
+    // The label, the unit and the mark on one line, each at a place that
+    // never moves. The unit used to follow the reading, so every change in
+    // its digit count -- 938 to 1002 -- moved it, and a partial refresh
+    // drove the letters of each old position: the panel kept them, legible
+    // on greys (docs/hardware/board_notes.md, open item "Residue that
+    // survives full refreshes"). The mark moved with it. Here nothing but
+    // the reading changes when the reading does.
+    int32_t x = gfx_draw_text(fb, SCREEN_HOME_MARGIN, HEAD_LABEL_BASELINE, label_font, co2->label,
+                              ink(fb, VM_INK_SECONDARY));
+    x = gfx_draw_text(fb, x + HEAD_GAP, HEAD_LABEL_BASELINE, label_font, co2->unit,
+                      ink(fb, VM_INK_SECONDARY));
     const int32_t mark_px = MARK_SIZE * MARK_SCALE_HEADLINE;
-    const int32_t unit_top = HEAD_VALUE_BASELINE - BANNER_TEXT_CAP;
-    draw_mark_scaled(fb, x, unit_top - MARK_GAP - mark_px, co2->mark, co2->ink,
+    draw_mark_scaled(fb, x + MARK_GAP, HEAD_LABEL_BASELINE - mark_px, co2->mark, co2->ink,
                      MARK_SCALE_HEADLINE);
+
+    (void)gfx_draw_text(fb, SCREEN_HOME_MARGIN, HEAD_VALUE_BASELINE, &font_dejavu_sans_160,
+                        co2->text, ink(fb, co2->ink));
 
     // The band banner, right aligned. Poor or worse inverts it: the high-CO2
     // warning of docs/requirements.md 9.2 has to be legible across a room.
@@ -230,10 +245,10 @@ static void draw_headline(framebuffer_t *fb, const view_model_t *vm)
 
     const uint8_t banner_text_ink =
         vm->co2_warning ? ink(fb, VM_INK_BACKGROUND) : ink(fb, VM_INK_PRIMARY);
-    const int32_t text_w = gfx_measure_text(unit_font, vm->co2_level_text);
+    const int32_t text_w = gfx_measure_text(band_font, vm->co2_level_text);
     const int32_t text_baseline =
         SCREEN_HOME_BANNER_Y + (SCREEN_HOME_BANNER_H + BANNER_TEXT_CAP) / 2;
-    gfx_draw_text(fb, banner_x + (SCREEN_HOME_BANNER_W - text_w) / 2, text_baseline, unit_font,
+    gfx_draw_text(fb, banner_x + (SCREEN_HOME_BANNER_W - text_w) / 2, text_baseline, band_font,
                   vm->co2_level_text, banner_text_ink);
 
     draw_rule(fb, SCREEN_HOME_HEAD_RULE_Y);

@@ -8,6 +8,8 @@
 // air_reading_init() and every "no data yet" path rely on this: a zero-filled
 // reading must read as unavailable, not as a set of valid zeroes.
 _Static_assert(VAL_UNAVAILABLE == 0, "VAL_UNAVAILABLE must be the zero value");
+// ...and as saying nothing about its accuracy.
+_Static_assert(ACC_NOT_REPORTED == 0, "ACC_NOT_REPORTED must be the zero value");
 
 measurement_f32_t measurement_unavailable(void)
 {
@@ -47,6 +49,28 @@ measurement_f32_t measurement_status(value_status_t status, uint64_t ts_ms, uint
 bool measurement_has_value(const measurement_f32_t *m)
 {
     return m->status == VAL_OK || m->status == VAL_STALE;
+}
+
+bool measurement_low_accuracy(const measurement_f32_t *m)
+{
+    return m->accuracy == ACC_UNRELIABLE || m->accuracy == ACC_LOW;
+}
+
+const char *measurement_accuracy_name(value_accuracy_t accuracy)
+{
+    switch (accuracy) {
+        case ACC_UNRELIABLE:
+            return "unreliable";
+        case ACC_LOW:
+            return "low";
+        case ACC_MEDIUM:
+            return "medium";
+        case ACC_HIGH:
+            return "high";
+        case ACC_NOT_REPORTED:
+            break;
+    }
+    return "-";
 }
 
 uint64_t measurement_age_ms(const measurement_f32_t *m, uint64_t now_ms)

@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "domain/air_quality.h"
+
 update_policy_config_t update_policy_config_default(void)
 {
     update_policy_config_t cfg;
@@ -60,9 +62,34 @@ static bool delta_exceeded(const measurement_f32_t *now, const measurement_f32_t
     return fabsf(now->value - prev->value) > threshold;
 }
 
-// Every status the home screen renders, plus the link flags in its status bar.
-// Any of them changing must reach the glass even when no number moved:
-// docs/requirements.md 15.1 requires a sensor error to be visible on screen.
+// Whether the screen's accuracy mark would differ (view_model.h): a source's
+// verdict crossing measurement_low_accuracy(). A change within one side of it
+// -- BSEC's IAQ between medium and high, which on the host it does every few
+// minutes -- draws the same and is no reason to spend a partial refresh.
+static bool accuracy_marks_differ(const air_reading_t *a, const air_reading_t *b)
+{
+    const measurement_f32_t *pairs[][2] = {
+        {&a->temperature_c, &b->temperature_c},
+        {&a->humidity_rh, &b->humidity_rh},
+        {&a->pressure_hpa, &b->pressure_hpa},
+        {&a->co2_ppm, &b->co2_ppm},
+        {&a->iaq, &b->iaq},
+        {&a->voc_index, &b->voc_index},
+        {&a->gas_resistance_ohm, &b->gas_resistance_ohm},
+        {&a->battery_percent, &b->battery_percent},
+    };
+    for (size_t i = 0u; i < sizeof(pairs) / sizeof(pairs[0]); ++i) {
+        if (measurement_low_accuracy(pairs[i][0]) != measurement_low_accuracy(pairs[i][1])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Every status the home screen renders, plus the link flags in its status bar
+// and the accuracy mark. Any of them changing must reach the glass even when
+// no number moved: docs/requirements.md 15.1 requires a sensor error to be
+// visible on screen.
 static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
 {
     return a->temperature_c.status != b->temperature_c.status ||
@@ -72,7 +99,8 @@ static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
            a->voc_index.status != b->voc_index.status ||
            a->gas_resistance_ohm.status != b->gas_resistance_ohm.status ||
            a->battery_percent.status != b->battery_percent.status || a->charging != b->charging ||
-           a->net_connected != b->net_connected || a->telemetry_connected != b->telemetry_connected;
+           a->net_connected != b->net_connected ||
+           a->telemetry_connected != b->telemetry_connected || accuracy_marks_differ(a, b);
 }
 
 // Whether the screen's "updated N ago" line grows with time: nothing it shows
@@ -133,6 +161,13 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
     if (delta_exceeded(&reading->humidity_rh, &p->last_rendered.humidity_rh,
                        p->cfg.humidity_delta_rh)) {
         return UPDATE_REASON_HUMIDITY;
+    }
+    // The band, not the number: the screen names it, and a number moving
+    // within its band is left to the next redraw anything else causes. A
+    // number gained or lost is a status change, below.
+    if (measurement_has_value(&reading->iaq) && measurement_has_value(&p->last_rendered.iaq) &&
+        air_quality_iaq_level(&reading->iaq) != air_quality_iaq_level(&p->last_rendered.iaq)) {
+        return UPDATE_REASON_IAQ;
     }
     if (statuses_differ(reading, &p->last_rendered)) {
         return UPDATE_REASON_STATUS;
@@ -290,6 +325,8 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "temperature";
         case UPDATE_REASON_HUMIDITY:
             return "humidity";
+        case UPDATE_REASON_IAQ:
+            return "iaq";
         case UPDATE_REASON_STATUS:
             return "status";
         case UPDATE_REASON_PERIODIC:

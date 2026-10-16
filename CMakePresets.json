@@ -37,6 +37,16 @@
             }
         },
         {
+            "name": "host-bsec",
+            "displayName": "Host debug + BSEC2",
+            "description": "Builds and tests the BME68x's BSEC source; needs Bosch's library in third_party/bsec/",
+            "inherits": "host-debug",
+            "binaryDir": "build/host-bsec",
+            "cacheVariables": {
+                "HAC_BSEC": "ON"
+            }
+        },
+        {
             "name": "ci-headless",
             "displayName": "CI, no SDL2",
             "description": "Same build tree as host-debug, with the GUI switched off",

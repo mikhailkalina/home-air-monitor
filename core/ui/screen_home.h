@@ -23,7 +23,9 @@ extern "C" {
 // (tests/unit/test_screen_home_layout.c); nothing else should need them.
 //
 // Every text is set as large as the widest thing it can say allows: the CO2
-// reading at 160px, because "40000 ppm" must still clear the band beside it;
+// reading at 160px, because "40000" must still clear the band beside it --
+// its unit and mark sit at fixed places on the label's line, "CO2 ppm", so a
+// change in the reading's width moves nothing else (screen_home.c);
 // the grid's readings at 72px, because "warm" must fit a quarter of the panel;
 // the grid's labels at 32px, because "Temperature" must. Rules and
 // separators are SCREEN_HOME_RULE_PX thick, enough to be seen at arm's length.
@@ -32,6 +34,9 @@ extern "C" {
 
 #define SCREEN_HOME_BAR_TOP 0
 #define SCREEN_HOME_BAR_RULE_Y 58
+// The headline's first line, "CO2 ppm" and the CO2 mark: everything in it
+// stays where it is whatever the reading below it says.
+#define SCREEN_HOME_HEAD_LABEL_BASELINE 104
 #define SCREEN_HOME_HEAD_RULE_Y 266
 #define SCREEN_HOME_FOOT_RULE_Y 458
 

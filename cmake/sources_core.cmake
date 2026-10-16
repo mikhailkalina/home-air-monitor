@@ -14,6 +14,7 @@ if(NOT DEFINED HAC_ROOT)
 endif()
 
 set(HAC_CORE_SOURCES
+    ${HAC_ROOT}/core/domain/air_quality.c
     ${HAC_ROOT}/core/domain/measurement.c
     ${HAC_ROOT}/core/app/sensor_manager.c
     ${HAC_ROOT}/core/app/update_policy.c

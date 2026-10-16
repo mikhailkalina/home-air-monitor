@@ -14,8 +14,13 @@
 //
 // The three ESTIMATEs that shape what the screen shows -- the heater
 // profile, the gas burn-in and the self-heating offset -- are phase 3c's to
-// replace: with BSEC's own heater profile and corrections if BSEC is linked,
-// and from this unit's readings on the board either way.
+// replace from this unit's readings on the board. A build with BSEC (phase
+// 3d, docs/adr/0020-bsec-iaq.md) does not use them at all: there the BME68x
+// is measured by bme68x_bsec_source.c, with BSEC's heater profile, its
+// run-in status and its heat compensation. That source shares the start-up
+// time, the operating range, the filter, the heater's ambient temperature
+// and the timing CHOICEs below, and keeps its own numbers in
+// bme68x_bsec_limits.h.
 //
 // The prefix is HAC_BME68X_, not BME68X_: Bosch's headers own that one
 // (BME68X_MIN_TEMPERATURE, BME68X_PERIOD_POLL, ...), and a name that collides

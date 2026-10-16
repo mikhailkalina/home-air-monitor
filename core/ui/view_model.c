@@ -162,6 +162,13 @@ static const char *placeholder_for(value_status_t status)
 
 // --- fields ----------------------------------------------------------------
 
+// A VAL_OK number whose source has not calibrated it (view_model.h). Any
+// other status keeps its own mark.
+static bool shows_low_accuracy(const measurement_f32_t *m)
+{
+    return m->status == VAL_OK && measurement_low_accuracy(m);
+}
+
 static void build_field(vm_field_view_t *out, const measurement_f32_t *m, const char *label,
                         const char *unit, unsigned decimals)
 {
@@ -170,7 +177,7 @@ static void build_field(vm_field_view_t *out, const measurement_f32_t *m, const 
     out->label = label;
     out->unit = unit;
     out->status = m->status;
-    out->mark = view_model_mark_for(m->status);
+    out->mark = shows_low_accuracy(m) ? VM_MARK_LOW_ACCURACY : view_model_mark_for(m->status);
     out->ink = view_model_ink_for(m->status);
     out->has_value = measurement_has_value(m);
 
@@ -237,6 +244,27 @@ const char *view_model_level_text(vm_level_t level)
     return "--";
 }
 
+// --- IAQ band --------------------------------------------------------------
+
+const char *view_model_iaq_level_text(iaq_level_t level)
+{
+    switch (level) {
+        case IAQ_LEVEL_EXCELLENT:
+            return "Excellent";
+        case IAQ_LEVEL_GOOD:
+            return "Good";
+        case IAQ_LEVEL_LIGHTLY_POLLUTED:
+            return "Fair";  // Bosch's "Lightly polluted" does not fit the cell
+        case IAQ_LEVEL_MODERATELY_POLLUTED:
+            return "Moderate";
+        case IAQ_LEVEL_POLLUTED:
+            return "Poor";
+        case IAQ_LEVEL_UNKNOWN:
+            break;
+    }
+    return "";
+}
+
 // --- age -------------------------------------------------------------------
 
 #define VM_SECOND_MS 1000u
@@ -266,8 +294,11 @@ static void format_age(char *dst, size_t cap, uint64_t age_ms)
 // --- assembly --------------------------------------------------------------
 
 static void count_status(const measurement_f32_t *m, uint8_t *errors, uint8_t *stales,
-                         uint8_t *warmups)
+                         uint8_t *warmups, uint8_t *low_accuracy)
 {
+    if (shows_low_accuracy(m)) {
+        (*low_accuracy)++;
+    }
     switch (m->status) {
         case VAL_ERROR:
             (*errors)++;
@@ -284,7 +315,10 @@ static void count_status(const measurement_f32_t *m, uint8_t *errors, uint8_t *s
     }
 }
 
-static void build_status_text(view_model_t *vm)
+// The footer's line, worst news first: errors, warm-up, staleness, then a
+// number its source has not calibrated -- named by its label when there is
+// one, "IAQ not calibrated" -- and only then "all sensors OK".
+static void build_status_text(view_model_t *vm, const char *low_accuracy_label)
 {
     char *dst = vm->status_text;
     const size_t cap = sizeof(vm->status_text);
@@ -305,6 +339,16 @@ static void build_status_text(view_model_t *vm)
         (void)str_append(dst, cap, 0u, "data is stale");
         return;
     }
+    if (vm->low_accuracy_count == 1u && low_accuracy_label != NULL) {
+        const size_t len = str_append(dst, cap, 0u, low_accuracy_label);
+        (void)str_append(dst, cap, len, " not calibrated");
+        return;
+    }
+    if (vm->low_accuracy_count > 0u) {
+        const size_t len = str_append_u32(dst, cap, 0u, vm->low_accuracy_count);
+        (void)str_append(dst, cap, len, " readings not calibrated");
+        return;
+    }
     (void)str_append(dst, cap, 0u, "all sensors OK");
 }
 
@@ -321,7 +365,9 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
     if (gas_shown) {
         build_gas_field(&vm->fields[VM_FIELD_IAQ], &reading->gas_resistance_ohm);
     } else {
-        build_field(&vm->fields[VM_FIELD_IAQ], &reading->iaq, "IAQ", "", 0u);
+        vm->iaq_level = air_quality_iaq_level(&reading->iaq);
+        build_field(&vm->fields[VM_FIELD_IAQ], &reading->iaq, "IAQ",
+                    view_model_iaq_level_text(vm->iaq_level), 0u);
     }
     build_field(&vm->battery, &reading->battery_percent, "Battery", "%", 0u);
 
@@ -369,9 +415,14 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
         format_age(vm->updated_text, sizeof(vm->updated_text), youngest_ms);
     }
 
+    const char *low_accuracy_label = NULL;
     for (size_t i = 0u; i < (size_t)VM_FIELD_COUNT; ++i) {
-        count_status(shown[i], &vm->error_count, &vm->stale_count, &vm->warmup_count);
+        count_status(shown[i], &vm->error_count, &vm->stale_count, &vm->warmup_count,
+                     &vm->low_accuracy_count);
+        if (low_accuracy_label == NULL && vm->fields[i].mark == VM_MARK_LOW_ACCURACY) {
+            low_accuracy_label = vm->fields[i].label;
+        }
     }
 
-    build_status_text(vm);
+    build_status_text(vm, low_accuracy_label);
 }

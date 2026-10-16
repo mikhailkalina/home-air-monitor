@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Overlay for the firmware with Bosch's BSEC2 (phase 3d,
+# docs/adr/0020-bsec-iaq.md; components/hac_drivers/Kconfig, HAC_BSEC).
+# Needs the BSEC2 archive unpacked into third_party/bsec/ (gitignored).
+# Layered on top of sdkconfig.defaults into a build directory and sdkconfig of
+# its own, so it never touches the sdkconfig a normal build uses:
+#
+#   idf.py -B build-bsec -D SDKCONFIG=build-bsec/sdkconfig \
+#       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.bsec" build
+#
+# Then confirm BSEC actually reached the image (CLAUDE.md: a Kconfig symbol
+# that never reached sdkconfig compiles out silently, and the build still
+# succeeds -- with gas resistance where IAQ should be):
+#
+#   grep CONFIG_HAC_BSEC build-bsec/sdkconfig
+#   strings build-bsec/home_air_monitor.bin | grep bme680_iaq_33v_3s_4d
+#
+# The on-target test app takes the same overlay with -D HAC_BSEC=ON
+# (test_app/CMakeLists.txt).
+
+CONFIG_HAC_BSEC=y
