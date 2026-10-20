@@ -12,8 +12,10 @@
 //     (docs/adr/0027-pressure-redraw-delta.md), when a status the screen shows
 //     changes -- a number's accuracy crossing what the screen marks
 //     (measurement_low_accuracy()) among them
-//     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md) -- and no more
-//     than once per sensor cycle;
+//     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md) -- when a smaller
+//     offset, more than half a delta, has held for 15 minutes
+//     (docs/adr/0028-redraw-a-persistent-offset.md), and no more than once
+//     per sensor cycle;
 //   * update_policy_limits_t -- what the *panel* tolerates: how often a full
 //     refresh may happen and how many partial refreshes may precede it. These
 //     are read out of port_display, never written down here. There is no
@@ -28,7 +30,9 @@
 // display" is departed from on purpose, and the periodic redraw ADR 0019 kept
 // is gone (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
 // Data getting older is still shown: VAL_STALE is a status, and its arrival
-// redraws like any other status change.
+// redraws like any other status change. A persistent offset is no timer
+// either: it redraws only a reading that has moved, and only once
+// (docs/adr/0028-redraw-a-persistent-offset.md).
 //
 // A redraw a person asked for -- a tap that changes the screen
 // (core/app/screen_controller.h) -- goes out at once: update_policy_request()
@@ -92,6 +96,19 @@ extern "C" {
 // own.
 #define UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET 2u
 
+// CHOICE, the owner's (2026-10-20): a reading more than this fraction of its
+// delta from the frame on the glass, for UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS
+// without a break, redraws -- an offset that persists in still air, which the
+// delta alone would leave on the glass for as long as nothing else redraws.
+// Half a delta stays above most of the sensors' noise, so it holds only when
+// the air has really settled elsewhere
+// (docs/adr/0028-redraw-a-persistent-offset.md).
+#define UPDATE_POLICY_SETTLE_DELTA_FRACTION 0.5f
+#define UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS (15u * 60u * 1000u)
+
+// The readings with a delta: CO2, temperature, humidity, pressure, IAQ.
+#define UPDATE_POLICY_DELTA_FIELDS 5u
+
 // Returned as next_deadline_ms when no timer is pending: only new data can
 // change the answer, so there is nothing to wake up for.
 #define UPDATE_POLICY_NO_DEADLINE UINT64_MAX
@@ -104,6 +121,11 @@ typedef struct {
     float humidity_delta_rh;
     float pressure_delta_hpa;
     float iaq_delta;
+
+    // A reading more than UPDATE_POLICY_SETTLE_DELTA_FRACTION of its delta
+    // from the frame on the glass for this long without a break redraws.
+    // 0 never does.
+    uint32_t settle_after_ms;
 
     // No redraw sooner than this after the last one, except the first frame:
     // a redraw that becomes due earlier waits, and goes out with whatever
@@ -135,6 +157,7 @@ typedef enum {
     UPDATE_REASON_HUMIDITY,
     UPDATE_REASON_PRESSURE,
     UPDATE_REASON_IAQ,
+    UPDATE_REASON_SETTLE,  // an offset of more than half a delta held settle_after_ms
     // A value_status_t, the accuracy mark, a link flag, or whether the wall
     // time is known, changed -- or, on a screen that compares its own
     // content, that content.
@@ -190,10 +213,15 @@ typedef struct {
     uint32_t partials_since_full;
 
     bool requested;  // update_policy_request() since the last redraw
+
+    // Per reading with a delta: since when it has been more than half its
+    // delta from the frame on the glass, without a break.
+    bool offset_held[UPDATE_POLICY_DELTA_FIELDS];
+    uint64_t offset_since_ms[UPDATE_POLICY_DELTA_FIELDS];
 } update_policy_t;
 
-// The thresholds of docs/requirements.md 9.1, IAQ's and pressure's, and the
-// one-redraw-per-cycle interval.
+// The thresholds of docs/requirements.md 9.1, IAQ's and pressure's, the
+// persistent offset's interval, and the one-redraw-per-cycle interval.
 update_policy_config_t update_policy_config_default(void);
 
 // Reads the panel's constraints off the port. A NULL display yields limits
@@ -206,10 +234,13 @@ update_policy_limits_t update_policy_limits_from_display(const port_display_t *d
 void update_policy_init(update_policy_t *p, const port_clock_t *clock,
                         const update_policy_config_t *cfg, const update_policy_limits_t *limits);
 
-// Decides what to do with `reading` at the clock's current time. Does not
-// mutate the policy: the caller flushes first and reports the outcome through
+// Decides what to do with `reading` at the clock's current time. The only
+// thing it records is what it saw: which readings have been off the frame on
+// the glass by more than half their delta, and since when. Nothing about the
+// redraw itself -- the caller flushes first and reports the outcome through
 // update_policy_commit(), so a failed flush does not consume the budget.
-void update_policy_evaluate(const update_policy_t *p, const air_reading_t *reading,
+// Calling it again at the same time with the same reading changes nothing.
+void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
                             update_decision_t *out);
 
 // The same decision for a screen that compares what it would draw with what
@@ -226,8 +257,8 @@ void update_policy_evaluate_content(const update_policy_t *p, bool changed, upda
 void update_policy_request(update_policy_t *p);
 
 // Records a redraw that actually reached the panel: `rendered` becomes the
-// baseline the next deltas are measured against, the partial-refresh budget
-// moves, and a request is answered. A decision with action UPDATE_NONE is
+// baseline the next deltas and offsets are measured against, the
+// partial-refresh budget moves, and a request is answered. A decision with action UPDATE_NONE is
 // ignored.
 void update_policy_commit(update_policy_t *p, const air_reading_t *rendered,
                           const update_decision_t *decision);

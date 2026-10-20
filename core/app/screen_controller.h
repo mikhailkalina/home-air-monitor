@@ -120,7 +120,7 @@ uint64_t screen_controller_tick(screen_controller_t *sc, update_policy_t *policy
 
 // Whether the screen to show is to be redrawn now, and how: `policy`'s
 // decision for that screen.
-void screen_controller_evaluate(screen_controller_t *sc, const update_policy_t *policy,
+void screen_controller_evaluate(screen_controller_t *sc, update_policy_t *policy,
                                 const screen_inputs_t *in, update_decision_t *out);
 
 // Draws the screen to show into `fb`.

@@ -459,7 +459,7 @@ controller refused its address in the boot scan, and init() woke it. The test ap
 `port_input` contract and the sleep-and-wake case against the real controller. Phase 3g's
 board checks are done (`board_notes.md`, "The touch panel on the board").
 
-Follow-up to ADR 0021 on branch `iaq-redraw-delta` (ADR 0026): IAQ's band flapped at 50 --
+Follow-up to ADR 0021 on branch `redraw-thresholds` (ADR 0026): IAQ's band flapped at 50 --
 BSEC's index rests on the Excellent/Good boundary, and three days unattended made its band
 changes 96 % of all redraws. IAQ now redraws as the other readings do, when its number has moved
 by strictly more than `UPDATE_POLICY_DEFAULT_IAQ_DELTA`, 5 points, since the frame on the glass;
@@ -483,8 +483,17 @@ moved by strictly more than `UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA`, 1 hPa, r
 On the owner's replayed days it never fires -- the other readings redrew every few minutes and
 pressure never lagged more than 0.83 hPa -- so it is a bound for a room where nothing else moves.
 It does not remove a one-step offset at a rounding boundary (pressure one hPa off on the glass
-for up to 57 minutes on 2026-10-19); redrawing a small offset that persists is discussed, not
-decided.
+for up to 57 minutes on 2026-10-19).
+
+On the same branch (ADR 0028): a reading more than half its delta from the frame on the glass for
+15 minutes without a break redraws, reason `settle` (`UPDATE_POLICY_SETTLE_DELTA_FRACTION`,
+`settle_after_ms`) -- an offset that persists in still air, which the deltas alone leave on the
+glass for as long as nothing else redraws. Not a timer: it redraws only a reading that has moved,
+once. `update_policy_evaluate()` now records which readings are off and since when (never the
+budget; `update_policy_commit()` clears them), and its deadline wakes the loop for them. Raw values,
+not the screen's digits: a rounding boundary's tenth of a hPa is not redrawn. The owner's two days
+replayed: 3 and 5 settle redraws, 230 and 291 redraws in all -> 229 and 287, the longest stretch
+of a reading more than half a delta off cut from 20-24 minutes to 15. Verified on the host.
 
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
 recordable unattended -- and this unit's own figures for the remaining estimates.

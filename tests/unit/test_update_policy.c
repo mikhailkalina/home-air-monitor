@@ -101,15 +101,23 @@ static void a_threshold_not_crossed_leaves_the_panel_alone(void)
 
     fake_clock_advance(&f.clock, 5000u);
 
-    // Every quantity moves, none of them by enough: 40 ppm, 0.1 C, 0.5 %.
-    const air_reading_t r = reading_at(&f, 660.0f, 22.1f, 45.5f);
+    // Every quantity moves, none of them by enough: 20 ppm, 0.05 C, 0.4 %.
+    air_reading_t r = reading_at(&f, 640.0f, 22.05f, 45.4f);
     update_decision_t d;
     update_policy_evaluate(&f.policy, &r, &d);
 
     HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_NONE);
-    // Nothing to do until something moves, and no timer either.
+    // Nothing to do until something moves, and no timer either: none of them
+    // is more than half its delta off.
     HAC_CHECK_EQ_U64(d.next_deadline_ms, UPDATE_POLICY_NO_DEADLINE);
+
+    // 40 ppm is not enough to redraw either, but it is an offset: if it holds,
+    // it is due in 15 minutes, and the loop is to wake for it.
+    r = reading_at(&f, 660.0f, 22.05f, 45.4f);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, f.clock.now_ms + UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS);
 }
 
 static void the_temperature_and_humidity_thresholds_apply_too(void)
@@ -275,6 +283,172 @@ static void a_status_change_alone_reaches_the_glass(void)
 
     HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+}
+
+// --- an offset that persists (docs/adr/0028-redraw-a-persistent-offset.md) --
+
+#define SETTLE_MS UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS
+
+// Evaluates `r` every 5 s, the sensor cycle, for `duration_ms`, the frame on
+// the glass staying as it is; returns how many evaluations said SETTLE, and
+// the first time one did through `first_ms` (0 if none).
+static unsigned settles_over(fixture_t *f, const air_reading_t *r, uint64_t duration_ms,
+                             uint64_t *first_ms)
+{
+    unsigned n = 0u;
+    *first_ms = 0u;
+    for (uint64_t t = 0u; t < duration_ms; t += 5000u) {
+        fake_clock_advance(&f->clock, 5000u);
+        update_decision_t d;
+        update_policy_evaluate(&f->policy, r, &d);
+        if (d.reason == UPDATE_REASON_SETTLE) {
+            if (n++ == 0u) {
+                *first_ms = f->clock.now_ms;
+            }
+        }
+    }
+    return n;
+}
+
+// 30 ppm from the frame: under CO2's 50, over half of it. Held for 15
+// minutes, it redraws -- a partial refresh like any other.
+static void a_small_offset_held_for_the_interval_redraws(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    (void)prime(&f, 620.0f, 22.0f, 45.0f);
+
+    fake_clock_advance(&f.clock, 5000u);
+    const uint64_t since = f.clock.now_ms;
+    const air_reading_t r = reading_at(&f, 650.0f, 22.0f, 45.0f);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_NONE);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, since + SETTLE_MS);
+
+    uint64_t first = 0u;
+    (void)settles_over(&f, &r, SETTLE_MS, &first);
+    HAC_CHECK_EQ_U64(first, since + SETTLE_MS);
+
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_SETTLE);
+    HAC_CHECK(strcmp(update_policy_reason_name(d.reason), "settle") == 0);
+
+    // Drawn: the offset is gone, and with it the timer.
+    update_policy_commit(&f.policy, &r, &d);
+    fake_clock_advance(&f.clock, 5000u);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_NONE);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, UPDATE_POLICY_NO_DEADLINE);
+}
+
+// Without a break: one reading back within half the delta starts it over.
+static void an_offset_that_breaks_starts_over(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    (void)prime(&f, 620.0f, 22.0f, 45.0f);
+
+    const air_reading_t off = reading_at(&f, 650.0f, 22.0f, 45.0f);
+    const air_reading_t back = reading_at(&f, 640.0f, 22.0f, 45.0f);
+    uint64_t first = 0u;
+    HAC_CHECK_EQ_INT(settles_over(&f, &off, SETTLE_MS - 10000u, &first), 0);
+    HAC_CHECK_EQ_INT(settles_over(&f, &back, 5000u, &first), 0);
+    const uint64_t restart = f.clock.now_ms + 5000u;
+    (void)settles_over(&f, &off, SETTLE_MS + 5000u, &first);
+    HAC_CHECK_EQ_U64(first, restart + SETTLE_MS);
+}
+
+// Strictly more than half the delta, as every threshold here: 25 ppm, held
+// for an hour, is no offset.
+static void exactly_half_the_delta_is_no_offset(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    (void)prime(&f, 620.0f, 22.0f, 45.0f);
+
+    const air_reading_t r =
+        reading_at(&f, 620.0f + UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM * 0.5f, 22.0f, 45.0f);
+    uint64_t first = 0u;
+    HAC_CHECK_EQ_INT(settles_over(&f, &r, 4u * SETTLE_MS, &first), 0);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, UPDATE_POLICY_NO_DEADLINE);
+}
+
+// Every reading with a delta has an offset of its own, at half its delta.
+static void each_reading_with_a_delta_settles(void)
+{
+    for (unsigned field = 0u; field < UPDATE_POLICY_DELTA_FIELDS; ++field) {
+        fixture_t f;
+        fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+        air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+        r.pressure_hpa = measurement_ok(1006.0f, f.clock.now_ms, 2u);
+        r.iaq = measurement_ok(50.0f, f.clock.now_ms, 2u);
+        update_decision_t d;
+        update_policy_evaluate(&f.policy, &r, &d);
+        update_policy_commit(&f.policy, &r, &d);
+
+        // Three quarters of the delta: an offset, not a redraw of its own.
+        switch (field) {
+            case 0u:
+                r.co2_ppm.value += 0.75f * UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM;
+                break;
+            case 1u:
+                r.temperature_c.value += 0.75f * UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C;
+                break;
+            case 2u:
+                r.humidity_rh.value -= 0.75f * UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
+                break;
+            case 3u:
+                r.pressure_hpa.value -= 0.75f * UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
+                break;
+            default:
+                r.iaq.value += 0.75f * UPDATE_POLICY_DEFAULT_IAQ_DELTA;
+                break;
+        }
+        uint64_t first = 0u;
+        HAC_CHECK(settles_over(&f, &r, SETTLE_MS + 5000u, &first) > 0u);
+        HAC_CHECK_EQ_U64(first, SETTLE_MS + 5000u);  // the offset began at the first 5 s
+    }
+}
+
+// A redraw for anything else draws the reading as it is: the offset is gone,
+// and the next one is measured from that frame.
+static void a_redraw_for_anything_else_ends_the_offset(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    (void)prime(&f, 620.0f, 22.0f, 45.0f);
+
+    air_reading_t r = reading_at(&f, 650.0f, 22.0f, 45.0f);
+    uint64_t first = 0u;
+    HAC_CHECK_EQ_INT(settles_over(&f, &r, SETTLE_MS - 60000u, &first), 0);
+
+    r = reading_at(&f, 650.0f, 22.3f, 45.0f);  // the temperature redraws
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_TEMPERATURE);
+    update_policy_commit(&f.policy, &r, &d);
+
+    HAC_CHECK_EQ_INT(settles_over(&f, &r, 2u * SETTLE_MS, &first), 0);
+}
+
+// settle_after_ms of 0: an offset is never redrawn, and never woken for.
+static void a_settle_interval_of_zero_never_redraws(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    f.policy.cfg.settle_after_ms = 0u;
+    (void)prime(&f, 620.0f, 22.0f, 45.0f);
+
+    const air_reading_t r = reading_at(&f, 650.0f, 22.0f, 45.0f);
+    uint64_t first = 0u;
+    HAC_CHECK_EQ_INT(settles_over(&f, &r, 4u * SETTLE_MS, &first), 0);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, UPDATE_POLICY_NO_DEADLINE);
 }
 
 // --- IAQ: its delta, and the accuracy mark ------------------------------------
@@ -1154,6 +1328,8 @@ static void the_defaults_are_the_thresholds_from_the_requirements(void)
     HAC_CHECK_EQ_F32(cfg.humidity_delta_rh, 1.0f, 0.001f);
     // ADR 0027, not a requirement.
     HAC_CHECK_EQ_F32(cfg.pressure_delta_hpa, 1.0f, 0.001f);
+    // ADR 0028, not a requirement.
+    HAC_CHECK_EQ_U64(cfg.settle_after_ms, 15u * 60u * 1000u);
     // ADR 0026, not a requirement.
     HAC_CHECK_EQ_F32(cfg.iaq_delta, 5.0f, 0.001f);
     HAC_CHECK_EQ_U64(cfg.min_redraw_interval_ms, 5000u);  // one sensor cycle, not a requirement
@@ -1166,6 +1342,12 @@ int main(void)
     HAC_RUN(a_threshold_not_crossed_leaves_the_panel_alone);
     HAC_RUN(the_temperature_and_humidity_thresholds_apply_too);
     HAC_RUN(the_pressure_threshold_applies_too);
+    HAC_RUN(a_small_offset_held_for_the_interval_redraws);
+    HAC_RUN(an_offset_that_breaks_starts_over);
+    HAC_RUN(exactly_half_the_delta_is_no_offset);
+    HAC_RUN(each_reading_with_a_delta_settles);
+    HAC_RUN(a_redraw_for_anything_else_ends_the_offset);
+    HAC_RUN(a_settle_interval_of_zero_never_redraws);
     HAC_RUN(a_reading_going_stale_redraws_once);
     HAC_RUN(a_fresh_unchanged_reading_is_never_redrawn_on_a_timer);
     HAC_RUN(with_no_number_on_the_screen_there_is_no_timer);

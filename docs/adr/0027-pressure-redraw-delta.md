@@ -38,7 +38,6 @@ hand (board_notes.md, "Phase 3c's measurements").
 - **It does not remove a one-step offset at a rounding boundary.** The
   replayed 19th showed pressure one hPa off for up to 57 minutes with less
   than 1 hPa between the frame and the air -- 1009.45 drawn as 1009, the air
-  at 1009.55. The same holds for every reading at its own delta. Redrawing a
-  small offset that persists -- discussed with the owner 2026-10-20, about +2-3 %
-  redraws for "a shown difference of half a delta held 15 minutes" -- is
-  another decision, not taken here.
+  at 1009.55. The same holds for every reading at its own delta. ADR 0028,
+  the same day, redraws an offset of more than half a delta that holds for 15
+  minutes -- 0.5 hPa here; a rounding boundary's tenth of a hPa stays.

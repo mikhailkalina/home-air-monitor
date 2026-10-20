@@ -1249,7 +1249,9 @@ layout settles, not before.
       Still to see on the board with the delta of 5, a day unattended with
       the card in: from `log/`, `decision ... reason=iaq` lines, `decision
       action=full` lines and `BSEC called late` lines per day, against
-      884-1,494, 44-74 and 167-292 before.
+      884-1,494, 44-74 and 167-292 before; and the redraws of ADR 0027 and
+      0028 on the same branch, `reason=pressure` (none in the replay) and
+      `reason=settle` (3-5 a day in the replay).
       - *A brownout before this boot*: `previous reset reason=BROWNOUT
         rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
         the image was flashed. The brownout itself is not in the logs. See the
