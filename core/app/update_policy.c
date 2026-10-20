@@ -13,6 +13,7 @@ update_policy_config_t update_policy_config_default(void)
     cfg.co2_delta_ppm = UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM;
     cfg.temperature_delta_c = UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C;
     cfg.humidity_delta_rh = UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
+    cfg.pressure_delta_hpa = UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
     cfg.iaq_delta = UPDATE_POLICY_DEFAULT_IAQ_DELTA;
     cfg.min_redraw_interval_ms = UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS;
     return cfg;
@@ -129,6 +130,10 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
     if (delta_exceeded(&reading->humidity_rh, &p->last_rendered.humidity_rh,
                        p->cfg.humidity_delta_rh)) {
         return UPDATE_REASON_HUMIDITY;
+    }
+    if (delta_exceeded(&reading->pressure_hpa, &p->last_rendered.pressure_hpa,
+                       p->cfg.pressure_delta_hpa)) {
+        return UPDATE_REASON_PRESSURE;
     }
     if (delta_exceeded(&reading->iaq, &p->last_rendered.iaq, p->cfg.iaq_delta)) {
         return UPDATE_REASON_IAQ;
@@ -315,6 +320,8 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "temperature";
         case UPDATE_REASON_HUMIDITY:
             return "humidity";
+        case UPDATE_REASON_PRESSURE:
+            return "pressure";
         case UPDATE_REASON_IAQ:
             return "iaq";
         case UPDATE_REASON_STATUS:

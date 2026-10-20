@@ -477,6 +477,15 @@ before. The simulator plays an `iaq` column from `--scenario-env` and its `[poli
 refreshes, late BSEC calls per day) is still to run (`board_notes.md`, open item "BSEC on the
 board").
 
+On the same branch (ADR 0027): pressure, shown in whole hPa, had no
+threshold and reached the glass only when something else redrew; it now redraws when it has
+moved by strictly more than `UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA`, 1 hPa, reason `pressure`.
+On the owner's replayed days it never fires -- the other readings redrew every few minutes and
+pressure never lagged more than 0.83 hPa -- so it is a bound for a room where nothing else moves.
+It does not remove a one-step offset at a rounding boundary (pressure one hPa off on the glass
+for up to 57 minutes on 2026-10-19); redrawing a small offset that persists is discussed, not
+decided.
+
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
 recordable unattended -- and this unit's own figures for the remaining estimates.
 

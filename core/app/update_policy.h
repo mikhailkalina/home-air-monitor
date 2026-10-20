@@ -8,7 +8,8 @@
 //   * update_policy_config_t -- what the *product* wants: redraw when CO2 has
 //     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %
 //     (docs/requirements.md 9.1), IAQ by 5 points
-//     (docs/adr/0026-iaq-redraw-delta.md), when a status the screen shows
+//     (docs/adr/0026-iaq-redraw-delta.md), pressure by 1 hPa
+//     (docs/adr/0027-pressure-redraw-delta.md), when a status the screen shows
 //     changes -- a number's accuracy crossing what the screen marks
 //     (measurement_low_accuracy()) among them
 //     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md) -- and no more
@@ -60,12 +61,14 @@
 extern "C" {
 #endif
 
-// The thresholds of docs/requirements.md 9.1, and IAQ's
-// (docs/adr/0026-iaq-redraw-delta.md), named so that the only place they
+// The thresholds of docs/requirements.md 9.1, IAQ's
+// (docs/adr/0026-iaq-redraw-delta.md) and pressure's
+// (docs/adr/0027-pressure-redraw-delta.md), named so that the only place they
 // appear as numbers is here.
 #define UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM 50.0f
 #define UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C 0.2f
 #define UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH 1.0f
+#define UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA 1.0f
 #define UPDATE_POLICY_DEFAULT_IAQ_DELTA 5.0f
 
 // CHOICE: at most one redraw per this interval -- one sensor cycle
@@ -99,6 +102,7 @@ typedef struct {
     float co2_delta_ppm;
     float temperature_delta_c;
     float humidity_delta_rh;
+    float pressure_delta_hpa;
     float iaq_delta;
 
     // No redraw sooner than this after the last one, except the first frame:
@@ -129,6 +133,7 @@ typedef enum {
     UPDATE_REASON_CO2,
     UPDATE_REASON_TEMPERATURE,
     UPDATE_REASON_HUMIDITY,
+    UPDATE_REASON_PRESSURE,
     UPDATE_REASON_IAQ,
     // A value_status_t, the accuracy mark, a link flag, or whether the wall
     // time is known, changed -- or, on a screen that compares its own
@@ -187,7 +192,7 @@ typedef struct {
     bool requested;  // update_policy_request() since the last redraw
 } update_policy_t;
 
-// The thresholds of docs/requirements.md 9.1 and IAQ's, and the
+// The thresholds of docs/requirements.md 9.1, IAQ's and pressure's, and the
 // one-redraw-per-cycle interval.
 update_policy_config_t update_policy_config_default(void);
 

@@ -130,6 +130,35 @@ static void the_temperature_and_humidity_thresholds_apply_too(void)
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_HUMIDITY);
 }
 
+// Pressure has a threshold of its own (docs/adr/0027-pressure-redraw-delta.md):
+// before it, the weather moved it by 5-9 hPa a day and the screen followed
+// only when something else redrew. Strictly more than the delta, either way.
+static void the_pressure_threshold_applies_too(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    r.pressure_hpa = measurement_ok(1006.0f, f.clock.now_ms, 2u);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    update_policy_commit(&f.policy, &r, &d);
+    fake_clock_advance(&f.clock, 5000u);
+
+    const float delta = UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
+    const float pressures[] = {1006.0f + delta, 1006.0f - delta, 1006.0f + delta + 0.01f,
+                               1006.0f - delta - 0.01f};
+    const update_reason_t want[] = {UPDATE_REASON_NONE, UPDATE_REASON_NONE, UPDATE_REASON_PRESSURE,
+                                    UPDATE_REASON_PRESSURE};
+    for (size_t i = 0u; i < 4u; ++i) {
+        r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+        r.pressure_hpa = measurement_ok(pressures[i], f.clock.now_ms, 2u);
+        update_policy_evaluate(&f.policy, &r, &d);
+        HAC_CHECK_EQ_INT(d.reason, want[i]);
+    }
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK(strcmp(update_policy_reason_name(d.reason), "pressure") == 0);
+}
+
 // The same reading with every quantity aged out: what the screen holds when
 // the sensors have stopped delivering.
 static air_reading_t stale(air_reading_t r)
@@ -1123,6 +1152,8 @@ static void the_defaults_are_the_thresholds_from_the_requirements(void)
     HAC_CHECK_EQ_F32(cfg.co2_delta_ppm, 50.0f, 0.001f);
     HAC_CHECK_EQ_F32(cfg.temperature_delta_c, 0.2f, 0.001f);
     HAC_CHECK_EQ_F32(cfg.humidity_delta_rh, 1.0f, 0.001f);
+    // ADR 0027, not a requirement.
+    HAC_CHECK_EQ_F32(cfg.pressure_delta_hpa, 1.0f, 0.001f);
     // ADR 0026, not a requirement.
     HAC_CHECK_EQ_F32(cfg.iaq_delta, 5.0f, 0.001f);
     HAC_CHECK_EQ_U64(cfg.min_redraw_interval_ms, 5000u);  // one sensor cycle, not a requirement
@@ -1134,6 +1165,7 @@ int main(void)
     HAC_RUN(a_crossed_threshold_triggers_a_partial_refresh);
     HAC_RUN(a_threshold_not_crossed_leaves_the_panel_alone);
     HAC_RUN(the_temperature_and_humidity_thresholds_apply_too);
+    HAC_RUN(the_pressure_threshold_applies_too);
     HAC_RUN(a_reading_going_stale_redraws_once);
     HAC_RUN(a_fresh_unchanged_reading_is_never_redrawn_on_a_timer);
     HAC_RUN(with_no_number_on_the_screen_there_is_no_timer);
