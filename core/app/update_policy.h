@@ -7,12 +7,12 @@
 //
 //   * update_policy_config_t -- what the *product* wants: redraw when CO2 has
 //     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %
-//     (docs/requirements.md 9.1), when a status the screen shows changes,
-//     and no more than once per sensor cycle. IAQ has no delta: it redraws
-//     when its band changes (core/domain/air_quality.h) -- the screen names
-//     the band -- and when a number's accuracy crosses what the screen marks
-//     (measurement_low_accuracy()), as a status change does
-//     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md);
+//     (docs/requirements.md 9.1), IAQ by 5 points
+//     (docs/adr/0026-iaq-redraw-delta.md), when a status the screen shows
+//     changes -- a number's accuracy crossing what the screen marks
+//     (measurement_low_accuracy()) among them
+//     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md) -- and no more
+//     than once per sensor cycle;
 //   * update_policy_limits_t -- what the *panel* tolerates: how often a full
 //     refresh may happen and how many partial refreshes may precede it. These
 //     are read out of port_display, never written down here. There is no
@@ -60,11 +60,13 @@
 extern "C" {
 #endif
 
-// The thresholds of docs/requirements.md 9.1, named so that the only place
-// they appear as numbers is here.
+// The thresholds of docs/requirements.md 9.1, and IAQ's
+// (docs/adr/0026-iaq-redraw-delta.md), named so that the only place they
+// appear as numbers is here.
 #define UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM 50.0f
 #define UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C 0.2f
 #define UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH 1.0f
+#define UPDATE_POLICY_DEFAULT_IAQ_DELTA 5.0f
 
 // CHOICE: at most one redraw per this interval -- one sensor cycle
 // (SENSOR_MANAGER_DEFAULT_INTERVAL_MS). The two sensors are read at different
@@ -97,6 +99,7 @@ typedef struct {
     float co2_delta_ppm;
     float temperature_delta_c;
     float humidity_delta_rh;
+    float iaq_delta;
 
     // No redraw sooner than this after the last one, except the first frame:
     // a redraw that becomes due earlier waits, and goes out with whatever
@@ -126,7 +129,7 @@ typedef enum {
     UPDATE_REASON_CO2,
     UPDATE_REASON_TEMPERATURE,
     UPDATE_REASON_HUMIDITY,
-    UPDATE_REASON_IAQ,  // the IAQ's band changed
+    UPDATE_REASON_IAQ,
     // A value_status_t, the accuracy mark, a link flag, or whether the wall
     // time is known, changed -- or, on a screen that compares its own
     // content, that content.
@@ -184,7 +187,8 @@ typedef struct {
     bool requested;  // update_policy_request() since the last redraw
 } update_policy_t;
 
-// The thresholds of docs/requirements.md 9.1.
+// The thresholds of docs/requirements.md 9.1 and IAQ's, and the
+// one-redraw-per-cycle interval.
 update_policy_config_t update_policy_config_default(void);
 
 // Reads the panel's constraints off the port. A NULL display yields limits

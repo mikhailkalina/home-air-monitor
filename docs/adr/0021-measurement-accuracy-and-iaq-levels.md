@@ -13,6 +13,11 @@ fit beside the dated "updated DD.MM HH:MM" -- "N not calibrated" for
 several, and "Temp." for the temperature's label in the note. "IAQ not
 calibrated" is unchanged.
 
+Amended by ADR 0026 (2026-10-20): IAQ no longer redraws when its band
+changes, but when its number moves by more than 5 points, as the other
+readings do. BSEC's index rests on the Excellent/Good boundary, and on the
+board it crossed it some 900-1,500 times a day -- 96 % of all redraws.
+
 ## Context
 
 The first run of BSEC on the board (ADR 0020, 2026-10-16) showed IAQ at
@@ -98,11 +103,13 @@ the cell at 32px beside the question mark, 172 px: "Excellent", "Good",
 words are 249 px wide, and "fair" is the step between good and moderate in the
 European air quality index.
 
-`update_policy` redraws when the band changes (reason `iaq`); a number moving
-within its band waits for the next redraw anything else causes. That settles
-ADR 0020's open question in the form the screen needs: a band on the glass
-that no longer matches the air would be worse than none, a number a few
-points behind is not.
+`update_policy` redraws when the band changes (reason `iaq`); a number
+moving within its band waits for the next redraw anything else causes. That
+settles ADR 0020's open question in the form the screen needs: a band on the
+glass that no longer matches the air would be worse than none, a number a few
+points behind is not. (Superseded by ADR 0026: IAQ redraws when its number
+moves by more than 5 points, and the band drawn is the band of the number
+drawn.)
 
 The CO2 bands of requirements 13.1 stay in `view_model.h`, where only the
 view uses them.

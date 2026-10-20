@@ -6,8 +6,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "domain/air_quality.h"
-
 update_policy_config_t update_policy_config_default(void)
 {
     update_policy_config_t cfg;
@@ -15,6 +13,7 @@ update_policy_config_t update_policy_config_default(void)
     cfg.co2_delta_ppm = UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM;
     cfg.temperature_delta_c = UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C;
     cfg.humidity_delta_rh = UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
+    cfg.iaq_delta = UPDATE_POLICY_DEFAULT_IAQ_DELTA;
     cfg.min_redraw_interval_ms = UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS;
     return cfg;
 }
@@ -131,11 +130,7 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
                        p->cfg.humidity_delta_rh)) {
         return UPDATE_REASON_HUMIDITY;
     }
-    // The band, not the number: the screen names it, and a number moving
-    // within its band is left to the next redraw anything else causes. A
-    // number gained or lost is a status change, below.
-    if (measurement_has_value(&reading->iaq) && measurement_has_value(&p->last_rendered.iaq) &&
-        air_quality_iaq_level(&reading->iaq) != air_quality_iaq_level(&p->last_rendered.iaq)) {
+    if (delta_exceeded(&reading->iaq, &p->last_rendered.iaq, p->cfg.iaq_delta)) {
         return UPDATE_REASON_IAQ;
     }
     if (statuses_differ(reading, &p->last_rendered)) {
