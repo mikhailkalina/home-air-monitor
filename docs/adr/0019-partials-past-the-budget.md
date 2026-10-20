@@ -13,6 +13,13 @@ Its periodic redraw is gone since ADR 0023 (2026-10-16): the footer says
 when the values were measured, not how long ago, and nothing on the screen
 changes with time alone.
 
+**Amended by ADR 0025 (2026-10-17)**, as its last consequence below asked of
+a faster redraw source: partial refreshes past the budget stop at the budget
+again (`UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET`, 40 for this panel), after
+which even a redraw a person asked for waits for the full refresh. At the
+sensors' pace it never binds; a person tapping without pause would otherwise
+pass the 40 this panel was tested with.
+
 ## Context
 
 ADR 0004 met a conflict between the panel's two limits -- the partial-refresh

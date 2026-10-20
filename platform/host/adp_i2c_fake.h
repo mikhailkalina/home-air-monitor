@@ -83,6 +83,11 @@ typedef struct {
 
     // Observability: what the code under test asked of the bus.
     uint32_t transfers;  // every write/read/write_read that reached the bus
+    // Transfers carrying data whose address was refused. On the board each
+    // costs three error lines from ESP-IDF's I2C driver, logged on the
+    // caller's stack; an address-only probe that is refused costs none
+    // (docs/adr/0025-touch-input-gt911.md).
+    uint32_t refused_data_transfers;
     uint32_t recoveries;
     unsigned last_recover_pulses;
 } adp_i2c_fake_t;

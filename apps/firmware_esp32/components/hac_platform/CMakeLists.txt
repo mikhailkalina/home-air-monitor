@@ -16,12 +16,16 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/adp_display.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c_pure.c
+        # The GT911 behind port_input: its interrupt and its task. The
+        # driver and the port_input over it are hac_drivers' (ADR 0025).
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_input.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_sd.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_power.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
     REQUIRES
         hac_core
+        hac_drivers
         epdiy
         esp_timer
         esp_driver_i2c

@@ -10,9 +10,6 @@
 
 #include "esp_heap_caps.h"
 
-#include "ui/screen_home.h"
-#include "ui/view_model.h"
-
 #define EVENT_LOOP_TAG "event_loop"
 
 // No deadline is waited on for longer than this, even when neither the
@@ -39,17 +36,18 @@
 
 #define EVENT_LOOP_QUEUE_DEPTH 8u
 
-// What docs/architecture.md 6.1's app_event_t will eventually be. Nothing
-// produces one yet -- there is no touch IRQ, and the sensors are polled at
-// the sensor manager's deadlines rather than signalled -- so the queue exists
-// for its shape (xQueueReceive with a timeout computed from the next
-// deadline, exactly as the architecture describes) rather than for traffic;
-// a timeout and a real event are handled identically below, because either
-// one means "re-evaluate now".
+// What docs/architecture.md 6.1's app_event_t will eventually be. Since
+// phase 3g the touch adapter posts one when it has queued input
+// (event_loop_post_input()); the sensors are still polled at the sensor
+// manager's deadlines rather than signalled. A timeout and a real event are
+// handled identically below, because either one means "re-evaluate now":
+// the input itself waits in the adapter's queue, with its own time.
 typedef struct {
     uint8_t kind;
     uint64_t ts_ms;
 } pump_event_t;
+
+#define PUMP_EVENT_INPUT 1u
 
 typedef struct {
     event_loop_deps_t deps;
@@ -69,12 +67,76 @@ typedef struct {
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
-    // whole panel screen_home_render() unconditionally repaints every time.
+    // whole panel a screen's render unconditionally repaints every time.
     // Lives in PSRAM for the same reason the display's own framebuffer does
     // (docs/hardware/board_notes.md's memory budget): DIRAM has nowhere near
     // enough headroom for a second 253 KB buffer.
     framebuffer_t previous_fb;
 } event_loop_state_t;
+
+// Outlives pump_task, which never returns; a static rather than a heap
+// allocation, matching the "no core/ allocation" style even though this file
+// is firmware composition, not core/. At file scope for
+// event_loop_post_input(), which other tasks call.
+static event_loop_state_t s_state;
+
+// What the screens draw from, at `now_ms` -- the time the reading's wall
+// time was read at.
+static screen_inputs_t screen_inputs(const event_loop_state_t *s, uint64_t now_ms)
+{
+    screen_inputs_t in;
+    memset(&in, 0, sizeof(in));
+    in.reading = &s->reading;
+    in.now_ms = now_ms;
+    in.zone = s->deps.zone;
+    in.sensors = s->deps.sensors;
+    if (s->deps.facts != NULL) {
+        s->deps.facts(s->deps.facts_ctx, &in.recorder, &in.clock_source);
+    }
+    return in;
+}
+
+// A redraw that put a new screen on the glass: which, and, for a tap, how
+// long from the finger's lift to the end of the flush -- the latency a
+// person sees, measured on port_clock across the whole synchronous flush.
+static void log_screen_change(const event_loop_state_t *s, const screen_redraw_note_t *note,
+                              const update_decision_t *d)
+{
+    if (!note->screen_changed) {
+        return;
+    }
+    const log_field_t fields[] = {
+        log_str("screen", screen_controller_screen_name(note->screen)),
+        log_str("by", note->by_tap ? "tap" : "timeout"),
+        log_u64("latency_ms", note->by_tap ? note->latency_ms : 0u),
+        log_str("action", update_policy_action_name(d->action)),
+        log_u64("partials", update_policy_partials_since_full(s->deps.policy)),
+    };
+    port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "screen changed", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+}
+
+// Every event the touch adapter has queued, to the screen controller.
+static void drain_input(event_loop_state_t *s)
+{
+    if (s->deps.input == NULL || s->deps.screens == NULL) {
+        return;
+    }
+    input_event_t ev;
+    while (s->deps.input->poll(s->deps.input, &ev)) {
+        if (screen_controller_input(s->deps.screens, s->deps.policy, &ev)) {
+            const log_field_t fields[] = {
+                log_str("next",
+                        screen_controller_screen_name(screen_controller_screen(s->deps.screens))),
+                log_u64("x", ev.x),
+                log_u64("y", ev.y),
+                log_u64("up_ms", ev.ts_ms),
+            };
+            port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "tap", fields,
+                           sizeof(fields) / sizeof(fields[0]));
+        }
+    }
+}
 
 // One line per redraw decision. No deadline field: log_decision() runs only
 // when update_policy_evaluate() decided a redraw is due *now*, so its
@@ -111,9 +173,8 @@ static bool redraw(event_loop_state_t *s, const update_decision_t *d, uint64_t n
         return false;
     }
 
-    view_model_t vm;
-    view_model_build(&vm, &s->reading, now_ms, s->deps.zone);
-    screen_home_render(fb, &vm);
+    const screen_inputs_t in = screen_inputs(s, now_ms);
+    screen_controller_render(s->deps.screens, fb, &in);
 
     const bool full = (d->action == UPDATE_FULL);
     const refresh_mode_t mode = full ? REFRESH_FULL : REFRESH_PARTIAL;
@@ -158,6 +219,9 @@ static bool redraw(event_loop_state_t *s, const update_decision_t *d, uint64_t n
     update_policy_commit(s->deps.policy, &s->reading, d);
     memcpy(s->previous_fb.pixels, fb->pixels, fb->pixels_size);
     s->deferral_logged = false;
+    screen_redraw_note_t note;
+    screen_controller_committed(s->deps.screens, s->deps.clock->now_ms(s->deps.clock), &note);
+    log_screen_change(s, &note, d);
     return true;
 }
 
@@ -212,6 +276,9 @@ static void pump_task(void *arg)
     s->stack_free_min_bytes = UINT32_MAX;
 
     for (;;) {
+        // Touch first: a tap is a redraw due now, whatever else is.
+        drain_input(s);
+
         const uint64_t sensors_due = sensor_manager_poll(s->deps.sensors, &s->reading);
 
         // The time after the poll, not before it: the drivers wait out their
@@ -229,8 +296,12 @@ static void pump_task(void *arg)
             s->deps.on_reading(s->deps.on_reading_ctx, s->deps.sensors, &s->reading, now_ms);
         }
 
+        const uint64_t screens_due =
+            screen_controller_tick(s->deps.screens, s->deps.policy, now_ms);
+        const screen_inputs_t in = screen_inputs(s, now_ms);
+
         update_decision_t decision;
-        update_policy_evaluate(s->deps.policy, &s->reading, &decision);
+        screen_controller_evaluate(s->deps.screens, s->deps.policy, &in, &decision);
 
         if (decision.action != UPDATE_NONE) {
             if (now_ms >= s->redraw_not_before_ms) {
@@ -247,7 +318,7 @@ static void pump_task(void *arg)
                 }
                 // What is due now that the redraw is done -- or still due,
                 // if it was not.
-                update_policy_evaluate(s->deps.policy, &s->reading, &decision);
+                screen_controller_evaluate(s->deps.screens, s->deps.policy, &in, &decision);
             }
         } else if (decision.deferred_by_min_interval && !s->deferral_logged) {
             // Only a panel with no partial mode gets here (ADR 0019). Said
@@ -277,7 +348,10 @@ static void pump_task(void *arg)
         if (decision.action != UPDATE_NONE && policy_due < s->redraw_not_before_ms) {
             policy_due = s->redraw_not_before_ms;
         }
-        const uint64_t wake_at = (sensors_due < policy_due) ? sensors_due : policy_due;
+        uint64_t wake_at = (sensors_due < policy_due) ? sensors_due : policy_due;
+        if (screens_due < wake_at) {
+            wake_at = screens_due;
+        }
         const uint32_t wait_ms = wait_ms_until(wake_at, clock->now_ms(clock));
 
         log_stack_low(s);
@@ -306,11 +380,6 @@ static void pump_task(void *arg)
 void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int priority,
                       int core_id)
 {
-    // Outlives pump_task, which never returns; a static rather than a heap
-    // allocation, matching the "no core/ allocation" style even though this
-    // file is firmware composition, not core/.
-    static event_loop_state_t s_state;
-
     memset(&s_state, 0, sizeof(s_state));
     s_state.deps = *deps;
     s_state.queue = xQueueCreate(EVENT_LOOP_QUEUE_DEPTH, sizeof(pump_event_t));
@@ -355,4 +424,13 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
         port_log_write(s_state.deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG,
                        "xTaskCreatePinnedToCore failed", fields, 1u);
     }
+}
+
+void event_loop_post_input(void)
+{
+    if (s_state.queue == NULL) {
+        return;
+    }
+    const pump_event_t ev = {.kind = PUMP_EVENT_INPUT, .ts_ms = 0u};
+    (void)xQueueSend(s_state.queue, &ev, 0);
 }

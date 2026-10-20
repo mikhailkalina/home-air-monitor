@@ -29,6 +29,9 @@ set(HAC_DRIVERS_SOURCES
     ${HAC_ROOT}/drivers/bme68x/bme68x_common.c
     ${HAC_ROOT}/drivers/bme68x/bme68x_hal.c
     ${HAC_ROOT}/drivers/bme68x/bme68x_source.c
+    ${HAC_ROOT}/drivers/gt911/gt911.c
+    ${HAC_ROOT}/drivers/gt911/gt911_input.c
+    ${HAC_ROOT}/drivers/gt911/gt911_touch.c
     ${HAC_ROOT}/drivers/pcf8563/pcf8563.c
     ${HAC_ROOT}/drivers/scd4x/scd4x_hal.c
     ${HAC_ROOT}/drivers/scd4x/scd4x_source.c
@@ -47,6 +50,7 @@ set(HAC_DRIVERS_BSEC_SOURCES
 set(HAC_DRIVERS_INCLUDES
     ${HAC_ROOT}/drivers
     ${HAC_ROOT}/drivers/bme68x
+    ${HAC_ROOT}/drivers/gt911
     ${HAC_ROOT}/drivers/pcf8563
     ${HAC_ROOT}/drivers/scd4x
 )

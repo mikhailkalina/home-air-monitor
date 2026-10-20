@@ -50,6 +50,11 @@ typedef struct {
     volatile uint32_t events_posted;
     volatile uint32_t events_dropped;
     volatile uint32_t post_max_us;
+
+    // Written here only, read by the event loop's task for the diagnostics
+    // screen (card_writer_recorder_state()): one aligned word each.
+    volatile uint32_t published_rec_state;
+    volatile uint32_t running;
 } writer_t;
 
 static writer_t s_w;
@@ -328,6 +333,8 @@ static void writer_task(void *arg)
     (void)try_mount(true, now);
     note_state(now);
     s_w.next_stats_ms = now + CARD_WRITER_STATS_INTERVAL_MS;
+    s_w.published_rec_state = (uint32_t)s_w.deps.recorder->state;
+    s_w.running = 1u;
 
     for (;;) {
         recorder_event_t ev;
@@ -348,6 +355,7 @@ static void writer_task(void *arg)
         note_state(now);
         drain_log(now);
         recorder_tick(s_w.deps.recorder, now);
+        s_w.published_rec_state = (uint32_t)s_w.deps.recorder->state;
         log_file_tick(s_w.deps.log_file, now);
         if (now >= s_w.next_stats_ms) {
             log_stats();
@@ -417,4 +425,13 @@ hal_status_t card_writer_request(card_writer_cmd_t cmd, card_writer_status_t *ou
         return HAL_ERR_TIMEOUT;
     }
     return HAL_OK;
+}
+
+bool card_writer_recorder_state(recorder_state_t *out)
+{
+    if (s_w.running == 0u) {
+        return false;
+    }
+    *out = (recorder_state_t)s_w.published_rec_state;
+    return true;
 }

@@ -11,6 +11,7 @@
 set(HAC_GOLDEN_TESTS
     test_golden_ui
     test_golden_screen_home
+    test_golden_screen_diagnostics
 )
 
 foreach(test IN LISTS HAC_GOLDEN_TESTS)

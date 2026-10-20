@@ -43,7 +43,7 @@ ever purchased, re-check the silkscreen before assuming it matches.
 | Gray levels | 16 (4 bpp, matches `PIXFMT_GRAY4`) |
 | RTC | PCF8563, on I²C at `0x51`, with a rechargeable backup cell -- see "The RTC" below |
 | Battery | charger HX6610S (`U9`, schematic v2.4), with a red "charging" and a green "full" LED of its own; no gauge IC -- the level is a plain divider on GPIO14 (see "Pin assignments" and "Power rails and connectors" below) |
-| Touch | present on this unit (H716 variant) — answers at I²C `0x5D`, as a GT911 does with INT low at reset (phase 2d bus scan, 2026-10-13); the part itself is not yet read back — see open items |
+| Touch | present on this unit (H716 variant) — a GT911 at I²C `0x5D` (INT low at reset): seen by the phase 2d bus scan, 2026-10-13, and named by its product ID, `911`, firmware 0x1060, on 2026-10-17 (phase 3g) |
 
 ## Display orientation
 
@@ -646,7 +646,9 @@ accepting close-up outlines from the 11th for fewer full refreshes. Partial
 refreshes may also go past it while a full refresh waits for the minimum
 interval -- never at the firmware's pace, which draws at most once per 5 s
 sensor cycle (20 partials, at least 105 s between full refreshes) -- and the
-next redraw after the interval is full.
+next redraw after the interval is full. Past it by the budget again at most,
+40 in all, the most this panel has been driven through: a person tapping
+between screens could otherwise take it further (ADR 0025).
 
 ## Ghosting observed in the simulator — a calibration starting point
 
@@ -733,14 +735,29 @@ layout settles, not before.
       vendor examples drive INT high first "assuming that the previous touch
       was in sleep state", and a GT911 a previous firmware put to sleep stays
       asleep across a reset of the ESP32 alone.
-- [ ] Touch controller part number. Narrowed 2026-10-13 (phase 2d): it
+- [x] Touch controller part number. **Resolved 2026-10-17 on the board**
+      (phase 3g, ELF `f63cfdf60...`): `gt911: found address=93 (0x5D)
+      product_id=911 firmware=4192 (0x1060)` -- a GT911, and the
+      programming guide's register map confirmed by it. Its configuration:
+      version 0x42, X/Y maximum 540 x 960 (portrait, the frame the vendor's
+      swap implies), two touch points, `Module_Switch1` 0x05 (bits 1:0 = 01, a
+      falling edge; bit 2 set, its meaning not established), checksum
+      right. Now the host model's defaults. **The address latch is not
+      stable** (2026-10-20): `0x14` after a power glitch, `0x5D` again after
+      the next power cycle -- the firmware takes either (open item "The touch
+      panel on the board"). The history follows. Narrowed 2026-10-13 (phase 2d): it
       answers at a GT911 address, and the vendor's S3 examples drive a GT911,
       so it is very probably one -- but an address-only probe cannot name a
       part. Reading the GT911's product ID (16-bit register `0x8140`, four
       bytes, `"911"` and a NUL) closes it; that is the touch driver's first
       transaction anyway, so it belongs to whichever phase writes
       `adp_input.c`. Also open: whether the address latch is stable across
-      power-ups. One unit, one power-up seen so far.
+      power-ups. One unit, one power-up seen so far. **Built in phase 3g**
+      (`docs/adr/0025-touch-input-gt911.md`): every boot's `gt911: found`
+      line names the product ID and firmware, `touch` at the console prints
+      them, and the test app's `port_input` case checks for `"911"` -- the
+      first run on the board closes this item (open item "The touch panel on
+      the board").
 - [x] **Phase 2d on the board.** **Confirmed 2026-10-13.** The boot scan:
       the bus came up with both lines idle-high, the scan completed, the RTC
       answered at `0x51` and the touch controller at `0x5D` (the item above),
@@ -1342,8 +1359,11 @@ layout settles, not before.
       Still open: `time` against a reference (a stopped clock during the cut
       would show as the outage's length behind; otherwise, the drift since
       time_set); a longer outage -- hours -- for the cell's capacity; the
-      cell's charge after days unpowered; `restart` itself (`esp_restart()`);
-      the autumn change. A tip for these: YAT's own time stamps on each line
+      cell's charge after days unpowered; the autumn change. **`restart`
+      itself seen 2026-10-20** (phase 3g's image): `previous reset
+      reason=software`, then `wall clock source=rtc rtc=rtc: valid
+      kept_across_reset=true` -- the system time survived the CPU reset, as
+      read in ESP-IDF's source, and the RTC agreed. A tip for these: YAT's own time stamps on each line
       give the log an outside clock.
 - [ ] **The microSD card on the board (phase 3f).** Built 2026-10-16,
       verified on the host only (`docs/adr/0024-sd-card-recordings-and-debug-log.md`).
@@ -1431,6 +1451,204 @@ layout settles, not before.
       count this time); `data/` 10 files, 122 KB, `log/` one file, 112 KB.
       Still to see: hours unattended, a power cut in a write, a day on a PC
       and in the simulator, the test app.
+- [x] **The touch panel on the board (phase 3g).** **Done 2026-10-20**:
+      every check below seen, the test app's included; one fault found and
+      fixed on the way (the controller's address, below). Built 2026-10-17,
+      verified on the host only (`docs/adr/0025-touch-input-gt911.md`): the
+      GT911 driver and `port_input` over it against a model written from
+      Goodix's documents, the firmware and the test app built. What each
+      check is to show, and the lines that show it:
+      - *The part*: the boot's `gt911: found address=... product_id=911
+        firmware=... attempts=... trigger=... config_checksum_ok=` and
+        `configuration (read, never written) ... x_max= y_max=
+        touch_number= module_switch1=`; `touch` prints the same. Closes the
+        open item "Touch controller part number" with the product ID and
+        firmware. The register map these come from is the programming
+        guide's, not checked against a legible copy: "911" read back is its
+        proof. `attempts` above 1 says the 50 ms settle after the wake pulse
+        (`GT911_WAKE_SETTLE_MS`, an ESTIMATE) was short.
+      - *The cost of init*: `adp_input: touch ready status=0 took_ms=` --
+        about 90 ms with the controller awake, on the touch task since
+        2026-10-20 (before that `main: touch status=0 took_ms=`, in front of
+        the first frame).
+      - *The four corners*: a finger at each corner of the glass, then
+        `touch`: its `TOUCH event` lines give each event raw and mapped. The
+        mapped ones should be near (0,0), (959,0), (0,539), (959,539). If
+        not, correct `BOARD_TOUCH_SWAP_XY` and `_MIRROR_X`/`_MIRROR_Y` in
+        `board_config.h` -- now the vendor's choice, swap and Y mirrored --
+        and record here what the raw corners were.
+      - *A tap*: the diagnostics screen comes up, `event_loop: tap next=
+        diagnostics`, then `screen changed screen=diagnostics by=tap
+        latency_ms=... action=partial`. The latency is the time from the
+        finger's lift to the end of the flush; the panel model predicts
+        about 1,080 ms for the change of screen. A second tap goes home; a
+        minute untouched goes home too (`by=timeout`).
+      - *A finger during a full refresh*: tap while the panel flashes (the
+        first frame, or a full refresh after the budget). The tap should
+        still switch the screen once the refresh is done; its `latency_ms`
+        then includes the wait. EPDiy's render tasks outrank the touch task
+        on both cores while they drive the glass.
+      - *Sleep, a reset, and init waking it*: `touch_sleep`, then `touch`
+        (`ASLEEP`), then `restart`; the next boot's `gt911: found` line
+        should come with no error -- `init()` woke it -- and taps work. Then
+        `touch_sleep` and `touch_wake` without a reset: `TOUCH_WAKE ok in
+        ... ms`.
+      - *The bus shared*: while tapping and dragging, the sensors keep their
+        once-a-minute `sample` lines and the sensor manager logs no new
+        `source failed`; no new `i2c.master` error lines. `touch`'s counts:
+        `failed` reads should stay 0, `lifts timed out` too -- a count there
+        means the controller's report of a lift was not seen and the 250 ms
+        timeout (`GT911_INPUT_LIFT_TIMEOUT_MS`, an ESTIMATE) lifted the
+        finger.
+      - *The test app*: `idf.py -T hac_platform build` adds `contract
+        port_input adp_input+GT911` lines -- the name, the configuration,
+        the untouched checks, the finger checks marked not exercised -- and
+        a sleep-and-wake case that prints `while asleep the address answers`
+        or `is refused`: the host model assumes refused.
+      - *For phase 5*: GPIO47, the touch INT, is not one of the S3's RTC
+        GPIOs (0-21), so it can wake the chip from light sleep only, not from
+        deep sleep -- the vendor's example says the same ("The touch
+        interrupt uses non-RTC-IO"). Read, not tried.
+      **First run 2026-10-17** (ELF `f63cfdf60...`, the BSEC image, the
+      owner's log of 08:06 local, two minutes, six taps):
+      - *The part*: as the item "Touch controller part number" records --
+        a GT911, `attempts=1` (the 50 ms settle after the wake pulse was
+        enough for a controller that was awake; a sleeping one is still to
+        try), the interrupt on GPIO47 on the falling edge its configuration
+        selects. Init took 86 ms (`main: touch status=0 took_ms=86`), against
+        75 estimated.
+      - *Taps*: all six switched the screen, home and diagnostics in turn.
+        Each reached the event loop 1-2 ms after the finger's lift (the
+        decision's `now_ms` against the tap's `up_ms`), and the screen
+        changed `latency_ms=1163` to `1173` after it: about 80 ms of
+        rendering and diffing on the event loop, then EPDiy's 1,068 ms for
+        the 920 x 500 partial refresh (draw 959, diff 99) -- the panel
+        model's 1,080 within 1.1 %. The simulator's latency leaves out the
+        80 ms of rendering.
+      - *The diagnostics screen* redrew once on its own while it was up, an
+        88 x 24 px status word (281 ms): it redraws only what changed.
+      - *The budget*: each change a partial refresh, as designed -- six taps
+        took the count from 5 to 12.
+      - *BSEC*: three of the six changes made its call late (430, 660 and
+        290 ms against 187): the 1.07 s flush runs on the event loop's task,
+        as ADR 0020's "Timing" expects of any long flush. Touch adds such
+        flushes only while someone taps.
+      - *The bus shared*: no `i2c.master` lines, no `source failed`, the
+        sensors' samples on time through the taps -- two minutes only.
+      - *The cost*: `free_internal_after_epd_init=201375`, 2,952 under phase
+        3f's 204,327 (the static RAM); after the card's mount 176,143, 8,408
+        under 3f's 184,551 (with the touch task's 4 KB stack and the queue);
+        the event loop's stack low-water mark 3,384 bytes free (3,412 in 3f).
+        **The touch task's own: 1,488 bytes free of 4,096**, reached within
+        70 ms of boot, before any finger -- its low-water mark's own log line
+        (an ESP_LOG with fields, through the log tee) is the deepest thing it
+        does. Kept at 4 KB: 1.5 KB of margin.
+      - *Not explained yet*: the touch task ran once about 50 ms after its
+        interrupt was enabled, before any finger. Read as an edge latched
+        while the line was the driver's, an empty read; `touch`'s counts
+        (`empty`) will say.
+      - *The coordinates*: the six taps landed at (939,81), (154,293),
+        (223,259), (133,264), (190,201), (158,318) -- plausible, but where
+        the finger was is not recorded: the corner check is still to do.
+      Still to see: the four corners with `touch`; a finger during a full
+      refresh; `touch_sleep`, `restart` and `init()` waking it;
+      `touch_sleep`/`touch_wake`; the diagnostics screen's timeout; the
+      test app; an hour of touches beside the sensors.
+      **Three days unattended, 2026-10-17 to 20** (the same image, from the
+      card's `log/` and `data/`, 2026-10-17 05:06Z to 2026-10-20 12:23Z, and
+      the owner's YAT log of 2026-10-20 15:33 local):
+      - *Seen working*: the corners -- four taps at (9,23), (948,6),
+        (925,513), (53,502) in turn, top left, top right, bottom right,
+        bottom left (2026-10-19 17:03Z): the vendor's swap and Y mirror are
+        right, `BOARD_TOUCH_*` stay. A finger during a full refresh -- at boot,
+        `up_ms=1083` inside the first frame's flush, the change on the glass
+        `latency_ms=4440` after it; another inside a budget's full refresh,
+        3,404 ms. `touch_sleep` then `touch_wake` 15 s later: `woken
+        attempts=1`, taps working at once. The diagnostics screen's timeout,
+        twice, 60.0 s after the tap. Taps faster than the screen changes: each
+        change waits for the one before (1,395-2,309 ms), the 21st redraw
+        after a full one comes out full (`action=full`, 3,402 ms); never
+        past the budget. 45 taps in all.
+      - *The bus shared*: three days, no `i2c.master` line, no `source
+        failed`, no timed-out lift.
+      - **A panic, and a boot loop, 2026-10-20 -- the firmware's fault,
+        fixed.** The owner plugged a cable in (USB and battery connected,
+        a connector or the touch flex disturbed). The touch controller, on
+        `VDD3V3` through the flex at `P2`, came back from that with **the
+        other address, 0x14** -- the latch at its power-up, which the ESP32
+        never saw. The running image panicked (12:23:23Z, no terminal
+        attached, no backtrace), and from then on every boot did: `gt911:
+        found address=20 (0x14) ... attempts=36`, then a `LoadProhibited` in
+        `gpio_install_isr_service()` -> `esp_intr_alloc()`, `EXCVADDR`
+        0x00060c23 -- a saved PS register value where an interrupt
+        descriptor's pointer should be -- three boots running, until a USB
+        reset found it at 0x5D again. The cause: for a second the driver read
+        the product ID at 0x5D, a data transfer each time, and ESP-IDF's I2C
+        driver logged three error lines for every refusal from inside the
+        call -- on app_main's stack, 3,584 bytes, through the log tee's
+        `vsnprintf`. It overflowed into the heap, and the next allocation of
+        an interrupt met the damage. **Confirmed** by the same image in the
+        same state at 16:32 local the same day (the owner's YAT log): a loop
+        of eleven boots, the controller still at 0x14 -- an ESP32 reset does
+        not reach its latch -- each crashing in `esp_intr_alloc()` after the
+        storm of `i2c.master` lines, and one of them stopped first by
+        FreeRTOS's own check: `***ERROR*** A stack overflow in task main has
+        been detected`. The first panic is most likely the same
+        on the touch task's 4 KB (1,408 bytes left at its lowest from its own
+        log lines), at the first failed read after the address changed; not
+        proven. **Changed** (`docs/adr/0025-touch-input-gt911.md`, "The
+        controller's address"): the controller is found by address-only
+        probes of both addresses in turn -- a refused probe logs nothing; the
+        first init runs on the touch task, not app_main, and the task has 6 KB;
+        a failed read looks for the controller again at once, at both
+        addresses, and every minute while it is nowhere. To see on the board:
+        a boot with the controller at 0x14 (`found address=20`), and the
+        touch task's low-water mark after a failed read (`touch`).
+      - *The address latch is not stable*: 0x5D at every boot before, 0x14
+        after the glitch, 0x5D again after the next. The GT911 latches from
+        INT's level as its reset rises, at its own power-up; GPIO47 floats
+        then. An option not taken: the S3's pull-down on GPIO47 would make
+        it 0x5D whenever the ESP32 is running, for about 70 uA while a
+        falling-edge INT idles high. The firmware takes either address now.
+      - **The fix on the board, 2026-10-20 16:35 local** (ELF `6f8a91905...`,
+        the owner's YAT logs of 16:35): the controller still at 0x14 from the
+        glitch, and found there at the first attempt -- `gt911: found
+        address=20 ... attempts=1`, `adp_input: touch ready status=0
+        took_ms=79`, not one `i2c.master` line from the search, no panic, the
+        first frame no longer behind it. Then `restart` (a software reset,
+        `previous reset reason=software`): found at 0x14 again at once,
+        `took_ms=89`. The touch task's low-water mark 2,288 bytes free of
+        6,144 at boot. The one `i2c.master` NACK in the second boot is the
+        SCD41's, by design: after a software reset it is still measuring
+        (`found_measuring=true`) and refuses the serial number the driver asks
+        for first.
+      - **Sleep, a reset, and `init()` waking it -- seen 2026-10-20 16:39
+        local** (the same image, the owner's YAT log): two taps, 1,164 and
+        1,177 ms to the glass; `touch_sleep` (`gt911: asleep: INT held low
+        until woken`); `restart` 16 s later. The boot's scan found nothing at
+        0x14 or 0x5D (`answered=3`): **asleep, the GT911 refuses its address**
+        -- what the host model assumed -- and **an ESP32 reset does not wake
+        it**. Then the touch task's init: the wake pulse, `gt911: found
+        address=20 ... attempts=1` -- the 50 ms settle is enough after a real
+        sleep too -- `touch ready took_ms=90`, and taps working at once.
+      - **The test app, 2026-10-20 16:43 local** (ELF `0192cce1e...`, the
+        owner's YAT log): `9 Tests 0 Failures 0 Ignored`, twice, 246
+        contract lines PASS and none FAIL. `port_input` against the real
+        controller: it names itself `911`, nothing to poll while untouched,
+        `poll()` never waits; the finger checks say they were not exercised.
+        The sleep-and-wake case: `while asleep the address is refused (3)`
+        (`HAL_ERR_NOT_FOUND`), the wake 61 ms, its address answering after.
+        The first run met the controller at 0x14, the second -- after a
+        reset from outside the log, a power cycle by the address -- at 0x5D:
+        both paths pass. The touch task's low-water mark 2,508 bytes free of
+        6,144.
+      - *In passing*, from the same days: IAQ's band changes were 2,378 of
+        the 2,489 redraws of 2026-10-18 and 19 (96 %), the flapping at 50
+        that ADR 0021 left to watch -- and with them most of those days' 44
+        and 75 full refreshes; BSEC's accuracy reached `high` and moved between `high` and
+        `medium` 234 times; 640 late BSEC calls in 3.3 days. Recording:
+        151,323 rows, none dropped, the slowest flush 160 ms, the event loop's
+        longest post 38 us.
 - [ ] Whether `BOARD_BATTERY_ADC_GPIO` (GPIO14, ADC2) gives usable readings
       while Wi-Fi is active. The ESP32-S3 TRM documents ADC2 as unreliable
       under Wi-Fi; confirm on this board before phase 3/4 tries to read

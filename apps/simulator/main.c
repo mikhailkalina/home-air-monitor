@@ -17,6 +17,7 @@
 //   simulator --record out/rec --scenario-co2 ... --scenario-env ...
 //   simulator --recording card/data/2026-10-16_scd4x.csv
 //             --recording card/data/2026-10-16_bme68x.csv
+//   simulator --headless --taps "30:480,270;45:480,270" ...
 //
 // Two ways to the same sensor_source_t (architecture 5.4): replay sources
 // that play the scenario files straight into the core, or the real drivers
@@ -43,10 +44,16 @@
 // says (_scd4x, _bme68x). So a day recorded on the board plays through the
 // same sensor_manager merge.
 //
-// Not yet wired, and deliberately: the control panel, the remaining screens,
-// deep-sleep emulation, networking and telemetry. There is no app_core yet
-// either: the loop below runs the sensor manager and the update policy
-// itself, and sleeps until the earlier of their deadlines.
+// Touch (docs/adr/0025-touch-input-gt911.md): the window's clicks, and with
+// --taps a script of taps for headless runs, go through port_input to
+// core/app/screen_controller.c, as the board's GT911 does -- a tap switches
+// between the home screen and the diagnostics screen, and the loop prints
+// how long the change took to reach the glass on the panel model.
+//
+// Not yet wired, and deliberately: the control panel, deep-sleep emulation,
+// networking and telemetry. There is no app_core yet either: the loop below
+// runs the sensor manager, the screen controller and the update policy
+// itself, and sleeps until the earliest of their deadlines.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +63,9 @@
 #include "adp_display_png.h"
 #include "adp_files_dir.h"
 #include "adp_i2c_fake.h"
+#include "adp_input_script.h"
 #include "adp_log_console.h"
+#include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
 #include "bme68x_limits.h"
@@ -76,8 +85,7 @@
 #include "replay/replay_source.h"
 #include "scd4x_source.h"
 #include "scenario_world.h"
-#include "ui/screen_home.h"
-#include "ui/view_model.h"
+#include "ui/framebuffer.h"
 
 #ifdef HAC_SIM_GUI
 #include "adp_display_sdl.h"
@@ -125,6 +133,12 @@
 // Headless runs must terminate on their own, or CI hangs.
 #define SIM_DEFAULT_HEADLESS_DURATION_S 600u
 
+// Room for what --taps can say is wrong.
+#define SIM_TAPS_ERROR_MAX 160u
+
+// port_input implementations at once: the window's and the script's.
+#define SIM_MAX_INPUTS 2u
+
 typedef enum {
     SIM_SENSORS_REPLAY = 0,
     SIM_SENSORS_FAKE_I2C,
@@ -146,6 +160,7 @@ typedef struct {
     const char *record_dir;
     const char *recordings[SIM_MAX_RECORDINGS];
     size_t recording_count;
+    const char *taps;  // --taps, unparsed
 } sim_args_t;
 
 static void usage(const char *argv0)
@@ -172,6 +187,9 @@ static void usage(const char *argv0)
            "                         source its name says: <day>_scd4x.csv, <day>_bme68x.csv;\n"
            "                         repeatable, one per source. The wall clock starts at\n"
            "                         the earliest first row unless --wall-time says otherwise\n"
+           "  --taps <list>          scripted taps, \"<seconds>:<x>,<y>;...\" in panel pixels: a\n"
+           "                         tap switches between the home and diagnostics screens\n"
+           "                         (headless or windowed; the window's clicks do the same)\n"
            "  --help\n"
            "\n"
            "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
@@ -261,6 +279,9 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
                 return false;
             }
             out->recordings[out->recording_count++] = argv[++i];
+        } else if (strcmp(arg, "--taps") == 0) {
+            TAKE_VALUE("--taps");
+            out->taps = argv[++i];
         } else if (strcmp(arg, "--headless") == 0) {
             out->headless = true;
         } else {
@@ -545,9 +566,12 @@ typedef struct {
     time_zone_t zone;
     sensor_manager_t sensors;
     update_policy_t policy;
+    screen_controller_t screens;
     air_reading_t reading;
     bool deferral_logged;
     sim_recording_t *recording;  // NULL without --record
+    const char *clock_source;    // the diagnostics screen's word for the wall clock
+    const epd_model_t *panel;    // how long each flush takes on the glass
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
@@ -567,6 +591,43 @@ static void log_decision(const update_decision_t *d, const update_policy_t *poli
            update_policy_reason_name(d->reason), update_policy_partials_since_full(policy), note);
 }
 
+// What the screens draw from, at `now_ms` -- the time the reading's wall
+// time was read at.
+static screen_inputs_t screen_inputs(const sim_t *sim, uint64_t now_ms)
+{
+    screen_inputs_t in;
+    memset(&in, 0, sizeof(in));
+    in.reading = &sim->reading;
+    in.now_ms = now_ms;
+    in.zone = &sim->zone;
+    in.sensors = &sim->sensors;
+    in.recorder.present = sim->recording != NULL;
+    if (sim->recording != NULL) {
+        in.recorder.state = sim->recording->rec.state;
+    }
+    in.clock_source = sim->clock_source;
+    return in;
+}
+
+// The screen that changed under a tap, and how long it took: the time the
+// event waited for this loop on the virtual clock, plus the flush on the
+// panel model -- the window waits that out in real time, after this.
+static void log_screen_change(const screen_redraw_note_t *note, uint64_t flush_ms)
+{
+    if (!note->screen_changed) {
+        return;
+    }
+    if (!note->by_tap) {
+        printf("[screen] %s (the diagnostics screen's timeout)\n",
+               screen_controller_screen_name(note->screen));
+        return;
+    }
+    printf("[screen] %s (tap) latency_ms=%llu: %llu waiting for the loop + %llu on the glass\n",
+           screen_controller_screen_name(note->screen),
+           (unsigned long long)(note->latency_ms + flush_ms), (unsigned long long)note->latency_ms,
+           (unsigned long long)flush_ms);
+}
+
 // `now_ms` is the time the reading's wall time was read at.
 static void redraw(sim_t *sim, const update_decision_t *d, uint64_t now_ms)
 {
@@ -575,9 +636,8 @@ static void redraw(sim_t *sim, const update_decision_t *d, uint64_t now_ms)
         return;
     }
 
-    view_model_t vm;
-    view_model_build(&vm, &sim->reading, now_ms, &sim->zone);
-    screen_home_render(fb, &vm);
+    const screen_inputs_t in = screen_inputs(sim, now_ms);
+    screen_controller_render(&sim->screens, fb, &in);
 
     const bool full = (d->action == UPDATE_FULL);
     const refresh_mode_t mode = full ? REFRESH_FULL : REFRESH_PARTIAL;
@@ -599,15 +659,20 @@ static void redraw(sim_t *sim, const update_decision_t *d, uint64_t now_ms)
         area = &dirty_rect;
     }
 
+    const uint64_t panel_before = (sim->panel != NULL) ? sim->panel->simulated_ms_total : 0u;
     if (sim->display->flush(sim->display, area, mode) == HAL_OK) {
         update_policy_commit(&sim->policy, &sim->reading, d);
         memcpy(sim->previous_fb.pixels, fb->pixels, fb->pixels_size);
+        screen_redraw_note_t note;
+        screen_controller_committed(&sim->screens, sim->clock->now_ms(sim->clock), &note);
+        const uint64_t panel_after = (sim->panel != NULL) ? sim->panel->simulated_ms_total : 0u;
+        log_screen_change(&note, panel_after - panel_before);
     }
 }
 
 // One pass: whatever the sensors have due, then whatever the panel has due.
-// Returns when the loop should next look -- the earlier of the sensor
-// manager's deadline and the policy's.
+// Returns when the loop should next look -- the earliest of the sensor
+// manager's deadline, the screen controller's and the policy's.
 static uint64_t step(sim_t *sim)
 {
     const uint64_t sensors_due = sensor_manager_poll(&sim->sensors, &sim->reading);
@@ -636,15 +701,18 @@ static uint64_t step(sim_t *sim)
         recorder_tick(&sim->recording->rec, now_ms);
     }
 
+    const uint64_t screens_due = screen_controller_tick(&sim->screens, &sim->policy, now_ms);
+    const screen_inputs_t in = screen_inputs(sim, now_ms);
+
     update_decision_t decision;
-    update_policy_evaluate(&sim->policy, &sim->reading, &decision);
+    screen_controller_evaluate(&sim->screens, &sim->policy, &in, &decision);
 
     if (decision.action != UPDATE_NONE) {
         log_decision(&decision, &sim->policy);
         redraw(sim, &decision, now_ms);
         sim->deferral_logged = false;
         // What is due after this redraw: the deadline above was "now".
-        update_policy_evaluate(&sim->policy, &sim->reading, &decision);
+        screen_controller_evaluate(&sim->screens, &sim->policy, &in, &decision);
     } else if (decision.deferred_by_min_interval && !sim->deferral_logged) {
         // Only a panel with no partial mode gets here (ADR 0019). Said once
         // per episode: repeating it every tick would bury the flush log it is
@@ -658,6 +726,9 @@ static uint64_t step(sim_t *sim)
 
     uint64_t next =
         (sensors_due < decision.next_deadline_ms) ? sensors_due : decision.next_deadline_ms;
+    if (screens_due < next) {
+        next = screens_due;
+    }
     if (next <= now_ms) {
         next = now_ms + SIM_REDRAW_RETRY_MS;  // a redraw that did not reach the panel
     }
@@ -697,14 +768,18 @@ int main(int argc, char **argv)
 
     // The wall clock: pinned, none, a recording's own first row, or this PC's.
     const char *wall_source = "this PC's";
+    const char *clock_word = NULL;  // the diagnostics screen's: "PC", "--wall-time", "recording"
     if (!args.no_wall_time) {
         uint64_t wall = host_wall_ms();
+        clock_word = "PC";
         if (args.wall_time_pinned) {
             wall = args.wall_time_ms;
             wall_source = "--wall-time";
+            clock_word = "--wall-time";
         } else if (rig.earliest_utc_ms != 0u) {
             wall = rig.earliest_utc_ms;
             wall_source = "the recording's first row";
+            clock_word = "recording";
         }
         adp_clock_virtual_set_wall(&vclock, wall);
     }
@@ -713,7 +788,21 @@ int main(int argc, char **argv)
     adp_display_png_t png_display;
     port_display_t *display = NULL;
     const epd_model_t *panel_model = NULL;
-    port_input_t *input = NULL;
+    port_input_t *inputs[SIM_MAX_INPUTS];
+    size_t input_count = 0u;
+
+    // --taps: a script of taps, in either mode.
+    static adp_input_script_t script;
+    adp_input_script_init(&script, clock);
+    if (args.taps != NULL) {
+        char err[SIM_TAPS_ERROR_MAX];
+        if (adp_input_script_add_taps(&script, args.taps, (uint16_t)SIM_PANEL_WIDTH,
+                                      (uint16_t)SIM_PANEL_HEIGHT, err, sizeof(err)) != HAL_OK) {
+            fprintf(stderr, "--taps: %s\n", err);
+            return 2;
+        }
+        inputs[input_count++] = adp_input_script_port(&script);
+    }
 
 #ifdef HAC_SIM_GUI
     adp_display_sdl_t *sdl_display = NULL;
@@ -741,7 +830,7 @@ int main(int argc, char **argv)
 
         adp_input_sdl_init(&sdl_input, (uint16_t)SIM_PANEL_WIDTH, (uint16_t)SIM_PANEL_HEIGHT,
                            args.zoom, clock);
-        input = adp_input_sdl_port(&sdl_input);
+        inputs[input_count++] = adp_input_sdl_port(&sdl_input);
 #else
         fprintf(stderr,
                 "this build has no window: it was configured with SIM_GUI=OFF, or SDL2 was not\n"
@@ -769,6 +858,10 @@ int main(int argc, char **argv)
     sim.display = display;
     sim.clock = clock;
     sim.zone = time_zone_eu(SIM_LOCAL_STANDARD_OFFSET_MIN);
+    sim.clock_source = clock_word;
+    sim.panel = panel_model;
+    const screen_controller_config_t screens_cfg = screen_controller_config_default();
+    screen_controller_init(&sim.screens, &screens_cfg);
     framebuffer_init(&sim.previous_fb, previous_fb_pixels, previous_fb_size, display->width,
                      display->height, display->format);
 
@@ -832,6 +925,10 @@ int main(int argc, char **argv)
         if (args.headless) {
             const uint64_t now = clock->now_ms(clock);
             uint64_t target = next_wake_ms;
+            const uint64_t tap_at = adp_input_script_next_ms(&script);
+            if (tap_at < target) {
+                target = tap_at;
+            }
             if (target == SENSOR_MANAGER_NO_DEADLINE) {
                 target = now + SIM_HEADLESS_STEP_MS;
             }
@@ -849,18 +946,26 @@ int main(int argc, char **argv)
         }
 
         const uint64_t now_ms = clock->now_ms(clock);
-        if (now_ms >= next_wake_ms) {
-            next_wake_ms = step(&sim);
+
+        // Touch first: a tap that changes the screen is a redraw due now.
+        for (size_t i = 0u; i < input_count; ++i) {
+            input_event_t ev;
+            while (inputs[i]->poll(inputs[i], &ev)) {
+                if (ev.kind != INPUT_TOUCH_MOVE) {
+                    printf("[input] %s at %u,%u t=%llu ms\n",
+                           (ev.kind == INPUT_TOUCH_DOWN) ? "down" : "up", ev.x, ev.y,
+                           (unsigned long long)ev.ts_ms);
+                }
+                if (screen_controller_input(&sim.screens, &sim.policy, &ev)) {
+                    printf("[screen] tap at %u,%u: %s next\n", ev.x, ev.y,
+                           screen_controller_screen_name(screen_controller_screen(&sim.screens)));
+                    next_wake_ms = now_ms;
+                }
+            }
         }
 
-        if (input != NULL) {
-            input_event_t ev;
-            while (input->poll(input, &ev)) {
-                // Nothing consumes touch yet: the menu is a later phase. The
-                // events are logged so that the adapter can be seen to work.
-                printf("[input] kind=%d at %u,%u t=%llu ms\n", (int)ev.kind, ev.x, ev.y,
-                       (unsigned long long)ev.ts_ms);
-            }
+        if (now_ms >= next_wake_ms) {
+            next_wake_ms = step(&sim);
         }
 
 #ifdef HAC_SIM_GUI

@@ -117,6 +117,9 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
     if (!p->have_last_rendered) {
         return UPDATE_REASON_FIRST_FRAME;
     }
+    if (p->requested) {
+        return UPDATE_REASON_REQUEST;
+    }
     if (delta_exceeded(&reading->co2_ppm, &p->last_rendered.co2_ppm, p->cfg.co2_delta_ppm)) {
         return UPDATE_REASON_CO2;
     }
@@ -165,8 +168,8 @@ static uint64_t full_allowed_at(const update_policy_t *p, uint64_t now_ms)
 
 // --- evaluation ------------------------------------------------------------
 
-void update_policy_evaluate(const update_policy_t *p, const air_reading_t *reading,
-                            update_decision_t *out)
+// What the panel allows for a redraw due for `reason`, at the clock's time.
+static void decide(const update_policy_t *p, update_reason_t reason, update_decision_t *out)
 {
     const uint64_t now_ms = p->clock->now_ms(p->clock);
 
@@ -175,7 +178,6 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
     out->reason = UPDATE_REASON_NONE;
     out->next_deadline_ms = UPDATE_POLICY_NO_DEADLINE;  // nothing changes with time alone
 
-    const update_reason_t reason = due_reason(p, reading);
     if (reason == UPDATE_REASON_NONE) {
         return;
     }
@@ -183,8 +185,10 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
 
     // One redraw per cycle: one that comes due sooner after the last waits,
     // and takes whatever else changes meanwhile with it. Not the first frame,
-    // and not across a clock restart, where the old stamp means nothing.
-    if (reason != UPDATE_REASON_FIRST_FRAME && now_ms >= p->last_refresh_ms) {
+    // not a redraw a person asked for, and not across a clock restart, where
+    // the old stamp means nothing.
+    if (reason != UPDATE_REASON_FIRST_FRAME && reason != UPDATE_REASON_REQUEST &&
+        now_ms >= p->last_refresh_ms) {
         const uint64_t redraw_at = p->last_refresh_ms + (uint64_t)p->cfg.min_redraw_interval_ms;
         if (now_ms < redraw_at) {
             out->action = UPDATE_NONE;
@@ -205,8 +209,11 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
 
     if (want_full) {
         const uint64_t allowed_at = full_allowed_at(p, now_ms);
+        const uint64_t most_partials = (uint64_t)p->limits.max_partial_refreshes_before_full *
+                                       UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET;
         if (now_ms < allowed_at) {
-            if (p->limits.max_partial_refreshes_before_full > 0u) {
+            if (p->limits.max_partial_refreshes_before_full > 0u &&
+                p->partials_since_full < most_partials) {
                 // Past the budget, before a full refresh is allowed: keep the
                 // screen current with a partial one. The first redraw that is
                 // due once the interval has elapsed is full, since
@@ -220,7 +227,8 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
                 return;
             }
             // A panel with no partial mode has nothing to keep the screen
-            // current with: the redraw waits.
+            // current with, and one past the budget by the budget again has
+            // had what it may take: the redraw waits for the full refresh.
             out->action = UPDATE_NONE;
             out->deferred_by_min_interval = true;
             out->next_deadline_ms = allowed_at;
@@ -232,6 +240,30 @@ void update_policy_evaluate(const update_policy_t *p, const air_reading_t *readi
     }
 
     out->next_deadline_ms = now_ms;  // due now
+}
+
+void update_policy_evaluate(const update_policy_t *p, const air_reading_t *reading,
+                            update_decision_t *out)
+{
+    decide(p, due_reason(p, reading), out);
+}
+
+void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out)
+{
+    update_reason_t reason = UPDATE_REASON_NONE;
+    if (!p->have_last_rendered) {
+        reason = UPDATE_REASON_FIRST_FRAME;
+    } else if (p->requested) {
+        reason = UPDATE_REASON_REQUEST;
+    } else if (changed) {
+        reason = UPDATE_REASON_STATUS;
+    }
+    decide(p, reason, out);
+}
+
+void update_policy_request(update_policy_t *p)
+{
+    p->requested = true;
 }
 
 void update_policy_commit(update_policy_t *p, const air_reading_t *rendered,
@@ -246,6 +278,7 @@ void update_policy_commit(update_policy_t *p, const air_reading_t *rendered,
     p->last_rendered = *rendered;
     p->have_last_rendered = true;
     p->last_refresh_ms = now_ms;
+    p->requested = false;  // whatever was asked for is what this redraw drew
 
     if (decision->action == UPDATE_FULL) {
         p->last_full_refresh_ms = now_ms;
@@ -291,6 +324,8 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "iaq";
         case UPDATE_REASON_STATUS:
             return "status";
+        case UPDATE_REASON_REQUEST:
+            return "request";
     }
     return "?";
 }

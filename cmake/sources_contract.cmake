@@ -21,6 +21,7 @@ set(HAC_CONTRACT_SOURCES
     ${HAC_ROOT}/tests/contract/port_i2c_contract.c
     ${HAC_ROOT}/tests/contract/port_sensor_contract.c
     ${HAC_ROOT}/tests/contract/port_files_contract.c
+    ${HAC_ROOT}/tests/contract/port_input_contract.c
 )
 
 # Resolves "port_clock.h" from ports/, "contract_report.h" and

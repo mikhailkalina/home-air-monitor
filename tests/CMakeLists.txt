@@ -22,9 +22,13 @@ set(HAC_UNIT_TESTS
     test_framebuffer
     test_gfx
     test_update_policy
+    test_tap
+    test_screen_controller
     test_sensor_manager
     test_view_model
+    test_diagnostics_view
     test_screen_home_layout
+    test_screen_diagnostics_layout
     test_adp_clock_virtual
     test_replay_source
     test_fault_inject
@@ -45,6 +49,12 @@ target_link_libraries(test_adp_clock_virtual PRIVATE hac_platform_host)
 target_link_libraries(test_replay_source PRIVATE hac_platform_host)
 target_link_libraries(test_fault_inject PRIVATE hac_platform_host)
 target_link_libraries(test_epd_model PRIVATE hac_platform_host)
+
+# The simulator's scripted taps (--taps), from platform/host.
+add_executable(test_adp_input_script unit/test_adp_input_script.c)
+target_link_libraries(test_adp_input_script PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_adp_input_script)
+add_test(NAME test_adp_input_script COMMAND test_adp_input_script)
 target_link_libraries(test_sensor_manager PRIVATE hac_platform_host)
 target_compile_definitions(test_sensor_manager PRIVATE HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(test_replay_source PRIVATE
@@ -123,6 +133,22 @@ target_link_libraries(test_bme68x_source PRIVATE hac_drivers hac_platform_host h
 hac_apply_warnings(test_bme68x_source)
 add_test(NAME test_bme68x_source COMMAND test_bme68x_source)
 
+# The GT911 touch controller (docs/adr/0025-touch-input-gt911.md): its model
+# against Goodix's documents; the driver against the model, which refuses and
+# counts any write into the vendor's configuration; the snapshots-to-events
+# function and the coordinate mapping, pure; and port_input over the driver.
+add_executable(test_gt911_model unit/test_gt911_model.c)
+target_link_libraries(test_gt911_model PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_gt911_model)
+add_test(NAME test_gt911_model COMMAND test_gt911_model)
+
+foreach(test IN ITEMS test_gt911 test_gt911_touch test_gt911_input)
+    add_executable(${test} unit/${test}.c)
+    target_link_libraries(${test} PRIVATE hac_drivers hac_platform_host hac_test_support)
+    hac_apply_warnings(${test})
+    add_test(NAME ${test} COMMAND ${test})
+endforeach()
+
 # The PCF8563 real-time clock driver against the fake bus's register file,
 # which is the chip as it is (drivers/pcf8563/pcf8563.h).
 add_executable(test_pcf8563 unit/test_pcf8563.c)
@@ -172,6 +198,13 @@ add_test(NAME simulator_record_replay
             -DSCENARIOS=${HAC_ROOT}/scenarios
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/simulator_record_replay
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_record_replay.cmake)
+
+# Taps through both screens from the simulator's command line
+# (tests/cli/simulator_taps.cmake, docs/adr/0025-touch-input-gt911.md).
+add_test(NAME simulator_taps
+    COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
+            -DSCENARIOS=${HAC_ROOT}/scenarios
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_taps.cmake)
 
 # The simulator's two sensor modes on one scenario: replay sources, and both
 # drivers over the fake bus measuring platform/host/scenario_world.c -- each

@@ -37,9 +37,10 @@ it does not exit on its own.
   Forbidden: `stdio.h`, `time.h`, `malloc`/`free`, `esp_*`, `freertos/*`, `SDL*`.
 - `ports/` is headers only — no `.c` files, no dependencies.
 - `platform/<name>/` implements the ports and contains no business logic.
-- `drivers/` depend only on `ports/*.h` (bus, clock, log, and `port_sensor.h` with the
-  `core/domain/measurement.h` types it brings), so they build on a PC. A driver's
-  `sensor_source_t` wrapper lives beside it in `drivers/`, not in `platform/` (ADR 0014).
+- `drivers/` depend only on `ports/*.h` (bus, clock, log, `port_input.h`, and `port_sensor.h`
+  with the `core/domain/measurement.h` types it brings), so they build on a PC. A driver's
+  `sensor_source_t` wrapper lives beside it in `drivers/`, not in `platform/` (ADR 0014), and
+  so does the GT911's `port_input` implementation (ADR 0025).
   First-party code there may not include `esp_*`, `freertos/`, `driver/`, `SDL` or `stdio`;
   `scripts/check_sources.sh` enforces it. Vendored code under `drivers/*/vendor/` is exempt.
 - `apps/<name>/main.c` is the only place where dependencies are wired together.
@@ -91,6 +92,12 @@ HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC
 ./build/host-debug/apps/simulator/simulator --headless --frames out/ \
     --scenario-co2 scenarios/co2_spike_meeting.csv \
     --scenario-env scenarios/normal_day.csv --time-scale 60 --duration 600
+
+# Taps without a window (ADR 0025): "<seconds>:<x>,<y>;..." in panel pixels -- a tap
+# switches between the home and diagnostics screens; the window's clicks do the same
+./build/host-debug/apps/simulator/simulator --headless --duration 200 \
+    --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv \
+    --taps "30:480,270;45:480,270"
 
 # Firmware
 . $HOME/esp/esp-idf/export.sh
@@ -416,7 +423,43 @@ items "A reboot loop when the switched 3V3 comes up" and "The microSD card on th
 3f)", which lists what is still to see). The lesson for phase 5: nothing touches PSRAM in the
 first moments after `PWR_EN` rises.
 
-Next: the board run of phases 3d, 3e and 3f, the rest of phase 3c's measurements -- now
+Phase 3g on branch `phase-3g-touch-input` (ADR 0025): touch. `drivers/gt911/` -- the GT911
+over `port_i2c` (found at `0x5D` or `0x14`, woken first since nothing resets it, its product
+ID checked, its configuration read and never written: the host model refuses and counts any
+write there), the snapshots-to-events function and `port_input` over both, all run on the
+host against `platform/host/i2c_models/gt911_model.c`, written from the datasheet Rev.10
+(sleep, the 2-5 ms wake pulse, the 58 ms) and the programming guide's register map, which no
+legible copy confirmed. `adp_input.c` adds only GPIO47's interrupt and a task that reads the
+controller and wakes the event loop (`event_loop_post_input()`). `core/app/screen_controller.c`
+is port_input's one consumer: a tap (`core/app/tap.c`) switches between the home screen and
+a diagnostics screen (`core/ui/screen_diagnostics.c`: sources, readings, clock, recorder),
+which goes home after a minute untouched. A screen change is `update_policy_request()`: due
+at once, a partial refresh counted like any other -- and partials past the budget now stop at
+the budget again (`UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET`, 40 for this panel), since a
+person tapping could pass the 40 the panel was tested with: the owner's to confirm (ADR 0019
+amended). The `port_input` contract runs on the host against the GT911 over its model, the
+simulator's `--taps` and the SDL adapter, with five broken wrappers caught; in the test app
+against the real controller, with a sleep-and-wake case. Console: `touch`, `touch_sleep`,
+`touch_wake`. The coordinate mapping is the vendor's (swap, Y mirrored), unconfirmed. The
+panel model predicts 1,080 ms from tap to glass. Verified on the host (ASan included). On
+the board, 2026-10-17 (ELF `f63cfdf60...`, BSEC): the controller named itself, `911`,
+firmware 0x1060, its configuration a falling edge, 540 x 960, two points -- now the host
+model's defaults; six taps switched the screen, each on the glass 1,163-1,173 ms after the
+lift (80 ms rendering, 1,068 ms EPDiy; the model within 1.1 %); three of the six changes made
+BSEC's call late. Then three days unattended: corners, a finger during a full refresh,
+`touch_sleep`/`touch_wake` and the timeout all as designed -- and a boot loop after a cable
+plugged in made the controller re-latch at `0x14`: a second of refused reads at `0x5D`, each
+logged three times by ESP-IDF's I2C driver, overflowed app_main's 3.5 KB stack into the heap.
+Fixed: the controller is found by address-only probes of both addresses (which log nothing),
+on the touch task (6 KB, not app_main), and looked for again whenever a read fails (ADR 0025,
+"The controller's address"). The fix on the board (ELF `6f8a91905...`): found at `0x14` at
+the first attempt, no error lines, no panic; `touch_sleep` then `restart`: the sleeping
+controller refused its address in the boot scan, and init() woke it. The test app: `9 Tests
+0 Failures`, twice -- the controller at `0x14` in one run and at `0x5D` in the other -- the
+`port_input` contract and the sleep-and-wake case against the real controller. Phase 3g's
+board checks are done (`board_notes.md`, "The touch panel on the board").
+
+Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
 recordable unattended -- and this unit's own figures for the remaining estimates.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
