@@ -38,8 +38,9 @@
 
 // What docs/architecture.md 6.1's app_event_t will eventually be. Since
 // phase 3g the touch adapter posts one when it has queued input
-// (event_loop_post_input()); the sensors are still polled at the sensor
-// manager's deadlines rather than signalled. A timeout and a real event are
+// (event_loop_post_input()), since phase 4b the network and MQTT adapters
+// when something changed (event_loop_post_network()); the sensors are still
+// polled at the sensor manager's deadlines rather than signalled. A timeout and a real event are
 // handled identically below, because either one means "re-evaluate now":
 // the input itself waits in the adapter's queue, with its own time.
 typedef struct {
@@ -48,6 +49,7 @@ typedef struct {
 } pump_event_t;
 
 #define PUMP_EVENT_INPUT 1u
+#define PUMP_EVENT_NETWORK 2u
 
 typedef struct {
     event_loop_deps_t deps;
@@ -156,6 +158,32 @@ static void log_decision(const event_loop_state_t *s, const update_decision_t *d
     };
     port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "decision", fields,
                    sizeof(fields) / sizeof(fields[0]));
+}
+
+// What a reporter step did, as the simulator prints it: a state message at
+// DEBUG -- one a minute at least, which the card's log need not hold -- and
+// a session's announcements at INFO. The reporter logs its sessions itself.
+static void log_report(const event_loop_state_t *s, const reporter_note_t *note, uint64_t now_ms)
+{
+    if (note->online_published || note->discovery_published > 0u) {
+        const log_field_t fields[] = {
+            log_bool("online", note->online_published),
+            log_u64("discovery", note->discovery_published),
+            log_u64("session", note->session),
+            log_u64("now_ms", now_ms),
+        };
+        port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "published", fields,
+                       sizeof(fields) / sizeof(fields[0]));
+    }
+    if (note->state_published) {
+        const log_field_t fields[] = {
+            log_str("reason", publish_policy_reason_name(note->reason)),
+            log_u64("session", note->session),
+            log_u64("now_ms", now_ms),
+        };
+        port_log_write(s->deps.log, LOG_LEVEL_DEBUG, EVENT_LOOP_TAG, "state published", fields,
+                       sizeof(fields) / sizeof(fields[0]));
+    }
 }
 
 // The evaluate -> render -> flush -> commit sequence of apps/simulator/main.c's
@@ -296,6 +324,15 @@ static void pump_task(void *arg)
             s->deps.on_reading(s->deps.on_reading_ctx, s->deps.sensors, &s->reading, now_ms);
         }
 
+        // The reporter, after the poll as the recorder's watch: the reading
+        // as the screen has it, which the reporter never writes to.
+        uint64_t report_due = REPORTER_NO_DEADLINE;
+        if (s->deps.reporter != NULL) {
+            reporter_note_t note;
+            report_due = reporter_step(s->deps.reporter, &s->reading, now_ms, &note);
+            log_report(s, &note, now_ms);
+        }
+
         const uint64_t screens_due =
             screen_controller_tick(s->deps.screens, s->deps.policy, now_ms);
         const screen_inputs_t in = screen_inputs(s, now_ms);
@@ -342,8 +379,8 @@ static void pump_task(void *arg)
             s->deferral_logged = true;
         }
 
-        // The earlier of the two deadlines; a redraw still due waits out its
-        // backoff, while the sensors keep their own pace.
+        // The earliest of the deadlines; a redraw still due waits out its
+        // backoff, while the sensors and the reporter keep their own pace.
         uint64_t policy_due = decision.next_deadline_ms;
         if (decision.action != UPDATE_NONE && policy_due < s->redraw_not_before_ms) {
             policy_due = s->redraw_not_before_ms;
@@ -351,6 +388,9 @@ static void pump_task(void *arg)
         uint64_t wake_at = (sensors_due < policy_due) ? sensors_due : policy_due;
         if (screens_due < wake_at) {
             wake_at = screens_due;
+        }
+        if (report_due < wake_at) {
+            wake_at = report_due;
         }
         const uint32_t wait_ms = wait_ms_until(wake_at, clock->now_ms(clock));
 
@@ -426,11 +466,21 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
     }
 }
 
-void event_loop_post_input(void)
+static void post(uint8_t kind)
 {
     if (s_state.queue == NULL) {
         return;
     }
-    const pump_event_t ev = {.kind = PUMP_EVENT_INPUT, .ts_ms = 0u};
+    const pump_event_t ev = {.kind = kind, .ts_ms = 0u};
     (void)xQueueSend(s_state.queue, &ev, 0);
+}
+
+void event_loop_post_input(void)
+{
+    post(PUMP_EVENT_INPUT);
+}
+
+void event_loop_post_network(void)
+{
+    post(PUMP_EVENT_NETWORK);
 }

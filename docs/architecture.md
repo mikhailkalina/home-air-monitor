@@ -130,7 +130,7 @@ home-air-monitor/
 │   │   ├── sensor_manager.h/.c     # polling, source priority, fault tolerance
 │   │   ├── screen_controller.h/.c  # which screen; port_input's consumer (ADR 0025)
 │   │   ├── tap.h/.c                # what counts as a tap
-│   │   ├── update_policy.h/.c      # display refresh and publish thresholds
+│   │   ├── update_policy.h/.c      # display refresh thresholds (publishing's: reporting/, ADR 0030)
 │   │   ├── power_policy.h/.c       # duty cycle: usb_mode / battery_mode
 │   │   └── app_deps.h              # dependency injection struct
 │   ├── ui/
@@ -145,8 +145,10 @@ home-air-monitor/
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c
 │   │   └── screen_graphs.c
-│   ├── reporting/                  # what goes over MQTT, pure; phase 4a (ADR 0029)
-│   │   ├── reporter.h              # reporter interface (internal, not a port) -- phase 4b
+│   ├── reporting/                  # what goes over MQTT and when; phases 4a, 4b (ADR 0029, 0030)
+│   │   ├── reporter.h/.c           # the state machine between port_net and port_telemetry
+│   │   ├── publish_policy.h/.c     # when the state goes out: status, deltas, heartbeat
+│   │   ├── report_limits.h         # the heartbeat, the deltas, the session's timings
 │   │   ├── topics.h/.c             # topics from the prefix and device id; QoS and retain
 │   │   ├── json_writer.h/.c        # JSON into the caller's buffer, refused whole if it does not fit
 │   │   ├── mqtt_payload.h/.c       # air_reading_t → the state message, null and a status when not OK
@@ -217,9 +219,10 @@ home-air-monitor/
 │   │   ├── adp_files_dir.c         # port_files over a directory: --record, the contract
 │   │   ├── adp_input_sdl.c         # mouse/keyboard → touch events
 │   │   ├── adp_input_script.c      # --taps: scripted touches for headless runs
-│   │   ├── adp_net_sim.c           # controllable link quality and availability
-│   │   ├── adp_telemetry_mqtt.c    # libmosquitto → a real broker
-│   │   ├── adp_telemetry_stdout.c  # sink to log/file
+│   │   ├── adp_net_sim.c           # a link --net-script cuts and restores (ADR 0030)
+│   │   ├── adp_telemetry_loopback.c  # an MQTT broker in memory and port_telemetry as its
+│   │   │                           #   client: retained, wildcards, wills (ADR 0030)
+│   │   ├── adp_telemetry_mqtt.c    # libmosquitto → a real broker (not yet)
 │   │   ├── adp_storage_fs.c        # KV in a JSON file, log in CSV
 │   │   ├── adp_power_sim.c         # deep sleep emulated as a core restart
 │   │   ├── adp_sensors_replay.c    # ★ sensor data replayed from files
@@ -547,7 +550,7 @@ struct port_input_s {
     void *impl;
 };
 
-/* ports/port_net.h */
+/* ports/port_net.h -- up() asks for the link and keeps asking; nothing waits */
 typedef enum { NET_DOWN, NET_CONNECTING, NET_UP, NET_FAILED } net_state_t;
 typedef struct port_net_s port_net_t;
 struct port_net_s {
@@ -558,16 +561,17 @@ struct port_net_s {
     void *impl;
 };
 
-/* ports/port_telemetry.h */
+/* ports/port_telemetry.h -- the full promises are in the header (ADR 0030) */
 typedef struct port_telemetry_s port_telemetry_t;
 struct port_telemetry_s {
-    hal_status_t (*connect)(port_telemetry_t*);
+    hal_status_t (*connect)(port_telemetry_t*, const telemetry_session_t *s);  /* last will */
+    hal_status_t (*disconnect)(port_telemetry_t*);
     hal_status_t (*publish)(port_telemetry_t*, const char *topic,
                             const uint8_t *payload, size_t len,
-                            uint8_t qos, bool retain);
-    hal_status_t (*subscribe)(port_telemetry_t*, const char *topic);
+                            uint8_t qos, bool retain);       /* copies; never waits */
+    hal_status_t (*subscribe)(port_telemetry_t*, const char *filter, uint8_t qos);
     bool         (*is_connected)(const port_telemetry_t*);
-    hal_status_t (*disconnect)(port_telemetry_t*);
+    bool         (*poll)(port_telemetry_t*, telemetry_message_t *out);  /* non-blocking */
     void *impl;
 };
 
@@ -596,6 +600,8 @@ struct port_power_s {
 ```
 
 `deep_sleep_ms` is marked as non-returning, which forces the logic to be written correctly: anything that must be preserved is saved before the call. The simulator behaves identically — it destroys the core object and recreates it from the retained block.
+
+**Telemetry is polled, as input is** (phase 4b, ADR 0030). Every call returns at once: `publish()` copies the message into the adapter's queue -- `HAL_ERR_NOT_READY` without a session, `HAL_ERR_NO_MEM` when the queue is full -- and what arrives waits for `poll()`, the adapter waking the event loop as the touch adapter does. The sketch above once had no `poll()`, which would have meant a callback into the core from the MQTT client's task. Neither port reconnects or queues on the core's behalf: `core/reporting/reporter.c` decides when to connect, and starts each session with `online`, every discovery config and the state, so nothing published while offline is kept for later -- the card keeps the history (ADR 0024). The network's state reaches the state message's `rssi`, never the screen's reading, so a Wi-Fi outage redraws nothing.
 
 **Files on a removable medium are a port of their own** (phase 3f, ADR 0024), not `port_storage`'s `log_append`: the sensor recordings and the debug log are streams of rows on a microSD card that may be absent, pulled out or full, where `port_storage` holds small values written whole into NVS and RTC memory.
 
@@ -952,7 +958,7 @@ The same file runs:
 
 This is what makes "it works in the simulator" mean "it will work on hardware". Without contract tests, abstractions inevitably diverge at the edges — NVS key length limits, behaviour on a full partition, I²C error codes.
 
-The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
+The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, the board's adapters to follow in phase 4c (ADR 0030). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
 
 ### 9.3 Scenario tests
 

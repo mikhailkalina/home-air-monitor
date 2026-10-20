@@ -28,6 +28,8 @@ set(HAC_CORE_SOURCES
     ${HAC_ROOT}/core/reporting/ha_discovery.c
     ${HAC_ROOT}/core/reporting/json_writer.c
     ${HAC_ROOT}/core/reporting/mqtt_payload.c
+    ${HAC_ROOT}/core/reporting/publish_policy.c
+    ${HAC_ROOT}/core/reporting/reporter.c
     ${HAC_ROOT}/core/reporting/topics.c
     ${HAC_ROOT}/core/text/text_append.c
     ${HAC_ROOT}/core/ui/diagnostics_view.c

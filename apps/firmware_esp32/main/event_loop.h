@@ -21,6 +21,13 @@
 // wakes the pump through event_loop_post_input() when it has queued events,
 // and a redraw that carried a tap is logged with the time from the finger's
 // lift to the end of the flush.
+//
+// Since phase 4b (docs/adr/0030-telemetry-ports-and-the-reporter.md) it runs
+// core/reporting/reporter.c after each poll, as the recorder's watch, and
+// wakes at the earliest of three deadlines: the sensor manager's,
+// update_policy's and the reporter's. The network and MQTT adapters wake it
+// through event_loop_post_network() when something changed. Until phase 4c
+// brings those adapters, the composition has no reporter to give it.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 #define HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
@@ -36,6 +43,7 @@
 #include "port_display.h"
 #include "port_input.h"
 #include "port_log.h"
+#include "reporting/reporter.h"
 #include "ui/diagnostics_view.h"
 
 #ifdef __cplusplus
@@ -68,12 +76,14 @@ typedef struct {
     screen_controller_t *screens;  // already screen_controller_init()-ed
     event_loop_facts_fn facts;     // may be NULL
     void *facts_ctx;
+
+    reporter_t *reporter;  // may be NULL: no telemetry; already reporter_init()-ed
 } event_loop_deps_t;
 
 // Starts the FreeRTOS task that runs the pump: forever, it polls the sensor
-// manager, evaluates the policy, renders and flushes when a redraw is due,
-// and sleeps until the earlier of the two deadlines (clamped to
-// EVENT_LOOP_MAX_WAIT_MS, so a quiet period still shows in the log).
+// manager, steps the reporter, evaluates the policy, renders and flushes when
+// a redraw is due, and sleeps until the earliest of their deadlines (clamped
+// to EVENT_LOOP_MAX_WAIT_MS, so a quiet period still shows in the log).
 //
 // `deps` is copied into the task's own storage; the pointers it carries must
 // outlive the task, which never exits. The sensors are only ever touched from
@@ -86,6 +96,10 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
 // dropped, since one already queued does the same. Safe before the pump
 // runs.
 void event_loop_post_input(void);
+
+// From another task: the network or the MQTT session changed, or a message
+// arrived -- the reporter looks now. As event_loop_post_input().
+void event_loop_post_network(void);
 
 #ifdef __cplusplus
 }

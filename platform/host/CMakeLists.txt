@@ -3,9 +3,10 @@
 # The host adapters.
 #
 # hac_platform_host needs nothing beyond libc: the virtual clock, CSV scenario
-# replay, the e-paper model, the headless PNG display, and the fake I2C bus
-# with its device models. This is what CI builds, and what the ci-headless
-# preset must be able to build on a machine with no SDL2 installed at all.
+# replay, the e-paper model, the headless PNG display, the fake I2C bus with
+# its device models, and the simulated network with an MQTT broker model.
+# This is what CI builds, and what the ci-headless preset must be able to
+# build on a machine with no SDL2 installed at all.
 #
 # hac_platform_host_gui adds the SDL window and mouse-to-touch input. It is a
 # separate target so that SDL2 is not a link dependency of anything headless,
@@ -18,6 +19,8 @@ add_library(hac_platform_host STATIC
     adp_i2c_fake.c
     adp_input_script.c
     adp_log_console.c
+    adp_net_sim.c
+    adp_telemetry_loopback.c
     epd_model.c
     host_time.c
     i2c_models/bme680_model.c

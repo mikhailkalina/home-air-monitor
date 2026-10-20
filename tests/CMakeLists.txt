@@ -38,6 +38,7 @@ set(HAC_UNIT_TESTS
     test_mqtt_topics
     test_mqtt_payload
     test_ha_discovery
+    test_publish_policy
 )
 
 foreach(test IN LISTS HAC_UNIT_TESTS)
@@ -54,6 +55,16 @@ target_link_libraries(test_adp_clock_virtual PRIVATE hac_platform_host)
 target_link_libraries(test_replay_source PRIVATE hac_platform_host)
 target_link_libraries(test_fault_inject PRIVATE hac_platform_host)
 target_link_libraries(test_epd_model PRIVATE hac_platform_host)
+
+# The reporter (docs/adr/0030-telemetry-ports-and-the-reporter.md) on a fake
+# clock against the broker model and the simulated network, and the broker
+# model's own behaviour past the port_telemetry contract.
+foreach(test IN ITEMS test_reporter test_telemetry_loopback)
+    add_executable(${test} unit/${test}.c)
+    target_link_libraries(${test} PRIVATE hac_platform_host hac_test_support)
+    hac_apply_warnings(${test})
+    add_test(NAME ${test} COMMAND ${test})
+endforeach()
 
 # The simulator's scripted taps (--taps), from platform/host.
 add_executable(test_adp_input_script unit/test_adp_input_script.c)
@@ -217,6 +228,16 @@ add_test(NAME simulator_iaq_flapping
     COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
             -DSCENARIOS=${HAC_ROOT}/scenarios
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_iaq_flapping.cmake)
+
+# The reporter through the simulator's command line: a day's state messages,
+# a network outage that changes nothing on the panel or the card, the next
+# session announcing itself again (tests/cli/simulator_telemetry.cmake,
+# docs/adr/0030-telemetry-ports-and-the-reporter.md).
+add_test(NAME simulator_telemetry
+    COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
+            -DSCENARIOS=${HAC_ROOT}/scenarios
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/simulator_telemetry
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_telemetry.cmake)
 
 # The simulator's two sensor modes on one scenario: replay sources, and both
 # drivers over the fake bus measuring platform/host/scenario_world.c -- each
