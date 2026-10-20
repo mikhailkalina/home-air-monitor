@@ -169,7 +169,7 @@ static void usage(const char *argv0)
            "\n"
            "  --scenario-co2 <file>  CSV of what the SCD41 measures: CO2, temperature, humidity\n"
            "  --scenario-env <file>  CSV of what the BME68x measures: temperature, humidity,\n"
-           "                         pressure, gas resistance\n"
+           "                         pressure, gas resistance, and IAQ if it has the column\n"
            "  --sensors <mode>       replay (default): the files feed the core directly;\n"
            "                         fake-i2c: the real SCD4x and BME68x drivers read device\n"
            "                         models on a fake I2C bus, which measure the files\n"
@@ -455,6 +455,12 @@ static bool build_replay(sim_sensors_rig_t *r, const sim_args_t *args, const por
             fprintf(stderr, "cannot load %s (status %d)\n", args->scenario_env, (int)st);
             return false;
         }
+        // A file with an iaq column plays IAQ too, as the BSEC firmware's
+        // BME68x does; without one the IAQ cell shows gas resistance, as the
+        // firmware without BSEC does.
+        const unsigned iaq_cap =
+            (unsigned)replay_timeline_caps(&r->env_replay.timeline) & (unsigned)SENS_CAP_IAQ;
+        r->env_replay.port.caps = (sensor_caps_t)((unsigned)ENV_CAPS | iaq_cap);
         add_source(r, &r->env_replay);
     }
     return true;
@@ -579,7 +585,9 @@ typedef struct {
     framebuffer_t previous_fb;
 } sim_t;
 
-static void log_decision(const update_decision_t *d, const update_policy_t *policy)
+// `now_ms` is the virtual clock's, so a log can say how long a change took to
+// reach the glass -- as the firmware's own decision line does.
+static void log_decision(const update_decision_t *d, const update_policy_t *policy, uint64_t now_ms)
 {
     const char *note = "";
     if (d->full_forced_by_budget) {
@@ -587,8 +595,9 @@ static void log_decision(const update_decision_t *d, const update_policy_t *poli
     } else if (d->partial_past_budget) {
         note = "  (past the budget: the full refresh waits for the panel's minimum interval)";
     }
-    printf("[policy] %-8s reason=%-12s partials=%u%s\n", update_policy_action_name(d->action),
-           update_policy_reason_name(d->reason), update_policy_partials_since_full(policy), note);
+    printf("[policy] %-8s reason=%-12s partials=%u now_ms=%llu%s\n",
+           update_policy_action_name(d->action), update_policy_reason_name(d->reason),
+           update_policy_partials_since_full(policy), (unsigned long long)now_ms, note);
 }
 
 // What the screens draw from, at `now_ms` -- the time the reading's wall
@@ -708,7 +717,7 @@ static uint64_t step(sim_t *sim)
     screen_controller_evaluate(&sim->screens, &sim->policy, &in, &decision);
 
     if (decision.action != UPDATE_NONE) {
-        log_decision(&decision, &sim->policy);
+        log_decision(&decision, &sim->policy, now_ms);
         redraw(sim, &decision, now_ms);
         sim->deferral_logged = false;
         // What is due after this redraw: the deadline above was "now".

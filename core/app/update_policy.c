@@ -6,8 +6,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "domain/air_quality.h"
-
 update_policy_config_t update_policy_config_default(void)
 {
     update_policy_config_t cfg;
@@ -15,6 +13,9 @@ update_policy_config_t update_policy_config_default(void)
     cfg.co2_delta_ppm = UPDATE_POLICY_DEFAULT_CO2_DELTA_PPM;
     cfg.temperature_delta_c = UPDATE_POLICY_DEFAULT_TEMPERATURE_DELTA_C;
     cfg.humidity_delta_rh = UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
+    cfg.pressure_delta_hpa = UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
+    cfg.iaq_delta = UPDATE_POLICY_DEFAULT_IAQ_DELTA;
+    cfg.settle_after_ms = UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS;
     cfg.min_redraw_interval_ms = UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS;
     return cfg;
 }
@@ -112,7 +113,74 @@ static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
            wall_time_known(a) != wall_time_known(b);
 }
 
-static update_reason_t due_reason(const update_policy_t *p, const air_reading_t *reading)
+// --- an offset that persists ------------------------------------------------
+
+// A reading with a delta, beside its frame on the glass.
+typedef struct {
+    const measurement_f32_t *now;
+    const measurement_f32_t *drawn;
+    float delta;
+} delta_field_t;
+
+// The readings with a delta, in a fixed order: the index of each is its slot
+// in offset_held[] and offset_since_ms[].
+static void delta_fields(const update_policy_t *p, const air_reading_t *r,
+                         delta_field_t out[UPDATE_POLICY_DELTA_FIELDS])
+{
+    const air_reading_t *f = &p->last_rendered;
+    const delta_field_t fields[UPDATE_POLICY_DELTA_FIELDS] = {
+        {&r->co2_ppm, &f->co2_ppm, p->cfg.co2_delta_ppm},
+        {&r->temperature_c, &f->temperature_c, p->cfg.temperature_delta_c},
+        {&r->humidity_rh, &f->humidity_rh, p->cfg.humidity_delta_rh},
+        {&r->pressure_hpa, &f->pressure_hpa, p->cfg.pressure_delta_hpa},
+        {&r->iaq, &f->iaq, p->cfg.iaq_delta},
+    };
+    memcpy(out, fields, sizeof(fields));
+}
+
+// Notes, per reading with a delta, since when it has been more than
+// UPDATE_POLICY_SETTLE_DELTA_FRACTION of its delta from the frame on the
+// glass. Without a break: a reading back within it starts over.
+static void observe_offsets(update_policy_t *p, const air_reading_t *reading, uint64_t now_ms)
+{
+    delta_field_t fields[UPDATE_POLICY_DELTA_FIELDS];
+    delta_fields(p, reading, fields);
+    for (size_t i = 0u; i < UPDATE_POLICY_DELTA_FIELDS; ++i) {
+        const bool off = p->have_last_rendered &&
+                         delta_exceeded(fields[i].now, fields[i].drawn,
+                                        fields[i].delta * UPDATE_POLICY_SETTLE_DELTA_FRACTION);
+        if (!off) {
+            p->offset_held[i] = false;
+        } else if (!p->offset_held[i] || now_ms < p->offset_since_ms[i]) {
+            // A new offset -- or the monotonic clock restarted, and the old
+            // stamp means nothing.
+            p->offset_held[i] = true;
+            p->offset_since_ms[i] = now_ms;
+        }
+    }
+}
+
+// When the first of the offsets held will have held settle_after_ms, or
+// UPDATE_POLICY_NO_DEADLINE.
+static uint64_t settle_at(const update_policy_t *p)
+{
+    uint64_t at = UPDATE_POLICY_NO_DEADLINE;
+    if (p->cfg.settle_after_ms == 0u) {
+        return at;
+    }
+    for (size_t i = 0u; i < UPDATE_POLICY_DELTA_FIELDS; ++i) {
+        if (p->offset_held[i]) {
+            const uint64_t due = p->offset_since_ms[i] + (uint64_t)p->cfg.settle_after_ms;
+            if (due < at) {
+                at = due;
+            }
+        }
+    }
+    return at;
+}
+
+static update_reason_t due_reason(const update_policy_t *p, const air_reading_t *reading,
+                                  uint64_t now_ms)
 {
     if (!p->have_last_rendered) {
         return UPDATE_REASON_FIRST_FRAME;
@@ -131,15 +199,18 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
                        p->cfg.humidity_delta_rh)) {
         return UPDATE_REASON_HUMIDITY;
     }
-    // The band, not the number: the screen names it, and a number moving
-    // within its band is left to the next redraw anything else causes. A
-    // number gained or lost is a status change, below.
-    if (measurement_has_value(&reading->iaq) && measurement_has_value(&p->last_rendered.iaq) &&
-        air_quality_iaq_level(&reading->iaq) != air_quality_iaq_level(&p->last_rendered.iaq)) {
+    if (delta_exceeded(&reading->pressure_hpa, &p->last_rendered.pressure_hpa,
+                       p->cfg.pressure_delta_hpa)) {
+        return UPDATE_REASON_PRESSURE;
+    }
+    if (delta_exceeded(&reading->iaq, &p->last_rendered.iaq, p->cfg.iaq_delta)) {
         return UPDATE_REASON_IAQ;
     }
     if (statuses_differ(reading, &p->last_rendered)) {
         return UPDATE_REASON_STATUS;
+    }
+    if (settle_at(p) <= now_ms) {
+        return UPDATE_REASON_SETTLE;
     }
     return UPDATE_REASON_NONE;
 }
@@ -242,10 +313,18 @@ static void decide(const update_policy_t *p, update_reason_t reason, update_deci
     out->next_deadline_ms = now_ms;  // due now
 }
 
-void update_policy_evaluate(const update_policy_t *p, const air_reading_t *reading,
+void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
                             update_decision_t *out)
 {
-    decide(p, due_reason(p, reading), out);
+    const uint64_t now_ms = p->clock->now_ms(p->clock);
+    observe_offsets(p, reading, now_ms);
+    decide(p, due_reason(p, reading, now_ms), out);
+
+    // Nothing due: the next thing that can change the answer without new data
+    // is an offset reaching settle_after_ms.
+    if (out->reason == UPDATE_REASON_NONE) {
+        out->next_deadline_ms = settle_at(p);
+    }
 }
 
 void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out)
@@ -279,6 +358,8 @@ void update_policy_commit(update_policy_t *p, const air_reading_t *rendered,
     p->have_last_rendered = true;
     p->last_refresh_ms = now_ms;
     p->requested = false;  // whatever was asked for is what this redraw drew
+    // Offsets are measured from this frame now.
+    memset(p->offset_held, 0, sizeof(p->offset_held));
 
     if (decision->action == UPDATE_FULL) {
         p->last_full_refresh_ms = now_ms;
@@ -320,8 +401,12 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "temperature";
         case UPDATE_REASON_HUMIDITY:
             return "humidity";
+        case UPDATE_REASON_PRESSURE:
+            return "pressure";
         case UPDATE_REASON_IAQ:
             return "iaq";
+        case UPDATE_REASON_SETTLE:
+            return "settle";
         case UPDATE_REASON_STATUS:
             return "status";
         case UPDATE_REASON_REQUEST:

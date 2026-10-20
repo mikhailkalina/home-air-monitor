@@ -206,6 +206,13 @@ add_test(NAME simulator_taps
             -DSCENARIOS=${HAC_ROOT}/scenarios
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_taps.cmake)
 
+# IAQ trembling on a band's boundary does not redraw, a real change does
+# (tests/cli/simulator_iaq_flapping.cmake, docs/adr/0026-iaq-redraw-delta.md).
+add_test(NAME simulator_iaq_flapping
+    COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
+            -DSCENARIOS=${HAC_ROOT}/scenarios
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_iaq_flapping.cmake)
+
 # The simulator's two sensor modes on one scenario: replay sources, and both
 # drivers over the fake bus measuring platform/host/scenario_world.c -- each
 # under core/app/sensor_manager.c, which this exercises over real drivers.

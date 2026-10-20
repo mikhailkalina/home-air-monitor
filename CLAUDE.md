@@ -459,6 +459,42 @@ controller refused its address in the boot scan, and init() woke it. The test ap
 `port_input` contract and the sleep-and-wake case against the real controller. Phase 3g's
 board checks are done (`board_notes.md`, "The touch panel on the board").
 
+Follow-up to ADR 0021 on branch `redraw-thresholds` (ADR 0026): IAQ's band flapped at 50 --
+BSEC's index rests on the Excellent/Good boundary, and three days unattended made its band
+changes 96 % of all redraws. IAQ now redraws as the other readings do, when its number has moved
+by strictly more than `UPDATE_POLICY_DEFAULT_IAQ_DELTA`, 5 points, since the frame on the glass;
+the band plays no part in the trigger, and the band drawn is the band of the number drawn. The
+owner's choice, after a first image that kept the band and added a delta of 10 (43 minutes on
+the board, no IAQ redraw). The noise's excursions peaked at 51.5 (median), 56.6 (p90), 58 at
+most, the smallest real event at 65 (the recordings of 2026-10-18 and 19, analysed locally, never
+committed). The owner's two days replayed: IAQ redraws 544 and 959 -> 215 and 253, full
+refreshes 28 and 49 -> 11 and 14, the number on the glass never more than 10 from the air, every
+move past a band's boundary by more than 10 on the glass within 1 s; at the board's rate an
+estimated 280 and 243 IAQ redraws a day. Status and accuracy-mark changes redraw at once as
+before. The simulator plays an `iaq` column from `--scenario-env` and its `[policy]` lines carry
+`now_ms=`; `scenarios/iaq_flapping_at_50.csv` is synthetic, checked by
+`tests/cli/simulator_iaq_flapping.cmake`. Verified on the host; the board day (`reason=iaq`, full
+refreshes, late BSEC calls per day) is still to run (`board_notes.md`, open item "BSEC on the
+board").
+
+On the same branch (ADR 0027): pressure, shown in whole hPa, had no
+threshold and reached the glass only when something else redrew; it now redraws when it has
+moved by strictly more than `UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA`, 1 hPa, reason `pressure`.
+On the owner's replayed days it never fires -- the other readings redrew every few minutes and
+pressure never lagged more than 0.83 hPa -- so it is a bound for a room where nothing else moves.
+It does not remove a one-step offset at a rounding boundary (pressure one hPa off on the glass
+for up to 57 minutes on 2026-10-19).
+
+On the same branch (ADR 0028): a reading more than half its delta from the frame on the glass for
+15 minutes without a break redraws, reason `settle` (`UPDATE_POLICY_SETTLE_DELTA_FRACTION`,
+`settle_after_ms`) -- an offset that persists in still air, which the deltas alone leave on the
+glass for as long as nothing else redraws. Not a timer: it redraws only a reading that has moved,
+once. `update_policy_evaluate()` now records which readings are off and since when (never the
+budget; `update_policy_commit()` clears them), and its deadline wakes the loop for them. Raw values,
+not the screen's digits: a rounding boundary's tenth of a hPa is not redrawn. The owner's two days
+replayed: 3 and 5 settle redraws, 230 and 291 redraws in all -> 229 and 287, the longest stretch
+of a reading more than half a delta off cut from 20-24 minutes to 15. Verified on the host.
+
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
 recordable unattended -- and this unit's own figures for the remaining estimates.
 

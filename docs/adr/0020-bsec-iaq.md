@@ -229,7 +229,9 @@ not done now because it changes the task EPDiy's clear runs on (ADR 0008,
   points, half of one of BSEC's 50-point bands, at the cost of more partial
   refreshes -- is the owner's to decide, not this phase's. **Settled by ADR
   0021** the same day: the screen names IAQ's band, and a change of band
-  redraws; a number moving within its band does not.
+  redraws; a number moving within its band does not. Since ADR 0026 IAQ
+  redraws when its number moves by more than 5 points, as the other readings
+  do.
 - **BSEC's accuracy reaches the screen since ADR 0021**: the mapping above
   stands, and the accuracy now travels with the value as `value_accuracy_t`,
   drawn as a question mark beside a number BSEC rates 1.

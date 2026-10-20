@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // What an IAQ number means: the band it falls in
-// (docs/adr/0021-measurement-accuracy-and-iaq-levels.md). In the domain, not
-// in the view, because two modules need the same answer: the view model,
-// which names the band under the number, and update_policy, which redraws
-// when the band changes -- a band on the screen that no longer matches the
-// air would be worse than none.
+// (docs/adr/0021-measurement-accuracy-and-iaq-levels.md). The view model
+// names the band under the number. update_policy redrew when the band
+// changed until ADR 0026 -- BSEC's index trembles on the Excellent/Good
+// boundary -- and now redraws when the number moves, as for the other
+// readings; the band drawn is always the band of the number drawn.
 //
 // The CO2 bands of docs/requirements.md 13.1 are older and still live in
 // core/ui/view_model.h, where only the view uses them.

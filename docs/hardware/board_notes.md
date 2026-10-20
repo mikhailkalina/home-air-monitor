@@ -1197,7 +1197,9 @@ layout settles, not before.
         1082, 1094 s) while the index sat at 50-60. BSEC's resting value in
         clean air is exactly 50.000 -- seen in the minute samples and at
         every accuracy change -- and 50 is the boundary between "Excellent"
-        and "Good", so the index crosses it back and forth. (The log gives
+        and "Good", so the index crosses it back and forth. (**Corrected
+        2026-10-20** by three days of 3 s samples: at rest the index sits at
+        51-53 and dips to 50; exactly 50.00 in 1-2 % of samples -- ADR 0026.) (The log gives
         no IAQ at each redraw; the cadence and the minute samples make
         flapping the likely reading.) BSEC's other anchor, 200, is also a
         boundary. Not changed; a candidate is a hysteresis -- a band change
@@ -1218,6 +1220,38 @@ layout settles, not before.
       `reason=iaq` while the index sat at 50-58, so the partial-refresh budget
       was spent in 5 minutes and the 21st redraw, at 325 s, came out full.
       Still the owner's call (ADR 0021: watch it before adding a hysteresis).
+      **The flapping, narrowed 2026-10-20** (`docs/adr/0026-iaq-redraw-delta.md`):
+      three days unattended made it 96 % of all redraws (884 and 1,494 of
+      921 and 1,568 on 2026-10-18 and 19, 44 and 74 full refreshes, 167 and
+      292 late BSEC calls -- open item "The touch panel on the board", "In
+      passing"). IAQ no longer redraws when its band changes but, as the
+      other readings, when its number has moved by more than 5 points since
+      the frame on the glass -- the owner's choice, after a first image that
+      kept the band and added a delta of 10. The noise's excursions above 50
+      peaked at 51.5 (median), 56.6 (p90), 58 at most, the smallest real
+      event at 65; about three quarters stay within 5. Replayed through the
+      simulator, those two days' IAQ redraws fell from 544 and 959 to 215
+      and 253, the full refreshes from 28 and 49 to 11 and 14, and every move
+      past a band's boundary by more than 10 was on the glass within 1 s, as
+      before; the number on the glass was never more than 10 from the air
+      (it was for 11.6 % of the 18th). At the board's 3 s rate an estimated
+      280 and 243 IAQ redraws a day on such days. The band on the glass
+      disagrees with the reading's 4.5 % and 10.4 % of the time (2 % and 4 %
+      before) -- at rest, the word under the number says which side of 50
+      the last frame caught. Whether 50 is the right boundary for a room
+      whose index rests at 51-53 is the owner's (ADR 0021's bands).
+      **The first image on the board, band and delta 10, 2026-10-20** (ELF
+      `12ef228cf...`, 43 minutes from 21:09 local, the owner's YAT log, after
+      a boot that reported `previous reset reason=BROWNOUT`): 41 redraws,
+      none for IAQ -- 26 for CO2 through a breath at 21:14 (IAQ to 143, drawn
+      by the CO2 redraws), 6 temperature, 6 status; 2 full refreshes; 6 late
+      BSEC calls; IAQ at rest 49.5-51.9 in the minute samples.
+      Still to see on the board with the delta of 5, a day unattended with
+      the card in: from `log/`, `decision ... reason=iaq` lines, `decision
+      action=full` lines and `BSEC called late` lines per day, against
+      884-1,494, 44-74 and 167-292 before; and the redraws of ADR 0027 and
+      0028 on the same branch, `reason=pressure` (none in the replay) and
+      `reason=settle` (3-5 a day in the replay).
       - *A brownout before this boot*: `previous reset reason=BROWNOUT
         rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
         the image was flashed. The brownout itself is not in the logs. See the
@@ -1645,7 +1679,8 @@ layout settles, not before.
       - *In passing*, from the same days: IAQ's band changes were 2,378 of
         the 2,489 redraws of 2026-10-18 and 19 (96 %), the flapping at 50
         that ADR 0021 left to watch -- and with them most of those days' 44
-        and 75 full refreshes; BSEC's accuracy reached `high` and moved between `high` and
+        and 75 full refreshes (addressed by ADR 0026: open item "BSEC on the
+        board"); BSEC's accuracy reached `high` and moved between `high` and
         `medium` 234 times; 640 late BSEC calls in 3.3 days. Recording:
         151,323 rows, none dropped, the slowest flush 160 ms, the event loop's
         longest post 38 us.

@@ -81,7 +81,7 @@ static diag_facts_t facts_of(const screen_inputs_t *in)
     return f;
 }
 
-void screen_controller_evaluate(screen_controller_t *sc, const update_policy_t *policy,
+void screen_controller_evaluate(screen_controller_t *sc, update_policy_t *policy,
                                 const screen_inputs_t *in, update_decision_t *out)
 {
     if (sc->screen == SCREEN_HOME) {
