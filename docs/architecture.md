@@ -145,16 +145,20 @@ home-air-monitor/
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c
 │   │   └── screen_graphs.c
-│   ├── reporting/
-│   │   ├── reporter.h              # reporter interface (internal, not a port)
-│   │   ├── mqtt_payload.c          # JSON assembly — a pure function, tested in isolation
-│   │   └── ha_discovery.c          # Home Assistant Discovery — pure generation
+│   ├── reporting/                  # what goes over MQTT, pure; phase 4a (ADR 0029)
+│   │   ├── reporter.h              # reporter interface (internal, not a port) -- phase 4b
+│   │   ├── topics.h/.c             # topics from the prefix and device id; QoS and retain
+│   │   ├── json_writer.h/.c        # JSON into the caller's buffer, refused whole if it does not fit
+│   │   ├── mqtt_payload.h/.c       # air_reading_t → the state message, null and a status when not OK
+│   │   └── ha_discovery.h/.c       # Home Assistant discovery, one config per entity
 │   ├── recording/                  # sensor recordings and the debug log's files (ADR 0024)
 │   │   ├── record_format.h/.c      # a source's sample → one row of the scenario format (§7.1)
 │   │   ├── record_files.h/.c       # file names by local day, the bound, oldest day first
 │   │   ├── recorder.h/.c           # the watch over the sensor manager; rows to files
 │   │   ├── log_file.h/.c           # log lines to log/<day>.log with their UTC time
 │   │   └── record_limits.h         # the flush interval and the caps, estimates
+│   ├── text/
+│   │   └── text_append.h/.c        # text without stdio: integers, fixed point -- recordings, MQTT
 │   └── config/
 │       ├── app_config.h/.c         # defaults + overrides from storage
 │       └── config_parse.c

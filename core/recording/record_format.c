@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "domain/civil_time.h"
-#include "recording/record_text.h"
+#include "text/text_append.h"
 
 #define MS_PER_SECOND 1000u
 #define YEAR_DIGITS 4u
@@ -99,32 +99,32 @@ bool record_accuracy_from_word(const char *word, size_t len, value_accuracy_t *o
 size_t record_format_utc(char *dst, size_t cap, size_t len, uint64_t unix_ms, bool with_ms)
 {
     const civil_time_t t = civil_time_from_unix_ms(unix_ms);
-    len = record_text_u64(dst, cap, len, (uint64_t)t.year, YEAR_DIGITS);
-    len = record_text_char(dst, cap, len, '-');
-    len = record_text_u64(dst, cap, len, t.month, TWO_DIGITS);
-    len = record_text_char(dst, cap, len, '-');
-    len = record_text_u64(dst, cap, len, t.day, TWO_DIGITS);
-    len = record_text_char(dst, cap, len, 'T');
-    len = record_text_u64(dst, cap, len, t.hour, TWO_DIGITS);
-    len = record_text_char(dst, cap, len, ':');
-    len = record_text_u64(dst, cap, len, t.minute, TWO_DIGITS);
-    len = record_text_char(dst, cap, len, ':');
-    len = record_text_u64(dst, cap, len, t.second, TWO_DIGITS);
+    len = text_append_u64(dst, cap, len, (uint64_t)t.year, YEAR_DIGITS);
+    len = text_append_char(dst, cap, len, '-');
+    len = text_append_u64(dst, cap, len, t.month, TWO_DIGITS);
+    len = text_append_char(dst, cap, len, '-');
+    len = text_append_u64(dst, cap, len, t.day, TWO_DIGITS);
+    len = text_append_char(dst, cap, len, 'T');
+    len = text_append_u64(dst, cap, len, t.hour, TWO_DIGITS);
+    len = text_append_char(dst, cap, len, ':');
+    len = text_append_u64(dst, cap, len, t.minute, TWO_DIGITS);
+    len = text_append_char(dst, cap, len, ':');
+    len = text_append_u64(dst, cap, len, t.second, TWO_DIGITS);
     if (with_ms) {
-        len = record_text_char(dst, cap, len, '.');
-        len = record_text_u64(dst, cap, len, unix_ms % MS_PER_SECOND, MS_DIGITS);
+        len = text_append_char(dst, cap, len, '.');
+        len = text_append_u64(dst, cap, len, unix_ms % MS_PER_SECOND, MS_DIGITS);
     }
-    return record_text_char(dst, cap, len, 'Z');
+    return text_append_char(dst, cap, len, 'Z');
 }
 
 size_t record_preamble(char *dst, size_t cap, const char *tag, uint8_t source_id)
 {
-    size_t len = record_text_str(dst, cap, 0u, "# home-air-monitor recording: source ");
-    len = record_text_str(dst, cap, len, tag);
-    len = record_text_str(dst, cap, len, ", id ");
-    len = record_text_u64(dst, cap, len, source_id, 1u);
-    len = record_text_char(dst, cap, len, '\n');
-    return record_text_overflowed(len, cap) ? 0u : len;
+    size_t len = text_append_str(dst, cap, 0u, "# home-air-monitor recording: source ");
+    len = text_append_str(dst, cap, len, tag);
+    len = text_append_str(dst, cap, len, ", id ");
+    len = text_append_u64(dst, cap, len, source_id, 1u);
+    len = text_append_char(dst, cap, len, '\n');
+    return text_overflowed(len, cap) ? 0u : len;
 }
 
 static bool claims(sensor_caps_t caps, unsigned f)
@@ -138,9 +138,9 @@ static size_t append_suffixed(char *dst, size_t cap, size_t len, sensor_caps_t c
 {
     for (unsigned f = 0u; f < (unsigned)SENSOR_FIELD_COUNT; ++f) {
         if (claims(caps, f)) {
-            len = record_text_char(dst, cap, len, ',');
-            len = record_text_str(dst, cap, len, FIELDS[f].column);
-            len = record_text_str(dst, cap, len, suffix);
+            len = text_append_char(dst, cap, len, ',');
+            len = text_append_str(dst, cap, len, FIELDS[f].column);
+            len = text_append_str(dst, cap, len, suffix);
         }
     }
     return len;
@@ -148,18 +148,18 @@ static size_t append_suffixed(char *dst, size_t cap, size_t len, sensor_caps_t c
 
 size_t record_header(char *dst, size_t cap, sensor_caps_t caps, sensor_caps_t accuracy_caps)
 {
-    size_t len = record_text_str(dst, cap, 0u, "t_offset_s,utc");
+    size_t len = text_append_str(dst, cap, 0u, "t_offset_s,utc");
     for (unsigned f = 0u; f < (unsigned)SENSOR_FIELD_COUNT; ++f) {
         if (claims(caps, f)) {
-            len = record_text_char(dst, cap, len, ',');
-            len = record_text_str(dst, cap, len, FIELDS[f].column);
+            len = text_append_char(dst, cap, len, ',');
+            len = text_append_str(dst, cap, len, FIELDS[f].column);
         }
     }
-    len = record_text_str(dst, cap, len, ",status");
+    len = text_append_str(dst, cap, len, ",status");
     len = append_suffixed(dst, cap, len, caps, "_status");
     len = append_suffixed(dst, cap, len, (sensor_caps_t)(caps & accuracy_caps), "_acc");
-    len = record_text_char(dst, cap, len, '\n');
-    return record_text_overflowed(len, cap) ? 0u : len;
+    len = text_append_char(dst, cap, len, '\n');
+    return text_overflowed(len, cap) ? 0u : len;
 }
 
 static const measurement_f32_t *field_of(const sensor_sample_t *s, unsigned f)
@@ -197,10 +197,10 @@ uint64_t record_sample_time_ms(const sensor_sample_t *sample, sensor_caps_t caps
 size_t record_row(char *dst, size_t cap, const sensor_sample_t *sample, sensor_caps_t caps,
                   sensor_caps_t accuracy_caps, uint64_t t_offset_ms, uint64_t utc_ms)
 {
-    size_t len = record_text_u64(dst, cap, 0u, t_offset_ms / MS_PER_SECOND, 1u);
-    len = record_text_char(dst, cap, len, '.');
-    len = record_text_u64(dst, cap, len, t_offset_ms % MS_PER_SECOND, MS_DIGITS);
-    len = record_text_char(dst, cap, len, ',');
+    size_t len = text_append_u64(dst, cap, 0u, t_offset_ms / MS_PER_SECOND, 1u);
+    len = text_append_char(dst, cap, len, '.');
+    len = text_append_u64(dst, cap, len, t_offset_ms % MS_PER_SECOND, MS_DIGITS);
+    len = text_append_char(dst, cap, len, ',');
     if (utc_ms != 0u) {
         len = record_format_utc(dst, cap, len, utc_ms, false);
     }
@@ -217,30 +217,30 @@ size_t record_row(char *dst, size_t cap, const sensor_sample_t *sample, sensor_c
             row_status = m->status;
             have_row_status = true;
         }
-        len = record_text_char(dst, cap, len, ',');
+        len = text_append_char(dst, cap, len, ',');
         if (measurement_has_value(m)) {
-            len = record_text_fixed(dst, cap, len, (double)m->value, FIELDS[f].decimals);
+            len = text_append_fixed(dst, cap, len, (double)m->value, FIELDS[f].decimals);
         }
     }
-    len = record_text_char(dst, cap, len, ',');
-    len = record_text_str(dst, cap, len, record_status_word(row_status));
+    len = text_append_char(dst, cap, len, ',');
+    len = text_append_str(dst, cap, len, record_status_word(row_status));
 
     for (unsigned f = 0u; f < (unsigned)SENSOR_FIELD_COUNT; ++f) {
         if (claims(caps, f)) {
             const value_status_t status = field_of(sample, f)->status;
-            len = record_text_char(dst, cap, len, ',');
+            len = text_append_char(dst, cap, len, ',');
             if (status != row_status) {
-                len = record_text_str(dst, cap, len, record_status_word(status));
+                len = text_append_str(dst, cap, len, record_status_word(status));
             }
         }
     }
     for (unsigned f = 0u; f < (unsigned)SENSOR_FIELD_COUNT; ++f) {
         if (claims(caps, f) && claims(accuracy_caps, f)) {
-            len = record_text_char(dst, cap, len, ',');
+            len = text_append_char(dst, cap, len, ',');
             len =
-                record_text_str(dst, cap, len, record_accuracy_word(field_of(sample, f)->accuracy));
+                text_append_str(dst, cap, len, record_accuracy_word(field_of(sample, f)->accuracy));
         }
     }
-    len = record_text_char(dst, cap, len, '\n');
-    return record_text_overflowed(len, cap) ? 0u : len;
+    len = text_append_char(dst, cap, len, '\n');
+    return text_overflowed(len, cap) ? 0u : len;
 }

@@ -70,7 +70,7 @@ const char *record_accuracy_word(value_accuracy_t accuracy);
 bool record_accuracy_from_word(const char *word, size_t len, value_accuracy_t *out);
 
 // The UTC time of `unix_ms` -- to the second, or with milliseconds -- at
-// `len` in `dst` (record_text.h's conventions).
+// `len` in `dst` (text_append.h's conventions).
 size_t record_format_utc(char *dst, size_t cap, size_t len, uint64_t unix_ms, bool with_ms);
 
 // The comment line a recording starts with, naming the source.

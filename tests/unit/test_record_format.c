@@ -12,7 +12,6 @@
 #include <string.h>
 
 #include "hac_test.h"
-#include "recording/record_text.h"
 #include "replay/replay_source.h"
 
 #define SCD4X_CAPS ((sensor_caps_t)(SENS_CAP_CO2 | SENS_CAP_TEMPERATURE | SENS_CAP_HUMIDITY))
@@ -45,31 +44,6 @@ static sensor_sample_t scd4x_sample(void)
     s.temperature_c = ok(24.125f);
     s.humidity_rh = ok(47.03f);
     return s;
-}
-
-// --- text --------------------------------------------------------------------
-
-static void fixed_point_rounds_half_away_and_never_writes_negative_zero(void)
-{
-    char buf[32];
-    HAC_CHECK_EQ_U64(record_text_fixed(buf, sizeof(buf), 0u, 21.5, 2u), 5u);
-    HAC_CHECK(strcmp(buf, "21.50") == 0);
-    (void)record_text_fixed(buf, sizeof(buf), 0u, -5.255, 1u);
-    HAC_CHECK(strcmp(buf, "-5.3") == 0);
-    (void)record_text_fixed(buf, sizeof(buf), 0u, -0.004, 2u);
-    HAC_CHECK(strcmp(buf, "0.00") == 0);
-    (void)record_text_fixed(buf, sizeof(buf), 0u, 0.4, 0u);
-    HAC_CHECK(strcmp(buf, "0") == 0);
-    (void)record_text_fixed(buf, sizeof(buf), 0u, 1006.0625, 3u);
-    HAC_CHECK(strcmp(buf, "1006.063") == 0);
-    (void)record_text_fixed(buf, sizeof(buf), 0u, 0.05, 2u);
-    HAC_CHECK(strcmp(buf, "0.05") == 0);
-
-    // Not a number, or too large: nothing a reader could mistake for one.
-    HAC_CHECK_EQ_U64(record_text_fixed(buf, sizeof(buf), 0u, NAN, 2u), sizeof(buf));
-    HAC_CHECK_EQ_U64(record_text_fixed(buf, sizeof(buf), 0u, 1e20, 0u), sizeof(buf));
-    // Out of room: the cap, never a partial number.
-    HAC_CHECK_EQ_U64(record_text_fixed(buf, 4u, 0u, 1234.5, 1u), 4u);
 }
 
 static void utc_is_written_to_the_second_or_the_millisecond(void)
@@ -280,7 +254,6 @@ static void the_parser_reads_back_what_the_formatter_writes(void)
 
 int main(void)
 {
-    HAC_RUN(fixed_point_rounds_half_away_and_never_writes_negative_zero);
     HAC_RUN(utc_is_written_to_the_second_or_the_millisecond);
     HAC_RUN(accuracy_words_go_both_ways);
     HAC_RUN(the_header_names_the_claimed_fields_in_field_order);

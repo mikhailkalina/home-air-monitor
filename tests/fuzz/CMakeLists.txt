@@ -27,7 +27,7 @@ if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
         ${HAC_ROOT}/core/domain/civil_time.c
         ${HAC_ROOT}/core/domain/measurement.c
         ${HAC_ROOT}/core/recording/record_format.c
-        ${HAC_ROOT}/core/recording/record_text.c
+        ${HAC_ROOT}/core/text/text_append.c
     )
     target_include_directories(fuzz_replay_parser PRIVATE
         ${HAC_ROOT}/platform/host ${HAC_CORE_INCLUDES})

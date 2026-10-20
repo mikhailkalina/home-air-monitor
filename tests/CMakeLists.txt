@@ -33,6 +33,11 @@ set(HAC_UNIT_TESTS
     test_replay_source
     test_fault_inject
     test_epd_model
+    test_text_append
+    test_json_writer
+    test_mqtt_topics
+    test_mqtt_payload
+    test_ha_discovery
 )
 
 foreach(test IN LISTS HAC_UNIT_TESTS)
@@ -315,6 +320,20 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${image_gen} demo --verify
                 --out-dir ${HAC_ROOT}/apps/slideshow/images)
 
+    # Every message core/reporting/ builds, parsed by Python's own JSON
+    # parser, with the cross-checks no C test can make: the templates name
+    # only keys the state message has, "~" expands to the device's topics,
+    # escaped text comes back as it went in
+    # (docs/adr/0029-mqtt-topics-payload-and-discovery.md).
+    add_executable(mqtt_messages_dump unit/mqtt_messages_dump.c)
+    target_link_libraries(mqtt_messages_dump PRIVATE hac_core)
+    hac_apply_warnings(mqtt_messages_dump)
+    add_test(NAME mqtt_messages_parse
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/unit/mqtt_messages_check.py
+                $<TARGET_FILE:mqtt_messages_dump>)
+    set_tests_properties(mqtt_messages_parse PROPERTIES
+        PASS_REGULAR_EXPRESSION "[0-9]+ messages parsed, 0 failures")
+
     # ...and round, when asked to, instead.
     add_test(NAME image_gen_quantize_accepts_off_level
         COMMAND ${Python3_EXECUTABLE} ${image_gen} embed --name quantized --quantize
@@ -322,7 +341,8 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(image_gen_quantize_accepts_off_level PROPERTIES
         PASS_REGULAR_EXPRESSION "embedded 1 image")
 else()
-    message(WARNING "Python 3 not found: the image pipeline tests are not built.")
+    message(WARNING "Python 3 not found: the image pipeline tests and the MQTT messages' "
+                    "parse check are not built.")
 endif()
 
 add_subdirectory(golden)
