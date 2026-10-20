@@ -99,6 +99,9 @@ HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC
     --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv \
     --taps "30:480,270;45:480,270"
 
+# Every MQTT message, as Home Assistant would receive it (ADR 0029)
+./build/host-debug/tests/mqtt_messages_dump
+
 # Firmware
 . $HOME/esp/esp-idf/export.sh
 cd apps/firmware_esp32 && idf.py build
@@ -495,8 +498,28 @@ not the screen's digits: a rounding boundary's tenth of a hPa is not redrawn. Th
 replayed: 3 and 5 settle redraws, 230 and 291 redraws in all -> 229 and 287, the longest stretch
 of a reading more than half a delta off cut from 20-24 minutes to 15. Verified on the host.
 
+Phase 4a on branch `phase-4a-mqtt-payload` (ADR 0029): what goes over MQTT, as pure
+functions -- nothing sends yet. `core/reporting/topics.c` builds `<prefix>/<id>/state`,
+`<prefix>/<id>/status` and `homeassistant/sensor/<id>/<entity>/config` from a prefix and a
+device id it checks (every level `[A-Za-z0-9_-]`, HA's rule for a discovery node id; bounded
+lengths), all QoS 1 and retained. `mqtt_payload.c` turns `air_reading_t` into one JSON object,
+every key always present: a value only for `VAL_OK` -- stale included, `null` otherwise, since HA
+stamps a state with its arrival -- and `<key>_status` beside it with the recordings' words;
+`iaq_accuracy`, `rssi`, `uptime`; the recordings' decimals. `ha_discovery.c` writes one config
+per entity -- measurements, and gas resistance, IAQ accuracy, RSSI and uptime as diagnostics --
+with the screen's decimals as `suggested_display_precision`, `expire_after` three heartbeats,
+and an empty config for what the build does not provide, which removes it; only the SCD41's
+`co2` says carbon dioxide. No `object_id` (deprecated in HA 2025.10). Every name and version is
+the composition's. The fixed-point text moved from `core/recording/record_text.h` to
+`core/text/text_append.h`, and `core/reporting/json_writer.c` is built on it. Verified on the
+host: exact text for every status and accuracy, NaN, -0.0, a buffer exactly large enough and a
+byte short, illegal ids; and `mqtt_messages_parse`, which parses every message with Python's
+`json` and checks that the templates name only keys the state has. Nothing seen in a Home
+Assistant yet: phase 4b sends.
+
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
-recordable unattended -- and this unit's own figures for the remaining estimates.
+recordable unattended -- and this unit's own figures for the remaining estimates; phase 4b,
+the MQTT client.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

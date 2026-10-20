@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-#include "recording/record_text.h"
+#include "text/text_append.h"
 
 #define DAY_KEY_LEN 10u  // "YYYY-MM-DD"
 #define YEAR_DIGITS 4u
@@ -35,21 +35,21 @@ static bool is_lower(char c)
 
 void record_key_for_day(char *dst, size_t cap, const civil_time_t *local_day)
 {
-    size_t len = record_text_u64(dst, cap, 0u, (uint64_t)local_day->year, YEAR_DIGITS);
-    len = record_text_char(dst, cap, len, '-');
-    len = record_text_u64(dst, cap, len, local_day->month, TWO_DIGITS);
-    len = record_text_char(dst, cap, len, '-');
-    len = record_text_u64(dst, cap, len, local_day->day, TWO_DIGITS);
-    if (record_text_overflowed(len, cap) && cap > 0u) {
+    size_t len = text_append_u64(dst, cap, 0u, (uint64_t)local_day->year, YEAR_DIGITS);
+    len = text_append_char(dst, cap, len, '-');
+    len = text_append_u64(dst, cap, len, local_day->month, TWO_DIGITS);
+    len = text_append_char(dst, cap, len, '-');
+    len = text_append_u64(dst, cap, len, local_day->day, TWO_DIGITS);
+    if (text_overflowed(len, cap) && cap > 0u) {
         dst[0] = '\0';
     }
 }
 
 void record_key_undated(char *dst, size_t cap, uint32_t seq)
 {
-    size_t len = record_text_str(dst, cap, 0u, RECORD_UNDATED_PREFIX);
-    len = record_text_u64(dst, cap, len, seq, RECORD_UNDATED_DIGITS);
-    if (record_text_overflowed(len, cap) && cap > 0u) {
+    size_t len = text_append_str(dst, cap, 0u, RECORD_UNDATED_PREFIX);
+    len = text_append_u64(dst, cap, len, seq, RECORD_UNDATED_DIGITS);
+    if (text_overflowed(len, cap) && cap > 0u) {
         dst[0] = '\0';
     }
 }
@@ -220,20 +220,20 @@ bool record_name_build(char *dst, size_t cap, const char *dir, const char *key, 
 
     size_t len = 0u;
     if (dir != NULL && dir[0] != '\0') {
-        len = record_text_str(dst, cap, len, dir);
-        len = record_text_char(dst, cap, len, '/');
+        len = text_append_str(dst, cap, len, dir);
+        len = text_append_char(dst, cap, len, '/');
     }
-    len = record_text_str(dst, cap, len, key);
+    len = text_append_str(dst, cap, len, key);
     if (tag != NULL && tag[0] != '\0') {
-        len = record_text_char(dst, cap, len, '_');
-        len = record_text_str(dst, cap, len, tag);
+        len = text_append_char(dst, cap, len, '_');
+        len = text_append_str(dst, cap, len, tag);
     }
     if (index > 1u) {
-        len = record_text_char(dst, cap, len, '_');
-        len = record_text_u64(dst, cap, len, index, 1u);
+        len = text_append_char(dst, cap, len, '_');
+        len = text_append_u64(dst, cap, len, index, 1u);
     }
-    len = record_text_str(dst, cap, len, ext);
-    if (record_text_overflowed(len, cap)) {
+    len = text_append_str(dst, cap, len, ext);
+    if (text_overflowed(len, cap)) {
         if (cap > 0u) {
             dst[0] = '\0';
         }
@@ -405,10 +405,10 @@ hal_status_t record_enforce_cap(port_files_t *files, const char *dir, uint64_t c
         }
         for (size_t i = 0u; i < victims.count; ++i) {
             char path[PORT_FILES_PATH_MAX];
-            size_t len = record_text_str(path, sizeof(path), 0u, dir);
-            len = record_text_char(path, sizeof(path), len, '/');
-            len = record_text_str(path, sizeof(path), len, victims.names[i]);
-            if (record_text_overflowed(len, sizeof(path))) {
+            size_t len = text_append_str(path, sizeof(path), 0u, dir);
+            len = text_append_char(path, sizeof(path), len, '/');
+            len = text_append_str(path, sizeof(path), len, victims.names[i]);
+            if (text_overflowed(len, sizeof(path))) {
                 continue;
             }
             status = files->remove(files, path);

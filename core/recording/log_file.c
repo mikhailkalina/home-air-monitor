@@ -6,7 +6,7 @@
 
 #include "recording/record_format.h"
 #include "recording/record_limits.h"
-#include "recording/record_text.h"
+#include "text/text_append.h"
 
 // "YYYY-MM-DDTHH:MM:SS.mmmZ " before a line with a wall time.
 #define PREFIX_MAX (RECORD_UTC_MS_LEN + 2u)
@@ -122,8 +122,8 @@ static size_t prefix(char *dst, size_t cap, uint64_t wall_ms)
         return 0u;
     }
     size_t len = record_format_utc(dst, cap, 0u, wall_ms, true);
-    len = record_text_char(dst, cap, len, ' ');
-    return record_text_overflowed(len, cap) ? 0u : len;
+    len = text_append_char(dst, cap, len, ' ');
+    return text_overflowed(len, cap) ? 0u : len;
 }
 
 // Into the buffer, appending it first if the line does not fit.
@@ -147,12 +147,12 @@ static bool buffer_line(log_file_t *lf, uint64_t now_ms, const char *head, size_
 static size_t note(char *dst, size_t cap, uint64_t wall_ms, uint32_t lines, const char *why)
 {
     size_t len = prefix(dst, cap, wall_ms);
-    len = record_text_str(dst, cap, len, "log: ");
-    len = record_text_u64(dst, cap, len, lines, 1u);
-    len = record_text_str(dst, cap, len, (lines == 1u) ? " line lost " : " lines lost ");
-    len = record_text_str(dst, cap, len, why);
-    len = record_text_char(dst, cap, len, '\n');
-    return record_text_overflowed(len, cap) ? 0u : len;
+    len = text_append_str(dst, cap, len, "log: ");
+    len = text_append_u64(dst, cap, len, lines, 1u);
+    len = text_append_str(dst, cap, len, (lines == 1u) ? " line lost " : " lines lost ");
+    len = text_append_str(dst, cap, len, why);
+    len = text_append_char(dst, cap, len, '\n');
+    return text_overflowed(len, cap) ? 0u : len;
 }
 
 static bool open_file(log_file_t *lf, const char *key, uint64_t now_ms, uint64_t wall_ms)
@@ -253,9 +253,9 @@ void log_file_note_lost(log_file_t *lf, uint64_t now_ms, uint64_t wall_ms, uint3
     lf->lines_dropped += lines;
     char text[NOTE_MAX];
     char reason[NOTE_MAX];
-    size_t len = record_text_str(reason, sizeof(reason), 0u, "before this one: ");
-    len = record_text_str(reason, sizeof(reason), len, why);
-    if (record_text_overflowed(len, sizeof(reason))) {
+    size_t len = text_append_str(reason, sizeof(reason), 0u, "before this one: ");
+    len = text_append_str(reason, sizeof(reason), len, why);
+    if (text_overflowed(len, sizeof(reason))) {
         return;
     }
     const size_t n = note(text, sizeof(text), 0u, lines, reason);

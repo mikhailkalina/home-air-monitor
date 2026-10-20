@@ -24,8 +24,12 @@ set(HAC_CORE_SOURCES
     ${HAC_ROOT}/core/recording/log_file.c
     ${HAC_ROOT}/core/recording/record_files.c
     ${HAC_ROOT}/core/recording/record_format.c
-    ${HAC_ROOT}/core/recording/record_text.c
     ${HAC_ROOT}/core/recording/recorder.c
+    ${HAC_ROOT}/core/reporting/ha_discovery.c
+    ${HAC_ROOT}/core/reporting/json_writer.c
+    ${HAC_ROOT}/core/reporting/mqtt_payload.c
+    ${HAC_ROOT}/core/reporting/topics.c
+    ${HAC_ROOT}/core/text/text_append.c
     ${HAC_ROOT}/core/ui/diagnostics_view.c
     ${HAC_ROOT}/core/ui/framebuffer.c
     ${HAC_ROOT}/core/ui/gfx.c
