@@ -66,3 +66,18 @@ target_compile_definitions(test_port_files_contract PRIVATE
 )
 hac_apply_warnings(test_port_files_contract)
 add_test(NAME test_port_files_contract COMMAND test_port_files_contract)
+
+# port_input: the shared body against gt911_input over the GT911 model, the
+# simulator's scripted taps and, where SDL is built, the window's mouse --
+# plus broken wrappers that prove the body catches what it claims to. The
+# same body runs on the board against the real controller in the test app
+# (docs/adr/0025-touch-input-gt911.md), where nobody's finger is on the
+# panel: the checks that need one say they were not exercised.
+add_executable(test_port_input_contract test_port_input_contract.c)
+target_link_libraries(test_port_input_contract PRIVATE
+    hac_contract_bodies hac_drivers hac_platform_host hac_test_support)
+if(TARGET hac_platform_host_gui)
+    target_link_libraries(test_port_input_contract PRIVATE hac_platform_host_gui)
+endif()
+hac_apply_warnings(test_port_input_contract)
+add_test(NAME test_port_input_contract COMMAND test_port_input_contract)

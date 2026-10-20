@@ -14,6 +14,15 @@ static i2c_model_t *find_model(adp_i2c_fake_t *f, uint8_t addr)
     return NULL;
 }
 
+// Counts a data transfer whose address was refused (adp_i2c_fake.h).
+static hal_status_t count_refusal(adp_i2c_fake_t *f, hal_status_t st, size_t n)
+{
+    if (st == HAL_ERR_NOT_FOUND && n > 0u) {
+        f->refused_data_transfers++;
+    }
+    return st;
+}
+
 static uint64_t now_ms(const adp_i2c_fake_t *f)
 {
     return f->clock != NULL ? f->clock->now_ms : 0u;
@@ -59,9 +68,9 @@ static hal_status_t fake_write(port_i2c_t *port, uint8_t addr, const uint8_t *d,
     }
     i2c_model_t *model = find_model(f, addr);
     if (model == NULL) {
-        return HAL_ERR_NOT_FOUND;
+        return count_refusal(f, HAL_ERR_NOT_FOUND, n);
     }
-    return model->write(model, n > 0u ? d : NULL, n, now_ms(f));
+    return count_refusal(f, model->write(model, n > 0u ? d : NULL, n, now_ms(f)), n);
 }
 
 static hal_status_t fake_read(port_i2c_t *port, uint8_t addr, uint8_t *d, size_t n, uint32_t to_ms)
@@ -76,9 +85,9 @@ static hal_status_t fake_read(port_i2c_t *port, uint8_t addr, uint8_t *d, size_t
     }
     i2c_model_t *model = find_model(f, addr);
     if (model == NULL) {
-        return HAL_ERR_NOT_FOUND;
+        return count_refusal(f, HAL_ERR_NOT_FOUND, n);
     }
-    return model->read(model, d, n, now_ms(f));
+    return count_refusal(f, model->read(model, d, n, now_ms(f)), n);
 }
 
 static hal_status_t fake_write_read(port_i2c_t *port, uint8_t addr, const uint8_t *w, size_t wn,
@@ -94,14 +103,14 @@ static hal_status_t fake_write_read(port_i2c_t *port, uint8_t addr, const uint8_
     }
     i2c_model_t *model = find_model(f, addr);
     if (model == NULL) {
-        return HAL_ERR_NOT_FOUND;
+        return count_refusal(f, HAL_ERR_NOT_FOUND, wn);
     }
     // One transaction: the write, a repeated START, the read.
     const hal_status_t written = model->write(model, w, wn, now_ms(f));
     if (written != HAL_OK) {
-        return written;
+        return count_refusal(f, written, wn);
     }
-    return model->read(model, r, rn, now_ms(f));
+    return count_refusal(f, model->read(model, r, rn, now_ms(f)), rn);
 }
 
 static hal_status_t fake_recover(port_i2c_t *port)

@@ -22,7 +22,12 @@
 // and the debug log go to the microSD card, written by a task of their own
 // (card_writer.c) -- the event loop only posts what changed -- and the
 // console's sd, sd_mount, sd_eject and rec manage it. No card is a normal
-// state: recording is simply off.
+// state: recording is simply off. Phase 3g
+// (docs/adr/0025-touch-input-gt911.md): the GT911 behind port_input
+// (adp_input.c, its interrupt and a task of its own), read into
+// core/app/screen_controller.c by the event loop: a tap switches between the
+// home screen and a diagnostics screen; the console's touch, touch_sleep and
+// touch_wake look at it and put it to sleep.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -32,7 +37,8 @@
 // boot-time bus scan -- after the display, whose init powers the sensors (see
 // bring_up_i2c()) -- then the system time from the RTC (set_clock_from_rtc()),
 // then the card's SPI bus and its task, which mounts the card -- after the
-// rail as well (see start_card()) -- optionally the whole-panel bring-up
+// rail as well (see start_card()) -- then the touch controller and its task
+// (start_touch()), optionally the whole-panel bring-up
 // diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
@@ -56,11 +62,13 @@
 #include "adp_display.h"
 #include "adp_display_null.h"
 #include "adp_i2c.h"
+#include "adp_input.h"
 #include "adp_log.h"
 #include "adp_sd.h"
 #include "board_config.h"
 #include "board_power.h"
 
+#include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
 #include "domain/civil_time.h"
@@ -110,6 +118,21 @@
 #define CARD_WRITER_TASK_STACK_BYTES 6144u
 #define CARD_WRITER_TASK_PRIORITY 3
 #define CARD_WRITER_TASK_CORE 0
+
+// The touch task (adp_input.c): the GT911 driver under adp_i2c, its log
+// lines -- and, when a transfer fails, ESP-IDF's I2C driver's three error
+// lines from inside the call, the deepest thing anything on this task does.
+// 4 KB had 1,408 bytes left at its lowest from its own log lines alone
+// (2026-10-17), less than such a failure needs: app_main's 3.5 KB overflowed
+// on exactly that (2026-10-20, docs/hardware/board_notes.md). 6 KB until its
+// low-water mark, which it logs, says otherwise. Above the event loop and the
+// card, so that a finger is read -- and stamped -- when it lands, whatever
+// they are doing; on core 0 beside the card. EPDiy's render tasks outrank
+// everything, on both cores, while a refresh drives the glass: a finger
+// during a full refresh is read between its frames.
+#define TOUCH_TASK_STACK_BYTES 6144u
+#define TOUCH_TASK_PRIORITY 6
+#define TOUCH_TASK_CORE 0
 
 // The sources' ids, which every measurement carries as its source_id and the
 // priorities below are written in -- the same two the simulator gives the
@@ -412,6 +435,67 @@ static void start_console(const console_deps_t *deps)
     (void)console_start(deps);
 }
 
+// The touch controller, once the bus is up: on VDD3V3, not on PWR_EN, so
+// the rail does not matter to it -- but the bus does, and the bus is only
+// usable once the rail is up (bring_up_i2c()). Starts the touch task, which
+// wakes the controller, finds it, reads its configuration and turns its
+// interrupt on -- about 90 ms, logged as `adp_input: touch ready took_ms=` --
+// while app_main goes on: the first frame does not wait for it. Without a
+// controller, touch is off, looked for every minute, and the rest runs.
+static void start_touch(adp_input_t *touch, adp_i2c_t *i2c, const port_clock_t *clock,
+                        const port_log_t *log)
+{
+    const adp_input_config_t cfg = {
+        .bus = adp_i2c_port(i2c),
+        .clock = clock,
+        .log = log,
+        .task_stack_bytes = TOUCH_TASK_STACK_BYTES,
+        .task_priority = TOUCH_TASK_PRIORITY,
+        .task_core = TOUCH_TASK_CORE,
+    };
+    const hal_status_t st = adp_input_init(touch, &cfg);
+    if (st != HAL_OK) {
+        const log_field_t fields[] = {log_i64("status", (int64_t)st)};
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "touch not started", fields, 1u);
+    }
+}
+
+// The touch task has queued input: the event loop looks now.
+static void wake_event_loop(void *ctx)
+{
+    (void)ctx;
+    event_loop_post_input();
+}
+
+// The diagnostics screen's word for where the wall clock came from, short
+// enough for its line; NULL for none.
+static const char *clock_word(wall_clock_source_t source)
+{
+    switch (source) {
+        case WALL_CLOCK_SOURCE_RTC:
+            return "rtc";
+        case WALL_CLOCK_SOURCE_CONSOLE:
+            return "console";
+        case WALL_CLOCK_SOURCE_KEPT:
+            return "kept";
+        case WALL_CLOCK_SOURCE_NONE:
+            break;
+    }
+    return NULL;
+}
+
+// event_loop.h's facts hook: what the diagnostics screen shows that only the
+// composition knows. Read on the event loop's task; the card's task and the
+// console write them, a word each.
+static void screen_facts(void *ctx, diag_recorder_t *recorder, const char **clock_source)
+{
+    const wall_clock_source_t *wall_source = (const wall_clock_source_t *)ctx;
+    recorder_state_t state = RECORDER_WAITING;
+    recorder->present = card_writer_recorder_state(&state);
+    recorder->state = state;
+    *clock_source = clock_word(*wall_source);
+}
+
 // The board's two sensors, set up on the bus and handed to the sensor
 // manager with the priorities of docs/architecture.md 6.3: temperature and
 // humidity from the BME68x, the SCD41 as fallback; CO2 from the SCD41 alone;
@@ -614,6 +698,8 @@ void app_main(void)
     static time_zone_t s_zone;
     static wall_clock_source_t s_wall_source;
     static adp_sd_t s_sd;
+    static adp_input_t s_touch;
+    static screen_controller_t s_screens;
 
     // Before anything logs: every line from here on reaches the card's file.
     const hal_status_t tee = log_tee_start((esp_log_level_t)CONFIG_HAC_LOG_FILE_LEVEL);
@@ -629,13 +715,14 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 3f: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card",
+                   "phase 3g: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 3f: EPDiy driving the panel, " SENSORS_TEXT ", the RTC, the microSD card",
+                   "phase 3g: EPDiy driving the panel, " SENSORS_TEXT
+                   ", the RTC, the microSD card, touch",
 #endif
                    NULL, 0u);
 
@@ -656,6 +743,7 @@ void app_main(void)
     log_tee_hold(false);
     s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
     start_card(&s_sd, clock, log, &s_zone);  // after the rail too: see start_card()
+    start_touch(&s_touch, &s_i2c, clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_null_init failed", fields, 1u);
@@ -673,6 +761,7 @@ void app_main(void)
     log_tee_hold(false);
     s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
     start_card(&s_sd, clock, log, &s_zone);  // after the rail too: see start_card()
+    start_touch(&s_touch, &s_i2c, clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
         port_log_write(log, LOG_LEVEL_ERROR, "main", "adp_display_init failed", fields, 1u);
@@ -720,6 +809,9 @@ void app_main(void)
     s_hook.display = &s_display;
 #endif
     s_hook.next_sample_log_ms = 0u;
+    const screen_controller_config_t screens_cfg = screen_controller_config_default();
+    screen_controller_init(&s_screens, &screens_cfg);
+    adp_input_set_waker(&s_touch, wake_event_loop, NULL);
 
     event_loop_deps_t deps = {
         .clock = clock,
@@ -730,6 +822,10 @@ void app_main(void)
         .zone = &s_zone,
         .on_reading = on_reading,
         .on_reading_ctx = &s_hook,
+        .input = adp_input_port(&s_touch),
+        .screens = &s_screens,
+        .facts = screen_facts,
+        .facts_ctx = &s_wall_source,
     };
     event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
                      EVENT_LOOP_TASK_CORE);
@@ -739,6 +835,7 @@ void app_main(void)
         .zone = &s_zone,
         .zone_name = LOCAL_ZONE_NAME,
         .wall_source = &s_wall_source,
+        .touch = &s_touch,
         .log = log,
     };
     start_console(&console);

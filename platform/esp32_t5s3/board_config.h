@@ -181,6 +181,28 @@
 #define BOARD_TOUCH_I2C_ADDRESS 0x5Du      // GT911, INT low at reset
 #define BOARD_TOUCH_ALT_I2C_ADDRESS 0x14u  // GT911, INT high at reset
 
+// How the controller's frame lies on the panel's 960x540
+// (drivers/gt911/gt911_touch.h: swapped first, then scaled from the
+// controller's configured resolution, then mirrored).
+//
+// THE VENDOR'S CHOICE, NOT YET SEEN ON THIS UNIT: the vendor's S3 touch
+// example sets the maximum coordinates to EPD_WIDTH x EPD_HEIGHT, swaps X and
+// Y and mirrors Y alone (examples/touch/touch.ino, setSwapXY(true),
+// setMirrorXY(false, true) -- read for that fact only: the repository is
+// GPL-3.0, docs/adr/0007). A finger at each corner settles it: the console's
+// `touch` prints each event raw and mapped (docs/hardware/board_notes.md,
+// open item "The touch panel on the board"). Correct here, and there.
+#define BOARD_TOUCH_SWAP_XY 1
+#define BOARD_TOUCH_MIRROR_X 0
+#define BOARD_TOUCH_MIRROR_Y 1
+
+// A CHOICE: the drive strength of the GT911 wake pulse on INT. The pulse is
+// sent at every init(), and a controller that was awake drives INT itself:
+// for the pulse's 3 ms the two outputs meet, and the weakest of the S3's four
+// drive strengths (about 5 mA) bounds what flows. A name ESP-IDF's
+// driver/gpio.h defines, expanded only where that is included.
+#define BOARD_TOUCH_INT_WAKE_DRIVE GPIO_DRIVE_CAP_0
+
 // --- sensors (phase 3) ------------------------------------------------------
 // On the bus through the 40-pin header, powered from the white 4-pin
 // connector's switched 3V3 (docs/hardware/board_notes.md, "Power rails and

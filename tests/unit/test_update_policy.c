@@ -711,6 +711,193 @@ static void a_panel_without_a_partial_mode_only_ever_refreshes_fully(void)
     HAC_CHECK(d.full_forced_by_budget);
 }
 
+// --- a person's redraw (docs/adr/0025-touch-input-gt911.md) ----------------------
+
+// A fixture with the firmware's one-redraw-per-cycle limit in place.
+static void fixture_init_with_cycle(fixture_t *f, uint32_t min_full_interval_ms,
+                                    uint32_t max_partials)
+{
+    fake_clock_init(&f->clock);
+    const update_policy_config_t cfg = update_policy_config_default();
+    const update_policy_limits_t limits = {
+        .min_full_refresh_interval_ms = min_full_interval_ms,
+        .max_partial_refreshes_before_full = max_partials,
+    };
+    update_policy_init(&f->policy, fake_clock_port(&f->clock), &cfg, &limits);
+}
+
+static void a_request_goes_out_at_once_without_waiting_for_the_cycle(void)
+{
+    fixture_t f;
+    fixture_init_with_cycle(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    const air_reading_t r0 = prime(&f, 620.0f, 22.0f, 45.0f);
+    fake_clock_advance(&f.clock, 1000u);
+
+    // A reading change this soon after the first frame waits for the cycle...
+    const air_reading_t moved = reading_at(&f, 700.0f, 22.0f, 45.0f);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &moved, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK(d.held_for_redraw_interval);
+
+    // ...a request does not, and is a partial refresh.
+    update_policy_request(&f.policy);
+    update_policy_evaluate(&f.policy, &r0, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK(!d.held_for_redraw_interval);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, f.clock.now_ms);
+
+    // It is counted like any other partial, and answered by the commit.
+    update_policy_commit(&f.policy, &r0, &d);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 1);
+    update_policy_evaluate(&f.policy, &r0, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+}
+
+static void a_request_stays_due_until_a_redraw_reaches_the_panel(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    const air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
+    update_policy_request(&f.policy);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    // A flush that failed commits nothing: still due.
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+}
+
+static void a_request_with_the_budget_spent_is_full_when_a_full_one_is_allowed(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
+    update_decision_t d;
+    for (uint32_t i = 0u; i < TEST_MAX_PARTIALS; ++i) {
+        fake_clock_advance(&f.clock, 20000u);
+        update_policy_request(&f.policy);
+        update_policy_evaluate(&f.policy, &r, &d);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+        update_policy_commit(&f.policy, &r, &d);
+    }
+    // The budget is spent, and the interval long since elapsed.
+    update_policy_request(&f.policy);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK(d.full_forced_by_budget);
+    update_policy_commit(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 0);
+}
+
+static void a_request_past_the_budget_before_the_interval_is_partial(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
+    update_decision_t d;
+    for (uint32_t i = 0u; i < TEST_MAX_PARTIALS; ++i) {
+        fake_clock_advance(&f.clock, 1000u);
+        update_policy_request(&f.policy);
+        update_policy_evaluate(&f.policy, &r, &d);
+        update_policy_commit(&f.policy, &r, &d);
+    }
+    // Five taps in five seconds: the budget spent long before the panel's
+    // minute -- the screen still changes, partially, past the budget.
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_request(&f.policy);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK(d.partial_past_budget);
+    update_policy_commit(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), (int)TEST_MAX_PARTIALS + 1);
+}
+
+static void a_request_before_the_first_frame_is_the_first_frame(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    update_policy_request(&f.policy);
+    const air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_FIRST_FRAME);
+    update_policy_commit(&f.policy, &r, &d);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);  // the first frame answered it
+}
+
+static void a_screen_that_compares_its_own_content_follows_the_same_rules(void)
+{
+    fixture_t f;
+    fixture_init_with_cycle(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    update_decision_t d;
+    update_policy_evaluate_content(&f.policy, false, &d);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_FIRST_FRAME);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    const air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    update_policy_commit(&f.policy, &r, &d);
+
+    update_policy_evaluate_content(&f.policy, false, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+
+    // Changed within the cycle: held, then partial.
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_evaluate_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK(d.held_for_redraw_interval);
+    fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
+    update_policy_evaluate_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+
+    // A request on it goes out at once too.
+    update_policy_commit(&f.policy, &r, &d);
+    update_policy_request(&f.policy);
+    update_policy_evaluate_content(&f.policy, false, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK(strcmp(update_policy_reason_name(d.reason), "request") == 0);
+}
+
+// A person tapping without pause, a screen change every 1.2 s from just
+// after a full refresh: past the budget by the budget again, then even a
+// request waits for the full refresh, which it then is.
+static void past_the_budget_by_the_budget_again_even_a_request_waits(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    const air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
+    const uint32_t most = TEST_MAX_PARTIALS * UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET;
+    update_decision_t d;
+    for (uint32_t i = 0u; i < most; ++i) {
+        fake_clock_advance(&f.clock, 1200u);
+        update_policy_request(&f.policy);
+        update_policy_evaluate(&f.policy, &r, &d);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+        update_policy_commit(&f.policy, &r, &d);
+    }
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), (int)most);
+
+    fake_clock_advance(&f.clock, 1200u);
+    update_policy_request(&f.policy);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK(d.deferred_by_min_interval);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, TEST_MIN_FULL_INTERVAL_MS);  // the first frame was at 0
+
+    fake_clock_advance(&f.clock, d.next_deadline_ms - f.clock.now_ms);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+}
+
 static void limits_come_from_the_display_port(void)
 {
     static port_display_t display;  // static: the unread members start zeroed
@@ -762,6 +949,13 @@ int main(void)
     HAC_RUN(past_the_budget_is_bounded_by_the_interval);
     HAC_RUN(a_panel_without_a_partial_mode_defers_until_a_full_refresh_is_allowed);
     HAC_RUN(a_panel_without_a_partial_mode_only_ever_refreshes_fully);
+    HAC_RUN(a_request_goes_out_at_once_without_waiting_for_the_cycle);
+    HAC_RUN(a_request_stays_due_until_a_redraw_reaches_the_panel);
+    HAC_RUN(a_request_with_the_budget_spent_is_full_when_a_full_one_is_allowed);
+    HAC_RUN(a_request_past_the_budget_before_the_interval_is_partial);
+    HAC_RUN(a_request_before_the_first_frame_is_the_first_frame);
+    HAC_RUN(a_screen_that_compares_its_own_content_follows_the_same_rules);
+    HAC_RUN(past_the_budget_by_the_budget_again_even_a_request_waits);
     HAC_RUN(limits_come_from_the_display_port);
     HAC_RUN(the_defaults_are_the_thresholds_from_the_requirements);
     return hac_test_summary();

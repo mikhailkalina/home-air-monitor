@@ -14,19 +14,29 @@
 // apps/simulator/main.c's loop does, and sleeps until the earlier of their
 // deadlines: the seam this file sits on is unchanged when app_core lands and
 // starts sitting on it instead.
+//
+// Since phase 3g (docs/adr/0025-touch-input-gt911.md) it also drains
+// port_input into core/app/screen_controller.c, which says which screen the
+// redraw draws and when the diagnostics screen times out; the touch adapter
+// wakes the pump through event_loop_post_input() when it has queued events,
+// and a redraw that carried a tap is logged with the time from the finger's
+// lift to the end of the flush.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 #define HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 
 #include <stdint.h>
 
+#include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
 #include "domain/civil_time.h"
 #include "domain/measurement.h"
 #include "port_clock.h"
 #include "port_display.h"
+#include "port_input.h"
 #include "port_log.h"
+#include "ui/diagnostics_view.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +48,11 @@ extern "C" {
 typedef void (*event_loop_reading_fn)(void *ctx, const sensor_manager_t *sensors,
                                       const air_reading_t *reading, uint64_t now_ms);
 
+// What the diagnostics screen shows that only the composition knows: the
+// recorder's state, and where the wall clock came from (a word, or NULL).
+typedef void (*event_loop_facts_fn)(void *ctx, diag_recorder_t *recorder,
+                                    const char **clock_source);
+
 typedef struct {
     const port_clock_t *clock;
     port_display_t *display;
@@ -48,6 +63,11 @@ typedef struct {
 
     event_loop_reading_fn on_reading;  // may be NULL
     void *on_reading_ctx;
+
+    port_input_t *input;           // may be NULL: no touch
+    screen_controller_t *screens;  // already screen_controller_init()-ed
+    event_loop_facts_fn facts;     // may be NULL
+    void *facts_ctx;
 } event_loop_deps_t;
 
 // Starts the FreeRTOS task that runs the pump: forever, it polls the sensor
@@ -60,6 +80,12 @@ typedef struct {
 // that task.
 void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int priority,
                       int core_id);
+
+// From another task: input is waiting -- the pump looks now rather than at
+// its next deadline. Never waits; a wake that does not fit the queue is
+// dropped, since one already queued does the same. Safe before the pump
+// runs.
+void event_loop_post_input(void);
 
 #ifdef __cplusplus
 }

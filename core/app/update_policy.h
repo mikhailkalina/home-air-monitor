@@ -29,6 +29,19 @@
 // Data getting older is still shown: VAL_STALE is a status, and its arrival
 // redraws like any other status change.
 //
+// A redraw a person asked for -- a tap that changes the screen
+// (core/app/screen_controller.h) -- goes out at once: update_policy_request()
+// makes it due without waiting out min_redraw_interval_ms. It is not free:
+// it is a partial refresh like any other, counted against the panel's
+// budget, and a full one when the budget says so -- or past the budget while
+// a full refresh waits for the panel's interval, as ADR 0019 has it
+// (docs/adr/0025-touch-input-gt911.md, "A person's redraw").
+//
+// The thresholds above are the home screen's. A screen that decides itself
+// whether what it would draw has changed -- the diagnostics screen -- says so
+// through update_policy_evaluate_content(), and the panel's rules are the
+// same.
+//
 // The module is pure. It performs no I/O, allocates nothing, and takes every
 // notion of "now" from the port_clock handed to update_policy_init(), which is
 // what lets tests push hours through it in microseconds.
@@ -61,6 +74,18 @@ extern "C" {
 // Half the partial refreshes for the same readings, and so twice as long
 // between full ones (docs/adr/0019-partials-past-the-budget.md).
 #define UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS 5000u
+
+// CHOICE: past the panel's budget, while a full refresh waits for the
+// panel's minimum interval, partial refreshes go on -- but no further than
+// the budget again: at most this many times the budget between two full
+// refreshes. Then even a redraw a person asked for waits for the full one.
+// At the sensors' pace it never binds (ADR 0019: 23 at most); a person
+// tapping without pause would otherwise reach 55 in the panel's minute, past
+// the 40 this panel was ever driven through -- which is, for its budget of
+// 20, exactly this bound (docs/adr/0025-touch-input-gt911.md, "A person's
+// redraw"). Derived from the budget the panel reports, never a number of its
+// own.
+#define UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET 2u
 
 // Returned as next_deadline_ms when no timer is pending: only new data can
 // change the answer, so there is nothing to wake up for.
@@ -103,8 +128,10 @@ typedef enum {
     UPDATE_REASON_HUMIDITY,
     UPDATE_REASON_IAQ,  // the IAQ's band changed
     // A value_status_t, the accuracy mark, a link flag, or whether the wall
-    // time is known, changed.
+    // time is known, changed -- or, on a screen that compares its own
+    // content, that content.
     UPDATE_REASON_STATUS,
+    UPDATE_REASON_REQUEST,  // a person asked: update_policy_request()
 } update_reason_t;
 
 typedef struct {
@@ -128,9 +155,10 @@ typedef struct {
 
     // action is UPDATE_NONE only because a full refresh is due but the
     // panel's minimum full-refresh interval has not elapsed -- which happens
-    // only on a panel with no usable partial mode
+    // on a panel with no usable partial mode
     // (max_partial_refreshes_before_full == 0), where there is nothing to keep
-    // the screen current with meanwhile.
+    // the screen current with meanwhile, and once the partial refreshes past
+    // the budget have reached UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET times it.
     bool deferred_by_min_interval;
 
     // When to call update_policy_evaluate() again in the absence of new data:
@@ -152,6 +180,8 @@ typedef struct {
     uint64_t last_full_refresh_ms;
     bool have_full_refresh;
     uint32_t partials_since_full;
+
+    bool requested;  // update_policy_request() since the last redraw
 } update_policy_t;
 
 // The thresholds of docs/requirements.md 9.1.
@@ -173,9 +203,23 @@ void update_policy_init(update_policy_t *p, const port_clock_t *clock,
 void update_policy_evaluate(const update_policy_t *p, const air_reading_t *reading,
                             update_decision_t *out);
 
+// The same decision for a screen that compares what it would draw with what
+// it drew itself: `changed` is a redraw due for UPDATE_REASON_STATUS, under
+// the same interval, budget and panel rules -- or none. A request and the
+// first frame are due as in update_policy_evaluate().
+void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out);
+
+// A person asked for a redraw: the screen they are looking at is to change.
+// The next evaluate() says it is due now, with UPDATE_REASON_REQUEST, without
+// waiting for min_redraw_interval_ms -- partial, or full as the budget and
+// the panel's interval decide, as any other redraw. Pending until a redraw
+// is committed.
+void update_policy_request(update_policy_t *p);
+
 // Records a redraw that actually reached the panel: `rendered` becomes the
-// baseline the next deltas are measured against, and the partial-refresh
-// budget moves. A decision with action UPDATE_NONE is ignored.
+// baseline the next deltas are measured against, the partial-refresh budget
+// moves, and a request is answered. A decision with action UPDATE_NONE is
+// ignored.
 void update_policy_commit(update_policy_t *p, const air_reading_t *rendered,
                           const update_decision_t *decision);
 

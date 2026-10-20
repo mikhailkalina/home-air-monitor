@@ -16,6 +16,7 @@
 #include "board_config.h"
 #include "card_writer.h"
 #include "domain/civil_time.h"
+#include "gt911_touch.h"
 #include "i2c_scan.h"
 #include "pcf8563.h"
 #include "wall_clock.h"
@@ -374,6 +375,85 @@ static int cmd_rec(void *context, int argc, char **argv)
     return 0;
 }
 
+// --- touch ------------------------------------------------------------------------
+
+// Static: about 0.5 KB, and only the console's task uses it.
+static adp_input_status_t s_touch;
+
+static int cmd_touch(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    adp_input_status(s_deps.touch, &s_touch);
+    const gt911_info_t *i = &s_touch.info;
+    if (!s_touch.init_done) {
+        printf("TOUCH the touch task is still looking for the controller\n");
+        return 1;
+    }
+    if (!s_touch.found) {
+        printf("TOUCH not found: %s -- looked for again every minute, touch_wake now; %lu looks, "
+               "%lu losses\n",
+               hal_status_text(s_touch.init_status), (unsigned long)s_touch.stats.init_attempts,
+               (unsigned long)s_touch.stats.losses);
+        return 1;
+    }
+    printf("TOUCH %s at 0x%02X, product \"%s\", firmware 0x%04X, vendor 0x%02X%s\n",
+           s_touch.asleep ? "ASLEEP" : "awake", i->address, i->product_id,
+           (unsigned)i->firmware_version, (unsigned)i->vendor_id,
+           (s_touch.init_status == HAL_OK) ? "" : " -- interrupt NOT on");
+    printf("TOUCH config version 0x%02X: x_max %u y_max %u (in use %ux%u), touch number %u, "
+           "module_switch1 0x%02X, trigger %s, checksum %s (0x%02X) -- read, never written\n",
+           (unsigned)i->config_version, (unsigned)i->x_max, (unsigned)i->y_max,
+           (unsigned)i->x_resolution, (unsigned)i->y_resolution, (unsigned)i->touch_number,
+           (unsigned)i->module_switch1, gt911_trigger_name(i->trigger),
+           i->config_checksum_ok ? "ok" : "BAD", (unsigned)i->config_checksum);
+    printf("TOUCH map swap_xy=%d mirror_x=%d mirror_y=%d onto %ux%u (board_config.h)\n",
+           BOARD_TOUCH_SWAP_XY, BOARD_TOUCH_MIRROR_X, BOARD_TOUCH_MIRROR_Y,
+           (unsigned)BOARD_EPD_WIDTH, (unsigned)BOARD_EPD_HEIGHT);
+    const gt911_input_stats_t *st = &s_touch.stats;
+    printf("TOUCH since boot: %lu interrupts, %lu reads, %lu reports, %lu empty, %lu failed "
+           "(last %s), %lu events, %lu dropped, %lu lifts timed out; task stack %lu bytes free "
+           "at least\n",
+           (unsigned long)s_touch.interrupts, (unsigned long)st->reads, (unsigned long)st->reports,
+           (unsigned long)st->empty_reads, (unsigned long)st->read_errors,
+           hal_status_text(st->last_error), (unsigned long)st->events,
+           (unsigned long)(st->dropped + s_touch.queue_dropped), (unsigned long)st->timed_out_lifts,
+           (unsigned long)s_touch.stack_free_min_bytes);
+    printf("TOUCH lost %lu times, found again %lu, %lu looks in all\n", (unsigned long)st->losses,
+           (unsigned long)st->refound, (unsigned long)st->init_attempts);
+    for (size_t k = 0u; k < s_touch.history_count; ++k) {
+        const gt911_input_record_t *r = &s_touch.history[k];
+        printf("TOUCH event %-4s id %u raw %4u,%4u -> panel %3u,%3u at %llu ms\n",
+               gt911_touch_kind_name(r->kind), (unsigned)r->id, (unsigned)r->raw_x,
+               (unsigned)r->raw_y, (unsigned)r->x, (unsigned)r->y, (unsigned long long)r->ts_ms);
+    }
+    return 0;
+}
+
+static int cmd_touch_sleep(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    const hal_status_t st = adp_input_sleep(s_deps.touch);
+    printf("TOUCH_SLEEP %s%s\n", hal_status_text(st),
+           (st == HAL_OK) ? ": INT held low, nothing reported until touch_wake or a reset" : "");
+    return (st == HAL_OK) ? 0 : 1;
+}
+
+static int cmd_touch_wake(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    const int64_t start = esp_timer_get_time();
+    const hal_status_t st = adp_input_wake(s_deps.touch);
+    printf("TOUCH_WAKE %s in %lld ms\n", hal_status_text(st),
+           (long long)((esp_timer_get_time() - start) / 1000));
+    return (st == HAL_OK) ? 0 : 1;
+}
+
 // --- i2c ----------------------------------------------------------------------------
 
 static int cmd_i2c_scan(void *context, int argc, char **argv)
@@ -477,6 +557,24 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_rec,
         .context = NULL,
     };
+    const esp_console_cmd_t touch_cmd = {
+        .command = "touch",
+        .help = "The touch controller: product ID, firmware, its configuration, the last events",
+        .func_w_context = cmd_touch,
+        .context = NULL,
+    };
+    const esp_console_cmd_t touch_sleep_cmd = {
+        .command = "touch_sleep",
+        .help = "Put the touch controller to sleep (INT held low) until touch_wake or a reset",
+        .func_w_context = cmd_touch_sleep,
+        .context = NULL,
+    };
+    const esp_console_cmd_t touch_wake_cmd = {
+        .command = "touch_wake",
+        .help = "Wake the touch controller (INT pulsed high), or look for it again",
+        .func_w_context = cmd_touch_wake,
+        .context = NULL,
+    };
     esp_err_t err = esp_console_cmd_register(&scan);
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&recover);
@@ -501,6 +599,15 @@ static esp_err_t register_commands(adp_i2c_t *bus)
     }
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&rec_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&touch_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&touch_sleep_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&touch_wake_cmd);
     }
     return err;
 }
@@ -531,7 +638,7 @@ hal_status_t console_start(const console_deps_t *deps)
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
         log_str("commands", "help i2c_scan i2c_recover restart time time_set sd sd_mount "
-                            "sd_eject rec"),
+                            "sd_eject rec touch touch_sleep touch_wake"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

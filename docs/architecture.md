@@ -67,7 +67,7 @@ The core must be able to serialize its state before sleeping and restore it afte
 1. `core/` depends **only** on `ports/*.h` and a subset of the C standard library (`stdint`, `stdbool`, `string`, `math`). Forbidden: `stdio.h`, `time.h`, `malloc`, `esp_*`, `freertos/*`, `SDL*`.
 2. `ports/` is headers only. Not a single `.c` file. No dependencies at all.
 3. `platform/<name>/` implements the ports. It contains no business logic and calls no core functions other than publishing events.
-4. `drivers/` (BME68x, SCD4x, GT911, EPD) depend only on `ports/*.h` — the bus, the clock, the log, and `port_sensor.h` with the domain types it brings (`core/domain/measurement.h`) — and therefore build and test on a PC. A driver's `sensor_source_t` wrapper lives beside it in `drivers/`, not in `platform/` (ADR 0014). Vendored code under `drivers/*/vendor/` keeps its own includes.
+4. `drivers/` (BME68x, SCD4x, GT911, EPD) depend only on `ports/*.h` — the bus, the clock, the log, `port_sensor.h` with the domain types it brings (`core/domain/measurement.h`), and `port_input.h` — and therefore build and test on a PC. A driver's `sensor_source_t` wrapper lives beside it in `drivers/`, not in `platform/` (ADR 0014), and so does the GT911's `port_input` implementation (ADR 0025). Vendored code under `drivers/*/vendor/` keeps its own includes.
 5. `apps/<name>/` is the only place where **composition** (wiring) happens: adapters are constructed and handed to the core.
 
 Enforced in CI by a simple grep rule, in `scripts/check_sources.sh`:
@@ -128,6 +128,8 @@ home-air-monitor/
 │   ├── app/
 │   │   ├── app_core.h/.c           # state machine: event → actions; next_deadline()
 │   │   ├── sensor_manager.h/.c     # polling, source priority, fault tolerance
+│   │   ├── screen_controller.h/.c  # which screen; port_input's consumer (ADR 0025)
+│   │   ├── tap.h/.c                # what counts as a tap
 │   │   ├── update_policy.h/.c      # display refresh and publish thresholds
 │   │   ├── power_policy.h/.c       # duty cycle: usb_mode / battery_mode
 │   │   └── app_deps.h              # dependency injection struct
@@ -138,6 +140,8 @@ home-air-monitor/
 │   │   ├── fonts/                  # generated bitmap fonts (.c)
 │   │   ├── view_model.h/.c         # air_reading_t → what actually gets drawn
 │   │   ├── screen_home.c
+│   │   ├── diagnostics_view.h/.c   # the diagnostics screen's view model (ADR 0025)
+│   │   ├── screen_diagnostics.c    # sources, readings, clock, recorder; a tap away
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c
 │   │   └── screen_graphs.c
@@ -173,7 +177,11 @@ home-air-monitor/
 │   │   └── scd4x_source.c          # the SCD4x as a sensor_source_t (ADR 0014)
 │   ├── pcf8563/
 │   │   └── pcf8563.h/.c            # the RTC over port_i2c: UTC, BCD, the VL bit; no port (ADR 0023)
-│   ├── gt911/
+│   ├── gt911/                      # the touch controller (ADR 0025)
+│   │   ├── gt911.h/.c              # over port_i2c: find, name, read, sleep, wake;
+│   │   │                           #   the vendor's configuration read, never written
+│   │   ├── gt911_touch.h/.c        # snapshots to DOWN/MOVE/UP; its frame to the panel's
+│   │   └── gt911_input.h/.c        # port_input over it -- the host runs it on a model
 │   ├── epd_ed047tc1/
 │   └── bq27220/
 │
@@ -183,7 +191,7 @@ home-air-monitor/
 │   │   ├── adp_clock.c
 │   │   ├── adp_i2c.c               # ESP-IDF i2c_master + recovery
 │   │   ├── adp_display.c           # EPDiy / LilyGo-EPD47 backend, PSRAM buffer
-│   │   ├── adp_input.c             # GT911 + IRQ → event queue
+│   │   ├── adp_input.c             # GT911's interrupt and task → event queue (ADR 0025)
 │   │   ├── adp_net.c               # wifi_manager
 │   │   ├── adp_telemetry_mqtt.c    # esp-mqtt
 │   │   ├── adp_storage.c           # NVS + LittleFS
@@ -197,12 +205,14 @@ home-air-monitor/
 │   │   ├── adp_clock_virtual.c     # virtual clock with time acceleration
 │   │   ├── adp_i2c_fake.c          # a bus of I²C device models (for drivers)
 │   │   ├── i2c_models/             # register file; SCD41 command-level model (ADR 0015);
-│   │   │                           #   BME680 register-level model (ADR 0016)
+│   │   │                           #   BME680 register-level model (ADR 0016);
+│   │   │                           #   GT911, 16-bit registers and INT (ADR 0025)
 │   │   ├── scenario_world.c        # the room the models measure, from the scenario CSVs (ADR 0017)
 │   │   ├── adp_display_sdl.c       # 960×540 window at 1:1 + e-paper emulation
 │   │   ├── adp_display_png.c       # headless: dump frames to PNG (for CI)
 │   │   ├── adp_files_dir.c         # port_files over a directory: --record, the contract
 │   │   ├── adp_input_sdl.c         # mouse/keyboard → touch events
+│   │   ├── adp_input_script.c      # --taps: scripted touches for headless runs
 │   │   ├── adp_net_sim.c           # controllable link quality and availability
 │   │   ├── adp_telemetry_mqtt.c    # libmosquitto → a real broker
 │   │   ├── adp_telemetry_stdout.c  # sink to log/file
@@ -938,7 +948,7 @@ The same file runs:
 
 This is what makes "it works in the simulator" mean "it will work on hardware". Without contract tests, abstractions inevitably diverge at the edges — NVS key length limits, behaviour on a full partition, I²C error codes.
 
-The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, and `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
+The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
 
 ### 9.3 Scenario tests
 

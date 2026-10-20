@@ -138,6 +138,12 @@ typedef struct {
 hal_status_t card_writer_request(card_writer_cmd_t cmd, card_writer_status_t *out,
                                  uint32_t timeout_ms);
 
+// From any task: the recorder's state as the card's task last saw it --
+// at most CARD_WRITER_TICK_MS old -- for the diagnostics screen
+// (docs/adr/0025-touch-input-gt911.md). False when the task is not running:
+// no recorder. Never waits: one word the card's task stores after each pass.
+bool card_writer_recorder_state(recorder_state_t *out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -34,12 +34,27 @@
 //   rec          recording on or off, the file each source is written to,
 //                rows and bytes since boot and what was dropped, the log
 //                file's, and what the card costs the event loop
+//
+// Phase 3g's (docs/adr/0025-touch-input-gt911.md), every line starting
+// "TOUCH":
+//
+//   touch        the controller: found or not, its address, product ID,
+//                firmware and the configuration it holds -- resolution,
+//                touch number, the interrupt's trigger, the checksum -- what
+//                it has reported, and the last few events, raw and mapped
+//                onto the panel: a finger at each corner is how the board's
+//                swap and mirrors are checked
+//   touch_sleep  the sleep command, INT held low: no touch until touch_wake,
+//                or until a reset's init() wakes it
+//   touch_wake   the wake pulse on INT -- or, for a controller never found,
+//                a whole init() again
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
 #define HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
 
 #include "adp_clock.h"
 #include "adp_i2c.h"
+#include "adp_input.h"
 #include "domain/civil_time.h"
 #include "hal_status.h"
 #include "port_log.h"
@@ -60,8 +75,10 @@ typedef struct {
     const time_zone_t *zone;  // the local time `time` prints
     const char *zone_name;    // what `time` calls it: "Vilnius"
     // Where the system time came from: main.c's at boot, time_set's after.
-    // Only the console's task touches it once the console has started.
+    // Only the console's task writes it once the console has started; the
+    // event loop reads it, a word, for the diagnostics screen.
     wall_clock_source_t *wall_source;
+    adp_input_t *touch;  // the console's touch, touch_sleep and touch_wake
     const port_log_t *log;
 } console_deps_t;
 
