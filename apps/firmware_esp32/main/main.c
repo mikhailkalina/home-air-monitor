@@ -826,6 +826,7 @@ void app_main(void)
         .screens = &s_screens,
         .facts = screen_facts,
         .facts_ctx = &s_wall_source,
+        .reporter = NULL,  // phase 4c: the Wi-Fi and MQTT adapters, then the reporter
     };
     event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
                      EVENT_LOOP_TASK_CORE);

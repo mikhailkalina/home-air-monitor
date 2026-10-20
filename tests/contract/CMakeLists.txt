@@ -4,7 +4,8 @@
 # of it (see docs/architecture.md §5.3 and §9.2).
 #
 # The contract bodies themselves (port_clock_contract.c, port_log_contract.c,
-# port_i2c_contract.c, port_sensor_contract.c, port_files_contract.c) are NOT
+# port_i2c_contract.c, port_sensor_contract.c, port_files_contract.c,
+# port_input_contract.c, port_net_contract.c, port_telemetry_contract.c) are NOT
 # compiled directly by this file. They come from
 # cmake/sources_contract.cmake, the same list
 # apps/firmware_esp32/components/hac_contract/CMakeLists.txt includes, so the
@@ -81,3 +82,16 @@ if(TARGET hac_platform_host_gui)
 endif()
 hac_apply_warnings(test_port_input_contract)
 add_test(NAME test_port_input_contract COMMAND test_port_input_contract)
+
+# port_net and port_telemetry (docs/adr/0030-telemetry-ports-and-the-reporter.md):
+# the shared bodies against the simulator's network and the loopback client
+# of the in-memory broker -- each taken away and given back, the broker
+# stalled -- plus broken wrappers that prove each body catches what it
+# claims to. The board's Wi-Fi and MQTT adapters (phase 4c) are to run the
+# same bodies in the test app.
+foreach(test IN ITEMS test_port_net_contract test_port_telemetry_contract)
+    add_executable(${test} ${test}.c)
+    target_link_libraries(${test} PRIVATE hac_contract_bodies hac_platform_host hac_test_support)
+    hac_apply_warnings(${test})
+    add_test(NAME ${test} COMMAND ${test})
+endforeach()

@@ -102,6 +102,12 @@ HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC
 # Every MQTT message, as Home Assistant would receive it (ADR 0029)
 ./build/host-debug/tests/mqtt_messages_dump
 
+# The reporter over a broker model in memory (ADR 0030): stdout prints every message the
+# broker takes, loopback its sessions and wills and a summary; --net-script cuts the network
+./build/host-debug/apps/simulator/simulator --headless --duration 1800 \
+    --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv \
+    --telemetry loopback --net-script "600:down;1200:up"     # or --telemetry stdout --device-id x
+
 # Firmware
 . $HOME/esp/esp-idf/export.sh
 cd apps/firmware_esp32 && idf.py build
@@ -517,9 +523,35 @@ byte short, illegal ids; and `mqtt_messages_parse`, which parses every message w
 `json` and checks that the templates name only keys the state has. Nothing seen in a Home
 Assistant yet: phase 4b sends.
 
+Phase 4b on branch `phase-4b-reporter` (ADR 0030): the reporter, its ports and a broker
+model. `ports/port_net.h` as architecture 5.6 sketched it (up() asks and keeps asking; the
+composition calls it once). `ports/port_telemetry.h`: connect with a last will, disconnect,
+publish, subscribe, is_connected and a non-blocking `poll()` for what arrives, as port_input
+has -- a departure from 5.6; nothing waits, publish() copies, `HAL_ERR_NOT_READY` without a
+session, `HAL_ERR_NO_MEM` with the queue full; the port never reconnects or keeps messages
+for later. `core/reporting/reporter.c` decides all that: connect when the network is up,
+backoff 5 s to 120 s, give up an attempt after 10 s; every session subscribes to HA's
+status, then "online", the nine discovery configs and the state; HA's live birth brings the
+configs again; nothing is queued while offline (the card keeps the history); a refused
+message is retried after 1 s with the newest reading; the will is "offline", keepalive 60 s.
+The state carries `rssi` from port_net; the screen's reading never gets the link, so an
+outage redraws nothing (the status bar still says "offline" on the board: ADR 0030, "Not
+decided"). `core/reporting/publish_policy.c`, apart from update_policy (a departure from
+architecture 3): at once per session, on a status or IAQ-accuracy change, past a delta, at
+least every 60 s heartbeat, at most once per sensor cycle; the deltas are the display's, in
+`core/reporting/report_limits.h`, sized by replaying the owner's 2026-10-18 and 19 (local
+only): 1,554 and 1,597 messages a day, 8 % and 11 % over the heartbeat's 1,440. Host:
+`adp_net_sim.c` (`--net-script`), `adp_telemetry_loopback.c` (a broker per MQTT 3.1.1 --
+retained, `+`/`#`, wills on a drop or a takeover, refusals, a stall); the simulator's
+`--telemetry stdout|loopback` and `--device-id`. Both event loops wake at the earliest of the
+sensor manager's, update_policy's and the reporter's deadlines; `app_core` not yet (phase
+5). Verified on the host: both contracts with six broken wrappers each, the reporter on a
+fake clock, a CLI test whose outage leaves the redraw log and the recordings byte-identical.
+The firmware and the test app build with `.reporter = NULL`: nothing is sent from the board.
+
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
-recordable unattended -- and this unit's own figures for the remaining estimates; phase 4b,
-the MQTT client.
+recordable unattended -- and this unit's own figures for the remaining estimates; phase 4c,
+the board's Wi-Fi and esp-mqtt adapters behind these ports.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

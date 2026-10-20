@@ -18,6 +18,8 @@
 //   simulator --recording card/data/2026-10-16_scd4x.csv
 //             --recording card/data/2026-10-16_bme68x.csv
 //   simulator --headless --taps "30:480,270;45:480,270" ...
+//   simulator --telemetry loopback --net-script "600:down;1200:up" ...
+//   simulator --telemetry stdout --device-id kitchen ...
 //
 // Two ways to the same sensor_source_t (architecture 5.4): replay sources
 // that play the scenario files straight into the core, or the real drivers
@@ -50,9 +52,19 @@
 // between the home screen and the diagnostics screen, and the loop prints
 // how long the change took to reach the glass on the panel model.
 //
-// Not yet wired, and deliberately: the control panel, deep-sleep emulation,
-// networking and telemetry. There is no app_core yet either: the loop below
-// runs the sensor manager, the screen controller and the update policy
+// Telemetry (docs/adr/0030-telemetry-ports-and-the-reporter.md): with
+// --telemetry, core/reporting/reporter.c publishes the readings over
+// port_telemetry to an MQTT broker model in memory
+// (platform/host/adp_telemetry_loopback.h), over a simulated network
+// (platform/host/adp_net_sim.h) that --net-script cuts and restores, as the
+// board's will over Wi-Fi to a real broker. `stdout` prints every message the
+// broker takes; `loopback` only the sessions and the wills, and a summary.
+// The screen's reading is never told about the network, so an outage redraws
+// nothing.
+//
+// Not yet wired, and deliberately: the control panel, deep-sleep emulation
+// and a real broker. There is no app_core yet either: the loop below runs the
+// sensor manager, the screen controller, the update policy and the reporter
 // itself, and sleeps until the earliest of their deadlines.
 
 #include <stdio.h>
@@ -65,6 +77,8 @@
 #include "adp_i2c_fake.h"
 #include "adp_input_script.h"
 #include "adp_log_console.h"
+#include "adp_net_sim.h"
+#include "adp_telemetry_loopback.h"
 #include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
@@ -80,9 +94,14 @@
 #include "port_display.h"
 #include "port_input.h"
 #include "port_log.h"
+#include "port_net.h"
+#include "port_telemetry.h"
 #include "recording/record_files.h"
 #include "recording/recorder.h"
 #include "replay/replay_source.h"
+#include "reporting/ha_discovery.h"
+#include "reporting/reporter.h"
+#include "reporting/topics.h"
 #include "scd4x_source.h"
 #include "scenario_world.h"
 #include "ui/framebuffer.h"
@@ -139,10 +158,31 @@
 // port_input implementations at once: the window's and the script's.
 #define SIM_MAX_INPUTS 2u
 
+// The MQTT topics' prefix -- requirements 10.1's example -- and the device id
+// a simulator announces itself with unless --device-id says otherwise; on the
+// board the id comes from the Wi-Fi MAC (phase 4c).
+#define SIM_MQTT_PREFIX "homeair"
+#define SIM_DEFAULT_DEVICE_ID "simulator"
+
+// Room for what --net-script can say is wrong.
+#define SIM_NET_SCRIPT_ERROR_MAX 160u
+
+// The distinct topics the loopback's summary counts.
+#define SIM_BROKER_TOPICS 24u
+
+// A kept payload the summary prints as text, when it is no longer than this.
+#define SIM_BROKER_SHOWN_MAX 32u
+
 typedef enum {
     SIM_SENSORS_REPLAY = 0,
     SIM_SENSORS_FAKE_I2C,
 } sim_sensors_t;
+
+typedef enum {
+    SIM_TELEMETRY_OFF = 0,
+    SIM_TELEMETRY_STDOUT,    // the broker model, every message it takes printed
+    SIM_TELEMETRY_LOOPBACK,  // the broker model, its sessions and wills printed
+} sim_telemetry_mode_t;
 
 typedef struct {
     const char *scenario_co2;
@@ -161,41 +201,51 @@ typedef struct {
     const char *recordings[SIM_MAX_RECORDINGS];
     size_t recording_count;
     const char *taps;  // --taps, unparsed
+    sim_telemetry_mode_t telemetry;
+    const char *device_id;   // --device-id, or SIM_DEFAULT_DEVICE_ID
+    const char *net_script;  // --net-script, unparsed
 } sim_args_t;
 
 static void usage(const char *argv0)
 {
-    printf("usage: %s [options]\n"
-           "\n"
-           "  --scenario-co2 <file>  CSV of what the SCD41 measures: CO2, temperature, humidity\n"
-           "  --scenario-env <file>  CSV of what the BME68x measures: temperature, humidity,\n"
-           "                         pressure, gas resistance, and IAQ if it has the column\n"
-           "  --sensors <mode>       replay (default): the files feed the core directly;\n"
-           "                         fake-i2c: the real SCD4x and BME68x drivers read device\n"
-           "                         models on a fake I2C bus, which measure the files\n"
-           "  --time-scale <n>       virtual seconds per real second (default 1)\n"
-           "  --headless             no window: write frames instead (implies a duration)\n"
-           "  --frames <dir>         directory for the headless PNG frames\n"
-           "  --zoom <f>             window scale, 1 = one panel pixel per screen pixel\n"
-           "  --duration <s>         stop after this many virtual seconds (0 = never)\n"
-           "  --wall-time <utc>      start the wall clock here, YYYY-MM-DDTHH:MM:SSZ, instead\n"
-           "                         of at this PC's time; it moves on with --time-scale\n"
-           "  --no-wall-time         no wall clock: the board before its RTC is set\n"
-           "  --record <dir>         write each source's rows into <dir>/data/, as the board\n"
-           "                         writes them to its card\n"
-           "  --recording <file>     replay a recording (the board's or --record's) as the\n"
-           "                         source its name says: <day>_scd4x.csv, <day>_bme68x.csv;\n"
-           "                         repeatable, one per source. The wall clock starts at\n"
-           "                         the earliest first row unless --wall-time says otherwise\n"
-           "  --taps <list>          scripted taps, \"<seconds>:<x>,<y>;...\" in panel pixels: a\n"
-           "                         tap switches between the home and diagnostics screens\n"
-           "                         (headless or windowed; the window's clicks do the same)\n"
-           "  --help\n"
-           "\n"
-           "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
-           "panel (platform/host/epd_emulation.h, docs/adr/0008-panel-timing.md). The window\n"
-           "waits out each refresh divided by --time-scale: use 1 to see the real latency.\n",
-           argv0, SIM_PANEL_WIDTH, SIM_PANEL_HEIGHT);
+    printf(
+        "usage: %s [options]\n"
+        "\n"
+        "  --scenario-co2 <file>  CSV of what the SCD41 measures: CO2, temperature, humidity\n"
+        "  --scenario-env <file>  CSV of what the BME68x measures: temperature, humidity,\n"
+        "                         pressure, gas resistance, and IAQ if it has the column\n"
+        "  --sensors <mode>       replay (default): the files feed the core directly;\n"
+        "                         fake-i2c: the real SCD4x and BME68x drivers read device\n"
+        "                         models on a fake I2C bus, which measure the files\n"
+        "  --time-scale <n>       virtual seconds per real second (default 1)\n"
+        "  --headless             no window: write frames instead (implies a duration)\n"
+        "  --frames <dir>         directory for the headless PNG frames\n"
+        "  --zoom <f>             window scale, 1 = one panel pixel per screen pixel\n"
+        "  --duration <s>         stop after this many virtual seconds (0 = never)\n"
+        "  --wall-time <utc>      start the wall clock here, YYYY-MM-DDTHH:MM:SSZ, instead\n"
+        "                         of at this PC's time; it moves on with --time-scale\n"
+        "  --no-wall-time         no wall clock: the board before its RTC is set\n"
+        "  --record <dir>         write each source's rows into <dir>/data/, as the board\n"
+        "                         writes them to its card\n"
+        "  --recording <file>     replay a recording (the board's or --record's) as the\n"
+        "                         source its name says: <day>_scd4x.csv, <day>_bme68x.csv;\n"
+        "                         repeatable, one per source. The wall clock starts at\n"
+        "                         the earliest first row unless --wall-time says otherwise\n"
+        "  --taps <list>          scripted taps, \"<seconds>:<x>,<y>;...\" in panel pixels: a\n"
+        "                         tap switches between the home and diagnostics screens\n"
+        "                         (headless or windowed; the window's clicks do the same)\n"
+        "  --telemetry <mode>     publish over MQTT to a broker model in memory, over a\n"
+        "                         simulated network: stdout prints every message the\n"
+        "                         broker takes, loopback its sessions and wills and a summary\n"
+        "  --device-id <id>       the device id in the topics, [A-Za-z0-9_-], at most 32\n"
+        "                         (default " SIM_DEFAULT_DEVICE_ID ")\n"
+        "  --net-script <list>    the network cut and restored, \"<seconds>:down;<seconds>:up\"\n"
+        "  --help\n"
+        "\n"
+        "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
+        "panel (platform/host/epd_emulation.h, docs/adr/0008-panel-timing.md). The window\n"
+        "waits out each refresh divided by --time-scale: use 1 to see the real latency.\n",
+        argv0, SIM_PANEL_WIDTH, SIM_PANEL_HEIGHT);
 }
 
 // Returns false on a malformed command line, having said what was wrong.
@@ -282,6 +332,23 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
         } else if (strcmp(arg, "--taps") == 0) {
             TAKE_VALUE("--taps");
             out->taps = argv[++i];
+        } else if (strcmp(arg, "--telemetry") == 0) {
+            TAKE_VALUE("--telemetry");
+            const char *mode = argv[++i];
+            if (strcmp(mode, "stdout") == 0) {
+                out->telemetry = SIM_TELEMETRY_STDOUT;
+            } else if (strcmp(mode, "loopback") == 0) {
+                out->telemetry = SIM_TELEMETRY_LOOPBACK;
+            } else {
+                fprintf(stderr, "--telemetry must be stdout or loopback, not %s\n", mode);
+                return false;
+            }
+        } else if (strcmp(arg, "--device-id") == 0) {
+            TAKE_VALUE("--device-id");
+            out->device_id = argv[++i];
+        } else if (strcmp(arg, "--net-script") == 0) {
+            TAKE_VALUE("--net-script");
+            out->net_script = argv[++i];
         } else if (strcmp(arg, "--headless") == 0) {
             out->headless = true;
         } else {
@@ -303,6 +370,14 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
     if (out->no_wall_time && out->wall_time_pinned) {
         fprintf(stderr, "--wall-time and --no-wall-time contradict each other\n");
         return false;
+    }
+    if (out->telemetry == SIM_TELEMETRY_OFF &&
+        (out->device_id != NULL || out->net_script != NULL)) {
+        fprintf(stderr, "--device-id and --net-script need --telemetry\n");
+        return false;
+    }
+    if (out->device_id == NULL) {
+        out->device_id = SIM_DEFAULT_DEVICE_ID;
     }
     if (out->recording_count > 0u && out->sensors == SIM_SENSORS_FAKE_I2C) {
         fprintf(stderr, "a recording replays into the core directly: --recording needs "
@@ -562,6 +637,224 @@ static bool start_recording(sim_recording_t *rec, const char *dir, const sim_sen
     return true;
 }
 
+// --- telemetry ---------------------------------------------------------------
+
+// The device's MQTT side, as the board will have it: the network, a client of
+// a broker, the topics and the reporter -- here the network simulated and the
+// broker a model in memory.
+typedef struct {
+    char topic[PORT_TELEMETRY_TOPIC_MAX];
+    unsigned messages;
+} sim_topic_count_t;
+
+typedef struct {
+    sim_telemetry_mode_t mode;
+    loopback_broker_t broker;
+    adp_telemetry_loopback_t client;
+    adp_net_sim_t net;
+    mqtt_topics_t topics;
+    reporter_t reporter;
+    net_state_t net_shown;  // the state last printed
+    bool woken;             // the client has news: the loop steps now
+    sim_topic_count_t counts[SIM_BROKER_TOPICS];
+    size_t topics_counted;
+    unsigned uncounted;  // messages on topics past SIM_BROKER_TOPICS
+} sim_telemetry_t;
+
+static void count_topic(sim_telemetry_t *t, const char *topic)
+{
+    for (size_t i = 0u; i < t->topics_counted; ++i) {
+        if (strcmp(t->counts[i].topic, topic) == 0) {
+            t->counts[i].messages++;
+            return;
+        }
+    }
+    if (t->topics_counted >= SIM_BROKER_TOPICS) {
+        t->uncounted++;
+        return;
+    }
+    sim_topic_count_t *c = &t->counts[t->topics_counted++];
+    snprintf(c->topic, sizeof(c->topic), "%s", topic);
+    c->messages = 1u;
+}
+
+static void print_payload(const loopback_message_t *m)
+{
+    if (m->len == 0u) {
+        printf("(empty)");
+    } else {
+        printf("%.*s", (int)m->len, (const char *)m->payload);
+    }
+}
+
+// What the broker does, as it does it.
+static void broker_tap(void *ctx, loopback_event_t event, const char *client,
+                       const loopback_message_t *m, uint64_t at_ms)
+{
+    sim_telemetry_t *t = (sim_telemetry_t *)ctx;
+    const unsigned long long at = (unsigned long long)at_ms;
+    switch (event) {
+        case LOOPBACK_EVENT_MESSAGE:
+            count_topic(t, m->topic);
+            if (t->mode == SIM_TELEMETRY_STDOUT) {
+                printf("[broker] %s %s qos=%u retain=%d ", client, m->topic, m->qos,
+                       m->retain ? 1 : 0);
+                print_payload(m);
+                printf("\n");
+            }
+            return;
+        case LOOPBACK_EVENT_WILL:
+            printf("[broker] last will of %s: %s ", client, m->topic);
+            print_payload(m);
+            printf(" now_ms=%llu\n", at);
+            return;
+        case LOOPBACK_EVENT_CONNECTED:
+            printf("[broker] %s connected now_ms=%llu\n", client, at);
+            return;
+        case LOOPBACK_EVENT_DISCONNECTED:
+            printf("[broker] %s disconnected now_ms=%llu\n", client, at);
+            return;
+        case LOOPBACK_EVENT_DROPPED:
+            printf("[broker] %s dropped: its network went now_ms=%llu\n", client, at);
+            return;
+        case LOOPBACK_EVENT_TAKEN_OVER:
+            printf("[broker] %s taken over by a new connection now_ms=%llu\n", client, at);
+            return;
+        case LOOPBACK_EVENT_REFUSED:
+            printf("[broker] %s refused now_ms=%llu\n", client, at);
+            return;
+    }
+}
+
+static void telemetry_woken(void *ctx)
+{
+    ((sim_telemetry_t *)ctx)->woken = true;
+}
+
+// The board's names, the simulator's model.
+static ha_discovery_t sim_discovery(const sim_sensors_rig_t *rig)
+{
+    unsigned caps = 0u;
+    for (size_t i = 0u; i < rig->count; ++i) {
+        caps |= (unsigned)rig->sources[i]->caps;
+    }
+    ha_discovery_t d;
+    memset(&d, 0, sizeof(d));
+    d.device.name = "Home Air Monitor (simulator)";
+    d.device.manufacturer = "home-air-monitor";
+    d.device.model = "simulator";
+    d.origin.name = "home-air-monitor";
+    d.origin.support_url = "https://github.com/mikhailkalina/home-air-monitor";
+    d.caps = (sensor_caps_t)caps;
+    d.has_rssi = true;
+    return d;
+}
+
+static bool start_telemetry(sim_telemetry_t *t, const sim_args_t *args,
+                            const sim_sensors_rig_t *rig, const port_clock_t *clock,
+                            const port_log_t *log)
+{
+    memset(t, 0, sizeof(*t));
+    t->mode = args->telemetry;
+    if (mqtt_topics_init(&t->topics, SIM_MQTT_PREFIX, args->device_id,
+                         MQTT_DISCOVERY_PREFIX_DEFAULT) != HAL_OK) {
+        fprintf(stderr, "--device-id: \"%s\" is not 1 to %u characters of [A-Za-z0-9_-]\n",
+                args->device_id, (unsigned)MQTT_DEVICE_ID_MAX);
+        return false;
+    }
+    loopback_broker_init(&t->broker, clock);
+    loopback_broker_set_tap(&t->broker, broker_tap, t);
+    (void)adp_telemetry_loopback_init(&t->client, &t->broker);
+    adp_telemetry_loopback_set_waker(&t->client, telemetry_woken, t);
+    adp_net_sim_init(&t->net, clock);
+    adp_net_sim_set_listener(&t->net, adp_telemetry_loopback_net_listener, &t->client);
+    if (args->net_script != NULL) {
+        char err[SIM_NET_SCRIPT_ERROR_MAX];
+        if (adp_net_sim_add_script(&t->net, args->net_script, err, sizeof(err)) != HAL_OK) {
+            fprintf(stderr, "--net-script: %s\n", err);
+            return false;
+        }
+    }
+    const reporter_deps_t deps = {
+        .telemetry = adp_telemetry_loopback_port(&t->client),
+        .net = adp_net_sim_port(&t->net),
+        .log = log,
+        .topics = &t->topics,
+        .discovery = sim_discovery(rig),
+    };
+    const reporter_config_t cfg = reporter_config_default();
+    if (reporter_init(&t->reporter, &deps, &cfg) != HAL_OK) {
+        fprintf(stderr, "cannot start the reporter\n");
+        return false;
+    }
+    // In phase 4 the composition brings the network up once; the core reads it.
+    port_net_t *net = adp_net_sim_port(&t->net);
+    (void)net->up(net);
+    t->net_shown = NET_DOWN;
+    return true;
+}
+
+static void show_net(sim_telemetry_t *t, uint64_t now_ms)
+{
+    const port_net_t *net = &t->net.port;
+    const net_state_t s = net->state(net);
+    if (s != t->net_shown) {
+        printf("[net] %s now_ms=%llu\n", port_net_state_name(s), (unsigned long long)now_ms);
+        t->net_shown = s;
+    }
+}
+
+// The reporter's step, after the poll, and what it published.
+static uint64_t report(sim_telemetry_t *t, const air_reading_t *reading, uint64_t now_ms)
+{
+    show_net(t, now_ms);
+    t->woken = false;
+    reporter_note_t note;
+    const uint64_t due = reporter_step(&t->reporter, reading, now_ms, &note);
+    if (note.online_published || note.discovery_published > 0u) {
+        printf("[publish] %s%u discovery configs session=%u now_ms=%llu\n",
+               note.online_published ? "online, " : "", note.discovery_published, note.session,
+               (unsigned long long)now_ms);
+    }
+    if (note.state_published) {
+        printf("[publish] state reason=%s session=%u now_ms=%llu\n",
+               publish_policy_reason_name(note.reason), note.session, (unsigned long long)now_ms);
+    }
+    if (note.refused != HAL_OK) {
+        printf("[publish] refused status=%d now_ms=%llu\n", (int)note.refused,
+               (unsigned long long)now_ms);
+    }
+    return due;
+}
+
+static void telemetry_summary(const sim_telemetry_t *t)
+{
+    const reporter_t *r = &t->reporter;
+    printf("[sim] telemetry: %u sessions, %u lost, %u attempts (%u failed); %u state messages "
+           "(",
+           r->sessions, r->sessions_lost, r->attempts, r->attempts_failed, r->state_messages);
+    for (unsigned i = 1u; i < (unsigned)PUBLISH_REASON_COUNT; ++i) {
+        printf("%s%s %u", (i > 1u) ? ", " : "", publish_policy_reason_name((publish_reason_t)i),
+               r->state_by_reason[i]);
+    }
+    printf("), %u discovery configs, %u births, %u refused\n", r->discovery_messages, r->births,
+           r->refusals);
+    for (size_t i = 0u; i < t->topics_counted; ++i) {
+        const sim_topic_count_t *c = &t->counts[i];
+        printf("[broker] %s: %u messages", c->topic, c->messages);
+        const loopback_message_t *kept = loopback_broker_retained(&t->broker, c->topic);
+        if (kept == NULL) {
+            printf(", nothing kept\n");
+        } else if (kept->len <= SIM_BROKER_SHOWN_MAX) {
+            printf(", kept: %.*s\n", (int)kept->len, (const char *)kept->payload);
+        } else {
+            printf(", kept: %zu bytes\n", kept->len);
+        }
+    }
+    printf("[broker] %u wills published, %u sessions, %u refused\n", t->broker.wills_published,
+           t->broker.sessions, t->broker.refused);
+}
+
 // --- the loop --------------------------------------------------------------
 
 // What one step of the loop needs, and nothing else: the loop keeps its own
@@ -576,6 +869,7 @@ typedef struct {
     air_reading_t reading;
     bool deferral_logged;
     sim_recording_t *recording;  // NULL without --record
+    sim_telemetry_t *telemetry;  // NULL without --telemetry
     const char *clock_source;    // the diagnostics screen's word for the wall clock
     const epd_model_t *panel;    // how long each flush takes on the glass
 
@@ -679,9 +973,10 @@ static void redraw(sim_t *sim, const update_decision_t *d, uint64_t now_ms)
     }
 }
 
-// One pass: whatever the sensors have due, then whatever the panel has due.
-// Returns when the loop should next look -- the earliest of the sensor
-// manager's deadline, the screen controller's and the policy's.
+// One pass: whatever the sensors have due, then whatever the reporter and the
+// panel have due. Returns when the loop should next look -- the earliest of
+// the sensor manager's deadline, the reporter's, the screen controller's and
+// the policy's.
 static uint64_t step(sim_t *sim)
 {
     const uint64_t sensors_due = sensor_manager_poll(&sim->sensors, &sim->reading);
@@ -710,6 +1005,12 @@ static uint64_t step(sim_t *sim)
         recorder_tick(&sim->recording->rec, now_ms);
     }
 
+    // The reporter, after the poll as the recorder's watch: the readings as
+    // the screen has them.
+    const uint64_t report_due = (sim->telemetry != NULL)
+                                    ? report(sim->telemetry, &sim->reading, now_ms)
+                                    : REPORTER_NO_DEADLINE;
+
     const uint64_t screens_due = screen_controller_tick(&sim->screens, &sim->policy, now_ms);
     const screen_inputs_t in = screen_inputs(sim, now_ms);
 
@@ -737,6 +1038,9 @@ static uint64_t step(sim_t *sim)
         (sensors_due < decision.next_deadline_ms) ? sensors_due : decision.next_deadline_ms;
     if (screens_due < next) {
         next = screens_due;
+    }
+    if (report_due < next) {
+        next = report_due;
     }
     if (next <= now_ms) {
         next = now_ms + SIM_REDRAW_RETRY_MS;  // a redraw that did not reach the panel
@@ -919,6 +1223,17 @@ int main(int argc, char **argv)
         printf("[sim] recording into %s/data/\n", args.record_dir);
     }
 
+    static sim_telemetry_t telemetry;
+    if (args.telemetry != SIM_TELEMETRY_OFF) {
+        if (!start_telemetry(&telemetry, &args, &rig, clock, log)) {
+            return 2;
+        }
+        sim.telemetry = &telemetry;
+        printf("[sim] telemetry: %s, a broker model in memory, device id %s, topics %s/...\n",
+               (args.telemetry == SIM_TELEMETRY_STDOUT) ? "stdout" : "loopback",
+               telemetry.topics.device_id, telemetry.topics.base);
+    }
+
     air_reading_init(&sim.reading);
 
     // --- the wait loop ---
@@ -931,12 +1246,25 @@ int main(int argc, char **argv)
     bool running = true;
 
     while (running) {
+        // What the network and the broker will do by themselves, and when: on
+        // the board their adapters wake the loop; here it looks then.
+        const uint64_t net_at =
+            (sim.telemetry != NULL) ? adp_net_sim_next_ms(&telemetry.net) : ADP_NET_SIM_NO_EVENT;
+        const uint64_t broker_at = (sim.telemetry != NULL)
+                                       ? loopback_broker_next_ms(&telemetry.broker)
+                                       : LOOPBACK_BROKER_NO_DEADLINE;
         if (args.headless) {
             const uint64_t now = clock->now_ms(clock);
             uint64_t target = next_wake_ms;
             const uint64_t tap_at = adp_input_script_next_ms(&script);
             if (tap_at < target) {
                 target = tap_at;
+            }
+            if (net_at < target) {
+                target = net_at;
+            }
+            if (broker_at < target) {
+                target = broker_at;
             }
             if (target == SENSOR_MANAGER_NO_DEADLINE) {
                 target = now + SIM_HEADLESS_STEP_MS;
@@ -955,6 +1283,17 @@ int main(int argc, char **argv)
         }
 
         const uint64_t now_ms = clock->now_ms(clock);
+
+        // The network changed, or the client has news: the reporter steps
+        // now. A will falling due is the broker's business alone.
+        if (sim.telemetry != NULL) {
+            if (now_ms >= broker_at) {
+                loopback_broker_service(&telemetry.broker);
+            }
+            if (now_ms >= net_at || telemetry.woken) {
+                next_wake_ms = now_ms;
+            }
+        }
 
         // Touch first: a tap that changes the screen is a redraw due now.
         for (size_t i = 0u; i < input_count; ++i) {
@@ -1005,6 +1344,9 @@ int main(int argc, char **argv)
                (unsigned long long)recorder_bytes_written(&recording.rec),
                recorder_rows_dropped(&recording.rec), args.record_dir);
         adp_files_dir_deinit(&recording.dir);
+    }
+    if (sim.telemetry != NULL) {
+        telemetry_summary(&telemetry);
     }
 
 #ifdef HAC_SIM_GUI
