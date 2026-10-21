@@ -10,6 +10,10 @@ whenever a dependency is added or removed.
 | linenoise (inside ESP-IDF's `console` component) | ESP-IDF 5.5's copy | BSD-2-Clause | `apps/firmware_esp32/main/console.c` (the REPL's line editor) | No — part of ESP-IDF; see below |
 | argtable3 (inside ESP-IDF's `console` component) | 3.2.2 | BSD-3-Clause, plus the BSD/Tcl-style notices of code it bundles | `apps/firmware_esp32/main/console.c` (command parsing, `help`) | No — part of ESP-IDF; see below |
 | FatFs (ChaN, inside ESP-IDF's `fatfs` component) | R0.15 w/patch2, ESP-IDF 5.5's copy | FatFs licence (one-clause BSD-style) | `platform/esp32_t5s3/adp_sd.c` (the microSD card's filesystem, phase 3f) | No — part of ESP-IDF; see below |
+| Espressif's Wi-Fi and PHY libraries (`libnet80211`, `libpp`, `libphy` and their kin, ESP-IDF's `esp_wifi/lib` and `esp_phy/lib`) | ESP-IDF 5.5's (`esp_wifi/lib` at `8a1b7bbc00e895d040c5c9a6fb9d1db2bbfc7958`) | Apache-2.0, as object code | `platform/esp32_t5s3/adp_net.c` (the Wi-Fi station, phase 4e) -- only in an image built with a network | No — part of ESP-IDF; see below |
+| lwIP (inside ESP-IDF's `lwip` component) | 2.2.0, ESP-IDF 5.5's copy | BSD-3-Clause | the same: the station's TCP/IP, through `esp_netif` | No — part of ESP-IDF; see below |
+| wpa_supplicant (inside ESP-IDF's `wpa_supplicant` component) | ESP-IDF 5.5's copy | BSD-3-Clause | the same: WPA2/WPA3's handshakes | No — part of ESP-IDF; see below |
+| Mbed TLS (inside ESP-IDF's `mbedtls` component) | 3.6.3 | Apache-2.0 OR GPL-2.0-or-later -- **used under Apache-2.0** | the same: the supplicant's cryptography | No — part of ESP-IDF; see below |
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
@@ -108,6 +112,38 @@ carries no obligation under it, and nothing of FatFs is vendored here. No
 copyleft term is involved. The rest of what the card pulls in -- the SD
 protocol (`sdmmc`), SD over SPI (`esp_driver_sdspi`), the SPI master driver
 and the VFS -- is ESP-IDF's own, under its Apache-2.0 (the first row).
+
+## Notes on the Wi-Fi stack
+
+Phase 4e (`docs/adr/0032-wifi-on-the-board.md`) links ESP-IDF's Wi-Fi into an
+image built with a network -- `sdkconfig.credentials` naming one -- and into
+no other: without a network the composition never sets the station up and the
+linker drops the whole stack, which `idf.py size-components` confirms (no
+`libnet80211`, `liblwip`, `libwpa_supplicant` or `libmbedcrypto` in it).
+Checked in `~/esp/esp-idf/components` (ESP-IDF 5.5), 2026-10-21:
+
+- **Espressif's Wi-Fi and PHY libraries** come as object code only.
+  `esp_wifi/lib/README.rst`: "These binary libraries are provided under the
+  same license as the parent esp-idf project - the Apache License 2.0 as
+  provided in the file LICENSE", which is Apache-2.0's text; `esp_phy/lib`
+  carries the same file.
+- **lwIP** 2.2.0 (`lwip/lwip/COPYING`, Swedish Institute of Computer
+  Science): BSD-3-Clause.
+- **wpa_supplicant** (`wpa_supplicant/README`, Jouni Malinen and
+  contributors): "the BSD license (the one with advertisement clause
+  removed)", three clauses.
+- **Mbed TLS** 3.6.3 (`mbedtls/mbedtls/LICENSE`): Apache-2.0 OR
+  GPL-2.0-or-later, at the user's choice -- used here under Apache-2.0.
+
+No copyleft term is involved. lwIP's and wpa_supplicant's licences ask that
+**redistributions in binary form** reproduce their copyright notices,
+conditions and disclaimers in the documentation or other materials provided
+with them: an image with a network, if ever distributed, carries those
+obligations, as ESP-IDF's other third-party components (linenoise,
+argtable3) already ask. Nothing of any of them is vendored here; the rest of
+what Wi-Fi pulls in -- `esp_wifi`'s adapter code, `esp_netif`, `esp_event`,
+`nvs_flash`, `esp_phy` -- is ESP-IDF's own, under its Apache-2.0 (the first
+row).
 
 ## Notes on the EPDiy display backend, and its LGPL-3.0 obligations
 

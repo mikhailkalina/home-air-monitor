@@ -4,6 +4,12 @@
 sdkconfig
 sdkconfig.old
 sdkconfig.ci
+# The Wi-Fi network and its password (phase 4e): the overlay every build of
+# the firmware and the test app layers last; sdkconfig.credentials.example is
+# what the repository has. A wildcard, so that a misspelt copy holding a
+# password -- sdkconfig.credential, as happened once -- is ignored too.
+sdkconfig.credential*
+!sdkconfig.credentials.example
 **/secrets.h
 **/credentials.h
 .env

@@ -48,6 +48,19 @@
 //                or until a reset's init() wakes it
 //   touch_wake   the wake pulse on INT -- or, for a controller never found,
 //                a whole init() again
+//
+// Phase 4e's (docs/adr/0032-wifi-on-the-board.md), every line starting
+// "WIFI":
+//
+//   wifi         the station: its state, the network's name, the signal, the
+//                address and the gateway, the access point it joined; how
+//                often the link came and went, the attempts that failed and
+//                why the last one did, and when the next comes; the MAC and
+//                the device's name on the network. The password never.
+//   vbat         the battery's divider on GPIO14, an ADC2 input that Wi-Fi
+//                shares: 32 reads, how many ADC2 refused, the pin's and the
+//                battery's millivolts -- whether it reads at all with Wi-Fi
+//                up (docs/hardware/board_notes.md, open item on GPIO14)
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
 #define HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
@@ -55,6 +68,7 @@
 #include "adp_clock.h"
 #include "adp_i2c.h"
 #include "adp_input.h"
+#include "adp_net.h"
 #include "domain/civil_time.h"
 #include "hal_status.h"
 #include "port_log.h"
@@ -78,7 +92,9 @@ typedef struct {
     // Only the console's task writes it once the console has started; the
     // event loop reads it, a word, for the diagnostics screen.
     wall_clock_source_t *wall_source;
-    adp_input_t *touch;  // the console's touch, touch_sleep and touch_wake
+    adp_input_t *touch;     // the console's touch, touch_sleep and touch_wake
+    adp_net_t *net;         // the console's wifi; NULL without a network in this image
+    const char *device_id;  // "hac-..." from the station's MAC; "" when unread
     const port_log_t *log;
 } console_deps_t;
 

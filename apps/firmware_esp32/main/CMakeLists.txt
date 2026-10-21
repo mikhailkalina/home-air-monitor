@@ -27,6 +27,8 @@ idf_component_register(
         log_tee.c
     INCLUDE_DIRS .
     REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console heap log
+             # The console's vbat: GPIO14's ADC2 beside Wi-Fi (phase 4e).
+             esp_adc
 )
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)

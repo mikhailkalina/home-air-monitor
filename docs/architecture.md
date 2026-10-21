@@ -102,6 +102,7 @@ home-air-monitor/
 │   ├── sources_drivers.cmake       # the same for drivers/, vendored code listed apart
 │   ├── sources_contract.cmake      # the shared contract bodies of tests/contract/
 │   ├── image_gen.cmake             # PNG -> C at build time, shared by host and IDF
+│   ├── credentials_idf.cmake       # the Wi-Fi credentials overlay, layered and checked (ADR 0032)
 │   └── warnings.cmake              # -Wall -Wextra -Werror -Wconversion ...
 │
 ├── ports/                          # ★ HEADERS ONLY. The platform contract.
@@ -199,7 +200,9 @@ home-air-monitor/
 │   │   ├── adp_i2c.c               # ESP-IDF i2c_master + recovery
 │   │   ├── adp_display.c           # EPDiy / LilyGo-EPD47 backend, PSRAM buffer
 │   │   ├── adp_input.c             # GT911's interrupt and task → event queue (ADR 0025)
-│   │   ├── adp_net.c               # wifi_manager
+│   │   ├── adp_net.c               # the Wi-Fi station behind port_net: a task, the driver (ADR 0032)
+│   │   ├── adp_net_pure.c          # ... its decisions -- backoff, timeouts -- tested on the host
+│   │   ├── adp_net_limits.h        # ... and every number they run on
 │   │   ├── adp_telemetry_mqtt.c    # esp-mqtt
 │   │   ├── adp_storage.c           # NVS + LittleFS
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
@@ -240,6 +243,8 @@ home-air-monitor/
 │   │   ├── CMakeLists.txt
 │   │   ├── sdkconfig.defaults
 │   │   ├── sdkconfig.calibration*  # overlays for the panel calibration image (ADR 0008)
+│   │   ├── sdkconfig.credentials.example  # Wi-Fi's: copied to the gitignored
+│   │   │                           #   sdkconfig.credentials, layered last (ADR 0032)
 │   │   ├── partitions.csv
 │   │   ├── main/
 │   │   │   ├── CMakeLists.txt
@@ -607,6 +612,8 @@ struct port_power_s {
 
 **Telemetry is polled, as input is** (phase 4b, ADR 0030). Every call returns at once: `publish()` copies the message into the adapter's queue -- `HAL_ERR_NOT_READY` without a session, `HAL_ERR_NO_MEM` when the queue is full -- and what arrives waits for `poll()`, the adapter waking the event loop as the touch adapter does. The sketch above once had no `poll()`, which would have meant a callback into the core from the MQTT client's task. Neither port reconnects or queues on the core's behalf: `core/reporting/reporter.c` decides when to connect, and starts each session with `online`, every discovery config and the state, so nothing published while offline is kept for later -- the card keeps the history (ADR 0024). The network's state reaches the state message's `rssi` as it is; the screen's reading gets the link only held -- `online`, `no broker` or `no Wi-Fi` once it has lasted a minute (`core/app/link_hold.h`, ADR 0031) -- so a link that flaps redraws nothing, and an outage longer than a minute redraws twice, its start and its end.
 
+**The board's network is a station with a task of its own** (phase 4e, ADR 0032): `platform/esp32_t5s3/adp_net.c` over ESP-IDF's Wi-Fi, its decisions -- a lost link sought at once, failed attempts after a backoff of 1 s doubling to 30 s, an attempt without an address given up at 30 s, refused credentials never given up -- in `adp_net_pure.c`, tested on the host. `up()` and `down()` record and wake the task; the driver is the task's alone. The network and its password come from a gitignored overlay, `sdkconfig.credentials`, and never reach NVS; without them the firmware sets no station up and links no Wi-Fi. The radio starts only once the boot's first frame is on the glass, away from the switched rail's inrush and from any panel drive (`event_loop.h`'s first-frame hook).
+
 **Files on a removable medium are a port of their own** (phase 3f, ADR 0024), not `port_storage`'s `log_append`: the sensor recordings and the debug log are streams of rows on a microSD card that may be absent, pulled out or full, where `port_storage` holds small values written whole into NVS and RTC memory.
 
 ```c
@@ -966,7 +973,7 @@ The same file runs:
 
 This is what makes "it works in the simulator" mean "it will work on hardware". Without contract tests, abstractions inevitably diverge at the edges — NVS key length limits, behaviour on a full partition, I²C error codes.
 
-The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, and `port_telemetry` against libmosquitto and a private mosquitto broker on the host and in CI (ADR 0030 and its amendment), the board's adapters to follow. Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
+The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, and `port_telemetry` against libmosquitto and a private mosquitto broker on the host and in CI (ADR 0030 and its amendment), and `port_net` against the board's Wi-Fi station in the test app when the image has a network to join (ADR 0032), the board's MQTT adapter to follow. Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
 
 ### 9.3 Scenario tests
 

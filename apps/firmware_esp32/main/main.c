@@ -27,7 +27,13 @@
 // (adp_input.c, its interrupt and a task of its own), read into
 // core/app/screen_controller.c by the event loop: a tap switches between the
 // home screen and a diagnostics screen; the console's touch, touch_sleep and
-// touch_wake look at it and put it to sleep.
+// touch_wake look at it and put it to sleep. Phase 4e
+// (docs/adr/0032-wifi-on-the-board.md): the Wi-Fi station behind port_net
+// (adp_net.c), for the network sdkconfig.credentials names -- none, and the
+// firmware runs as before. Its driver is set up with the rest; its radio
+// starts once the first frame is on the glass (start_radio()), and the
+// console's wifi shows it. Nothing uses the link yet: MQTT is the next
+// sub-phase's.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -38,7 +44,8 @@
 // bring_up_i2c()) -- then the system time from the RTC (set_clock_from_rtc()),
 // then the card's SPI bus and its task, which mounts the card -- after the
 // rail as well (see start_card()) -- then the touch controller and its task
-// (start_touch()), optionally the whole-panel bring-up
+// (start_touch()), the Wi-Fi station with its radio off (start_network()),
+// optionally the whole-panel bring-up
 // diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
@@ -50,6 +57,7 @@
 // with epd_calibration.c's measurement run: the same adapters, no event loop
 // and no sensors.
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "sdkconfig.h"  // CONFIG_HAC_*: which display and which BME68x source
@@ -64,6 +72,7 @@
 #include "adp_i2c.h"
 #include "adp_input.h"
 #include "adp_log.h"
+#include "adp_net.h"
 #include "adp_sd.h"
 #include "board_config.h"
 #include "board_power.h"
@@ -75,6 +84,7 @@
 #include "domain/civil_time.h"
 #include "recording/log_file.h"
 #include "recording/recorder.h"
+#include "reporting/topics.h"
 #if CONFIG_HAC_BSEC
 #include "bme68x_bsec_source.h"
 #else
@@ -85,6 +95,7 @@
 #include "port_clock.h"
 #include "port_display.h"
 #include "port_log.h"
+#include "port_net.h"
 #include "port_sensor.h"
 #include "scd4x_source.h"
 
@@ -134,6 +145,16 @@
 #define TOUCH_TASK_STACK_BYTES 6144u
 #define TOUCH_TASK_PRIORITY 6
 #define TOUCH_TASK_CORE 0
+
+// The Wi-Fi station's task (adp_net.c): it starts the radio, connects, backs
+// off and logs, with ESP-IDF's driver calls under its log lines. 6 KB, as the
+// touch task's, until its own low-water mark, which it logs, says otherwise.
+// On the protocol core, beside ESP-IDF's own Wi-Fi task (priority 23) and
+// lwIP's (18, sdkconfig.defaults), below both: it only tells the driver what
+// to do. Above the card, below touch.
+#define NET_TASK_STACK_BYTES 6144u
+#define NET_TASK_PRIORITY 4
+#define NET_TASK_CORE 0
 
 // The sources' ids, which every measurement carries as its source_id and the
 // priorities below are written in -- the same two the simulator gives the
@@ -468,6 +489,79 @@ static void wake_event_loop(void *ctx)
     event_loop_post_input();
 }
 
+// The station's state changed: the event loop looks now. Nothing there reads
+// it until the reporter does, in the next sub-phase; the wake is wired so
+// that it is in place.
+static void wake_event_loop_network(void *ctx)
+{
+    (void)ctx;
+    event_loop_post_network();
+}
+
+// The device's name on the network: MQTT's device id, "hac-" and the station
+// MAC's twelve hex digits (core/reporting/topics.h) -- also what DHCP tells
+// the router, so the router's client list shows the same name Home Assistant
+// will. Read from the eFuses, so it exists whether or not Wi-Fi does.
+static void name_device(char *id, size_t cap, const port_log_t *log)
+{
+    uint8_t mac[ADP_NET_MAC_LEN];
+    const hal_status_t st = adp_net_station_mac(mac);
+    if (st != HAL_OK || mqtt_device_id_from_mac(mac, id, cap) >= cap) {
+        id[0] = '\0';
+    }
+    const log_field_t fields[] = {
+        log_str("device_id", (id[0] != '\0') ? id : "-"),
+        log_i64("status", (int64_t)st),
+    };
+    port_log_write(log, LOG_LEVEL_INFO, "main", "device", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+}
+
+// The Wi-Fi station for the network sdkconfig.credentials names, its driver
+// set up and its radio off: the radio's start is start_radio()'s, once the
+// first frame is on the glass. NULL without a network in this image -- the
+// firmware then runs as before -- and the port, answering NET_FAILED at up(),
+// when the station could not be set up: the console says why.
+static port_net_t *start_network(adp_net_t *net, const char *hostname, const port_clock_t *clock,
+                                 const port_log_t *log)
+{
+    if (CONFIG_HAC_WIFI_SSID[0] == '\0') {
+        port_log_write(log, LOG_LEVEL_INFO, "main",
+                       "Wi-Fi off: no network in this image (sdkconfig.credentials)", NULL, 0u);
+        return NULL;
+    }
+    const adp_net_config_t cfg = {
+        .ssid = CONFIG_HAC_WIFI_SSID,
+        .password = CONFIG_HAC_WIFI_PASSWORD,
+        .hostname = (hostname[0] != '\0') ? hostname : NULL,
+        .clock = clock,
+        .log = log,
+        .task_stack_bytes = NET_TASK_STACK_BYTES,
+        .task_priority = NET_TASK_PRIORITY,
+        .task_core = NET_TASK_CORE,
+    };
+    const hal_status_t st = adp_net_init(net, &cfg);
+    if (st != HAL_OK) {
+        const log_field_t fields[] = {log_i64("status", (int64_t)st)};
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "Wi-Fi not set up: no network", fields, 1u);
+    }
+    adp_net_set_waker(net, wake_event_loop_network, NULL);
+    return adp_net_port(net);
+}
+
+// event_loop.h's first-frame hook: the radio on, now that the switched rail
+// has long settled and the panel has stopped being driven. up() only asks;
+// the station's task starts the radio -- its RF calibration the current this
+// waits for -- and joins. The next panel drive is a sensor cycle away at
+// least (update_policy's min_redraw_interval_ms), unless someone taps.
+static void start_radio(void *ctx)
+{
+    port_net_t *net = (port_net_t *)ctx;
+    if (net != NULL) {
+        (void)net->up(net);
+    }
+}
+
 // The diagnostics screen's word for where the wall clock came from, short
 // enough for its line; NULL for none.
 static const char *clock_word(wall_clock_source_t source)
@@ -702,6 +796,8 @@ void app_main(void)
     static adp_sd_t s_sd;
     static adp_input_t s_touch;
     static screen_controller_t s_screens;
+    static adp_net_t s_net;
+    static char s_device_id[MQTT_DEVICE_ID_MAC_LEN + 1u];
 
     // Before anything logs: every line from here on reaches the card's file.
     const hal_status_t tee = log_tee_start((esp_log_level_t)CONFIG_HAC_LOG_FILE_LEVEL);
@@ -717,19 +813,20 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 3g: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch",
+                   "phase 4e: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch, Wi-Fi",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 3g: EPDiy driving the panel, " SENSORS_TEXT
-                   ", the RTC, the microSD card, touch",
+                   "phase 4e: EPDiy driving the panel, " SENSORS_TEXT
+                   ", the RTC, the microSD card, touch, Wi-Fi",
 #endif
                    NULL, 0u);
 
     log_reset_reason(log);
     log_memory_budget(log);
+    name_device(s_device_id, sizeof(s_device_id), log);
     if (tee != HAL_OK) {
         port_log_write(log, LOG_LEVEL_ERROR, "main", "no memory for the log's ring: no log file",
                        NULL, 0u);
@@ -792,6 +889,10 @@ void app_main(void)
 #endif
 #endif
 
+    // After the rail, the log's release, the card and touch; the radio itself
+    // waits for the first frame (start_radio()).
+    port_net_t *net = start_network(&s_net, s_device_id, clock, log);
+
     const update_policy_config_t cfg = update_policy_config_default();
     const update_policy_limits_t limits = update_policy_limits_from_display(display);
     update_policy_init(&s_policy, clock, &cfg, &limits);
@@ -832,8 +933,10 @@ void app_main(void)
         .screens = &s_screens,
         .facts = screen_facts,
         .facts_ctx = &s_wall_source,
-        .reporter = NULL,  // phase 4c: the Wi-Fi and MQTT adapters, then the reporter
+        .reporter = NULL,  // the next sub-phase: the MQTT adapter, then the reporter
         .link = &s_link,
+        .after_first_frame = start_radio,
+        .after_first_frame_ctx = net,
     };
     event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
                      EVENT_LOOP_TASK_CORE);
@@ -844,6 +947,8 @@ void app_main(void)
         .zone_name = LOCAL_ZONE_NAME,
         .wall_source = &s_wall_source,
         .touch = &s_touch,
+        .net = (net != NULL) ? &s_net : NULL,
+        .device_id = s_device_id,
         .log = log,
     };
     start_console(&console);

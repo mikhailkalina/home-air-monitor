@@ -2,23 +2,32 @@
 
 #include "console.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
 
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_console.h"
 #include "esp_err.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 
+#include "adp_clock.h"
+#include "adp_net.h"
+#include "adp_net_pure.h"
 #include "board_config.h"
 #include "card_writer.h"
 #include "domain/civil_time.h"
 #include "gt911_touch.h"
 #include "i2c_scan.h"
 #include "pcf8563.h"
+#include "port_clock.h"
+#include "port_net.h"
 #include "wall_clock.h"
 
 // No trailing space: esp_console_setup_prompt() appends one itself.
@@ -454,6 +463,214 @@ static int cmd_touch_wake(void *context, int argc, char **argv)
     return (st == HAL_OK) ? 0 : 1;
 }
 
+// --- wifi -------------------------------------------------------------------------
+
+#define MS_PER_S 1000u
+#define S_PER_MIN 60u
+#define MIN_PER_H 60u
+
+// The status, static: about 0.2 KB, and only the console's task uses it.
+static adp_net_status_t s_net;
+
+static const char *net_state_word(net_state_t state)
+{
+    switch (state) {
+        case NET_UP:
+            return "UP";
+        case NET_CONNECTING:
+            return "JOINING";
+        case NET_FAILED:
+            return "FAILED";
+        case NET_DOWN:
+            break;
+    }
+    return "DOWN";
+}
+
+// "1 h 02 min", "3 min 07 s", "12 s".
+static void print_duration(uint64_t ms)
+{
+    const uint64_t s = ms / MS_PER_S;
+    const uint64_t min = s / S_PER_MIN;
+    if (min >= MIN_PER_H) {
+        printf("%llu h %02llu min", (unsigned long long)(min / MIN_PER_H),
+               (unsigned long long)(min % MIN_PER_H));
+    } else if (min > 0u) {
+        printf("%llu min %02llu s", (unsigned long long)min, (unsigned long long)(s % S_PER_MIN));
+    } else {
+        printf("%llu s", (unsigned long long)s);
+    }
+}
+
+static int cmd_wifi(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    const char *device =
+        (s_deps.device_id != NULL && s_deps.device_id[0] != '\0') ? s_deps.device_id : "-";
+    if (s_deps.net == NULL) {
+        printf("WIFI off: no network in this image -- set CONFIG_HAC_WIFI_SSID in "
+               "apps/firmware_esp32/sdkconfig.credentials (sdkconfig.credentials.example); "
+               "device id %s\n",
+               device);
+        return 1;
+    }
+    adp_net_status(s_deps.net, &s_net);
+    const port_clock_t *clock = adp_clock_port(s_deps.clock);
+    const uint64_t now = clock->now_ms(clock);
+    const adp_net_machine_stats_t *st = &s_net.stats;
+
+    if (s_net.init_status != HAL_OK) {
+        printf("WIFI FAILED: the station was not set up (%s) -- see the boot log's adp_net "
+               "lines\n",
+               hal_status_text(s_net.init_status));
+    } else if (s_net.state == NET_UP) {
+        printf("WIFI UP \"%s\" %d dBm, address %u.%u.%u.%u, gateway %u.%u.%u.%u, channel %u, "
+               "AP %02x:%02x:%02x:%02x:%02x:%02x, up for ",
+               s_net.ssid, (int)s_net.rssi_dbm, (unsigned)s_net.ipv4[0], (unsigned)s_net.ipv4[1],
+               (unsigned)s_net.ipv4[2], (unsigned)s_net.ipv4[3], (unsigned)s_net.gateway[0],
+               (unsigned)s_net.gateway[1], (unsigned)s_net.gateway[2], (unsigned)s_net.gateway[3],
+               (unsigned)s_net.channel, (unsigned)s_net.bssid[0], (unsigned)s_net.bssid[1],
+               (unsigned)s_net.bssid[2], (unsigned)s_net.bssid[3], (unsigned)s_net.bssid[4],
+               (unsigned)s_net.bssid[5]);
+        print_duration(now - st->up_since_ms);
+        printf("\n");
+    } else {
+        printf("WIFI %s \"%s\" (%s)", net_state_word(s_net.state), s_net.ssid,
+               adp_net_phase_name(s_net.phase));
+        if (s_net.state == NET_CONNECTING) {
+            printf(", sought for ");
+            print_duration(now - st->sought_since_ms);
+            printf(", %lu attempts failed in a row", (unsigned long)st->failures_in_a_row);
+            if (s_net.next_attempt_ms != ADP_NET_NO_DEADLINE) {
+                printf(", the next in ");
+                print_duration((s_net.next_attempt_ms > now) ? s_net.next_attempt_ms - now : 0u);
+            }
+        }
+        printf("\n");
+        if (st->refusals_in_a_row >= 2u) {
+            printf("WIFI refused %lu times in a row: is the password in sdkconfig.credentials "
+                   "right?\n",
+                   (unsigned long)st->refusals_in_a_row);
+        }
+    }
+    printf("WIFI since boot: %lu connections, %lu lost, %lu attempts, %lu failed (%lu timed out); "
+           "the last reason: %s (%u)\n",
+           (unsigned long)st->connections, (unsigned long)st->losses, (unsigned long)st->attempts,
+           (unsigned long)st->attempts_failed, (unsigned long)st->timeouts,
+           adp_net_reason_name(st->last_reason), (unsigned)st->last_reason);
+    printf("WIFI station %02x:%02x:%02x:%02x:%02x:%02x, device id %s; task stack %lu bytes free "
+           "at least; %lu events dropped\n",
+           (unsigned)s_net.mac[0], (unsigned)s_net.mac[1], (unsigned)s_net.mac[2],
+           (unsigned)s_net.mac[3], (unsigned)s_net.mac[4], (unsigned)s_net.mac[5], device,
+           (unsigned long)s_net.stack_free_min_bytes, (unsigned long)s_net.events_dropped);
+    return (s_net.state == NET_UP) ? 0 : 1;
+}
+
+// --- vbat -------------------------------------------------------------------------
+//
+// The battery's divider on GPIO14, an ADC2 input, which ESP-IDF documents as
+// shared with Wi-Fi: adc_oneshot_read() arbitrates, and refuses a read it
+// cannot make with ESP_ERR_TIMEOUT (docs/hardware/board_notes.md, open item on
+// GPIO14). This answers whether it gives usable readings with Wi-Fi up --
+// phase 5's battery adapter is the reader, not this.
+
+// CHOICES: reads per command, and the wait between two, so a burst of Wi-Fi
+// traffic and its quiet both fall inside one command.
+#define VBAT_READS 32u
+#define VBAT_READ_GAP_US 20000u
+
+static int cmd_vbat(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    adc_unit_t unit = ADC_UNIT_1;
+    adc_channel_t channel = ADC_CHANNEL_0;
+    esp_err_t err = adc_oneshot_io_to_channel(BOARD_BATTERY_ADC_GPIO, &unit, &channel);
+    adc_oneshot_unit_handle_t adc = NULL;
+    if (err == ESP_OK) {
+        const adc_oneshot_unit_init_cfg_t unit_cfg = {
+            .unit_id = unit,
+            .ulp_mode = ADC_ULP_MODE_DISABLE,
+        };
+        err = adc_oneshot_new_unit(&unit_cfg, &adc);
+    }
+    if (err == ESP_OK) {
+        const adc_oneshot_chan_cfg_t chan_cfg = {
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        err = adc_oneshot_config_channel(adc, channel, &chan_cfg);
+    }
+    if (err != ESP_OK) {
+        printf("VBAT the ADC on GPIO%d did not start: esp_err 0x%x\n", BOARD_BATTERY_ADC_GPIO,
+               (unsigned)err);
+        if (adc != NULL) {
+            (void)adc_oneshot_del_unit(adc);
+        }
+        return 1;
+    }
+    adc_cali_handle_t cali = NULL;
+    const adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = unit,
+        .chan = channel,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    const bool calibrated = adc_cali_create_scheme_curve_fitting(&cali_cfg, &cali) == ESP_OK;
+
+    unsigned ok = 0u;
+    unsigned refused = 0u;
+    int raw_min = INT_MAX;
+    int raw_max = INT_MIN;
+    int mv_min = INT_MAX;
+    int mv_max = INT_MIN;
+    long long mv_sum = 0;
+    for (unsigned i = 0u; i < VBAT_READS; ++i) {
+        int raw = 0;
+        const esp_err_t r = adc_oneshot_read(adc, channel, &raw);
+        if (r != ESP_OK) {
+            ++refused;
+        } else {
+            ++ok;
+            raw_min = (raw < raw_min) ? raw : raw_min;
+            raw_max = (raw > raw_max) ? raw : raw_max;
+            int mv = 0;
+            if (calibrated && adc_cali_raw_to_voltage(cali, raw, &mv) == ESP_OK) {
+                mv_min = (mv < mv_min) ? mv : mv_min;
+                mv_max = (mv > mv_max) ? mv : mv_max;
+                mv_sum += mv;
+            }
+        }
+        usleep(VBAT_READ_GAP_US);
+    }
+    if (calibrated) {
+        (void)adc_cali_delete_scheme_curve_fitting(cali);
+    }
+    (void)adc_oneshot_del_unit(adc);
+
+    const net_state_t wifi =
+        (s_deps.net != NULL) ? s_deps.net->port.state(&s_deps.net->port) : NET_DOWN;
+    printf("VBAT GPIO%d = ADC%d channel %d, Wi-Fi %s: %u reads, %u ok, %u refused (Wi-Fi held "
+           "ADC2)\n",
+           BOARD_BATTERY_ADC_GPIO, (int)unit + 1, (int)channel,
+           (s_deps.net != NULL) ? net_state_word(wifi) : "off", VBAT_READS, ok, refused);
+    if (ok == 0u) {
+        return 1;
+    }
+    if (!calibrated || mv_min > mv_max) {
+        printf("VBAT raw %d..%d of 4095, no calibration to millivolts\n", raw_min, raw_max);
+        return 0;
+    }
+    const long long mean = mv_sum / (long long)ok;
+    printf("VBAT raw %d..%d; the pin %d..%d mV, mean %lld; the battery x%u: %lld mV\n", raw_min,
+           raw_max, mv_min, mv_max, mean, (unsigned)BOARD_BATTERY_DIVIDER_RATIO,
+           mean * (long long)BOARD_BATTERY_DIVIDER_RATIO);
+    return 0;
+}
+
 // --- i2c ----------------------------------------------------------------------------
 
 static int cmd_i2c_scan(void *context, int argc, char **argv)
@@ -575,6 +792,18 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_touch_wake,
         .context = NULL,
     };
+    const esp_console_cmd_t wifi_cmd = {
+        .command = "wifi",
+        .help = "Wi-Fi: state, network, signal, address, reconnections, the last failure",
+        .func_w_context = cmd_wifi,
+        .context = NULL,
+    };
+    const esp_console_cmd_t vbat_cmd = {
+        .command = "vbat",
+        .help = "Read the battery's divider on GPIO14 (ADC2, shared with Wi-Fi) 32 times",
+        .func_w_context = cmd_vbat,
+        .context = NULL,
+    };
     esp_err_t err = esp_console_cmd_register(&scan);
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&recover);
@@ -609,6 +838,12 @@ static esp_err_t register_commands(adp_i2c_t *bus)
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&touch_wake_cmd);
     }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&wifi_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&vbat_cmd);
+    }
     return err;
 }
 
@@ -638,7 +873,7 @@ hal_status_t console_start(const console_deps_t *deps)
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
         log_str("commands", "help i2c_scan i2c_recover restart time time_set sd sd_mount "
-                            "sd_eject rec touch touch_sleep touch_wake"),
+                            "sd_eject rec touch touch_sleep touch_wake wifi vbat"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

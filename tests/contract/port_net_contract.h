@@ -13,7 +13,7 @@
 // The shared body: cmake/sources_contract.cmake compiles this file,
 // unmodified, into the host runner (tests/contract/test_port_net_contract.c,
 // against the simulator's network) and into the ESP-IDF hac_contract
-// component, for the board's Wi-Fi adapter when phase 4c brings one. No
+// component, for the board's Wi-Fi adapter (phase 4e, adp_net.c). No
 // stdio, no malloc, no harness.
 //
 // A runner that cannot take the access point away -- the board, in a room

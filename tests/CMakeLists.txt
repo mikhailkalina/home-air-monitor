@@ -273,6 +273,22 @@ target_link_libraries(test_adp_i2c_pure PRIVATE hac_test_support)
 hac_apply_warnings(test_adp_i2c_pure)
 add_test(NAME test_adp_i2c_pure COMMAND test_adp_i2c_pure)
 
+# The Wi-Fi station's decisions -- the backoff, the timeouts, which events
+# belong to the attempt under way -- compiled from where the firmware compiles
+# them, as adp_i2c_pure.c is (docs/adr/0032-wifi-on-the-board.md). adp_net.c
+# itself needs ESP-IDF and is held to the port_net contract in the test app.
+add_executable(test_adp_net_pure
+    unit/test_adp_net_pure.c
+    ${HAC_ROOT}/platform/esp32_t5s3/adp_net_pure.c
+)
+target_include_directories(test_adp_net_pure PRIVATE
+    ${HAC_ROOT}/platform/esp32_t5s3
+    ${HAC_ROOT}/ports
+)
+target_link_libraries(test_adp_net_pure PRIVATE hac_test_support)
+hac_apply_warnings(test_adp_net_pure)
+add_test(NAME test_adp_net_pure COMMAND test_adp_net_pure)
+
 # The device's panel limits against the simulator's. Only board_config.h's
 # directory is added -- it is plain data -- not anything that builds for the
 # ESP32.

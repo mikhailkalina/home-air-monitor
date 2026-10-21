@@ -120,6 +120,12 @@ HAC_MQTT_PASSWORD=... ./build/host-debug/apps/simulator/simulator --headless --d
 . $HOME/esp/esp-idf/export.sh
 cd apps/firmware_esp32 && idf.py build
 
+# Firmware with Wi-Fi (ADR 0032): the network in the gitignored overlay, layered last over
+# every build's defaults (the test app's too); it reaches only a fresh sdkconfig, and the
+# build refuses to configure while the two disagree. Without it the image has no Wi-Fi.
+cd apps/firmware_esp32 && cp sdkconfig.credentials.example sdkconfig.credentials  # fill in
+rm -f sdkconfig && idf.py reconfigure build && grep CONFIG_HAC_WIFI_SSID sdkconfig
+
 # Firmware with BSEC2 IAQ, in its own build dir and sdkconfig (ADR 0020); then grep
 # CONFIG_HAC_BSEC out of build-bsec/sdkconfig and bme680_iaq_33v_3s_4d out of the .bin
 cd apps/firmware_esp32 && idf.py -B build-bsec -D SDKCONFIG=build-bsec/sdkconfig \
@@ -168,6 +174,9 @@ the phase landed (the old files kept as `sdkconfig.old`); any other one needs th
 
 - `sdkconfig` — it holds Wi-Fi SSID, password and broker address after `menuconfig`.
   Only `sdkconfig.defaults`, without credentials, belongs in the repository.
+- `sdkconfig.credentials` — the Wi-Fi network and its password (ADR 0032); the repository
+  has `sdkconfig.credentials.example`. An image built with credentials holds them in plain
+  text: never attach one, nor an sdkconfig, to an issue or a pull request.
 - Any credentials, tokens, certificates or keys. Provide `credentials.h.example` instead.
 - Anything from Bosch's BSEC/BSEC2 archive: the binary (`libalgobsec.a`) ships under a
   proprietary Bosch agreement, and the headers, configurations (`bsec_iaq.c`/`.config`) and
@@ -633,11 +642,53 @@ reporter yet: no word where "offline" was, `Wi-Fi off` / `MQTT off` on the diagn
 (`board_notes.md`, open item "The network on the screen (phase 4d)", for what the adapters are
 to show).
 
-Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
-recordable unattended -- and this unit's own figures for the remaining estimates; the rest of
-the simulator's checks in Home Assistant (ADR 0030's amendment); then the board's Wi-Fi and esp-mqtt
-adapters behind these ports -- `info()` included -- with its device id from
-`mqtt_device_id_from_mac()`.
+Phase 4e on branch `phase-4e-wifi` (ADR 0032): Wi-Fi on the board.
+`platform/esp32_t5s3/adp_net.c` is `port_net` over ESP-IDF's station, with a task of its own
+that owns the driver -- `up()` and `down()` only record and wake it, ESP-IDF's events reach it
+through a queue, and the port shows what it publishes under a spinlock, or the request itself
+until the task has acted on it. Its decisions are `adp_net_pure.c`, tested on the host
+(`tests/unit/test_adp_net_pure.c`), its numbers `adp_net_limits.h`: a lost link sought at
+once, failed attempts after 1 s doubling to 30 s, an attempt without an address given up at
+30 s; refused credentials are counted ("is the password right?") and never given up -- after
+a power cut the access point and the device start together -- so `NET_FAILED` is only a
+radio that will not start. All-channel scan by signal, WPA2 at least, WPA3 SAE, DHCP told the
+device id `hac-<MAC>`; the signal read every 10 s. Credentials: `CONFIG_HAC_WIFI_SSID` and
+`_PASSWORD` in `components/hac_platform/Kconfig`, set only in the gitignored
+`apps/firmware_esp32/sdkconfig.credentials` (`.example` committed), which
+`cmake/credentials_idf.cmake` layers last over every build of the firmware and the test app,
+refusing to configure while it and the sdkconfig disagree; empty means no station is set up
+and the linker drops the Wi-Fi stack. The driver keeps no copy (`nvs_enable = 0`, RAM
+storage); NVS is opened, never erased, for the PHY's calibration data. Start order: the
+station set up in `app_main` after the rail, the log's release, the card and touch; the radio
+started by the event loop's new first-frame hook, once the boot's full refresh is over -- the
+RF calibration neither in `PWR_EN`'s inrush nor in a panel drive. Buffers stay in internal
+RAM (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` off: the octal PSRAM is what did not ride out
+dips); lwIP pinned to core 0 beside the Wi-Fi task, core 1 left to the event loop and
+EPDiy's row output; no SoftAP. Measured in the build, with a network against without:
++51,140 bytes of static internal RAM (30,184 of it Wi-Fi code in IRAM), image +501 KB to 1.2
+MB. Console: `wifi`, and `vbat` -- GPIO14's ADC2 read beside Wi-Fi, for the open item. Test
+app: the `port_net` contract against the station, IGNORED without credentials. No reporter
+yet: the screen shows nothing of the link (the diagnostics screen says `Wi-Fi off`). Verified
+on the host (unit, ASan); the firmware, its BSEC variant and the test app in both variants
+build from regenerated sdkconfigs, and the firmware with a dummy overlay. On the board,
+2026-10-21 (ELF `4734936f1...`, two boots): no brownout, the radio started 40-60 ms after the
+first frame, the link up 6.7-6.9 s after `up()` at the first attempt, EPDiy's draw times
+unchanged to the millisecond, GPIO14's ADC2 read 32 of 32 beside the link; internal RAM 56.7
+KB free with the link up, 42.7 KB at the least -- Wi-Fi's run-time share 68 KB, above the
+estimate. So, the same day: the Wi-Fi IRAM optimisations off (17,564 bytes of static internal
+RAM back; `adp_net.c` refuses an sdkconfig with them on), and a shutdown handler so that a
+`restart` no longer logs a lost link -- both seen on the board (ELF `8baab9290...`): 74.2 KB
+free with the link up, 60.2 KB at the least, the link as fast as before, `restart` silent. Still
+owed (`board_notes.md`, open item "Wi-Fi on the board"): many boots, recovery, the glass by eye,
+a day's BSEC and heating.
+The test app passed on the board (`11 Tests 0 Failures`, the `port_net` contract against the
+station) once its runner called at the event loop's priority.
+
+Next: Wi-Fi's board run; then the board's esp-mqtt adapter behind `port_telemetry` and the
+reporter composed, with its device id from `mqtt_device_id_from_mac()`; the board run of
+phases 3d to 3f, the rest of phase 3c's measurements -- now recordable unattended -- and this
+unit's own figures for the remaining estimates; the rest of the simulator's checks in Home
+Assistant (ADR 0030's amendment).
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

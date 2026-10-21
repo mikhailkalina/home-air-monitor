@@ -632,7 +632,16 @@ see "Free PSRAM at runtime" in the open items below.
 
 Re-run `idf.py size-components` when Wi-Fi lands in phase 4 and again when
 Matter lands in phase 7: both claim their own share of IRAM and DIRAM, and
-this bring-up baseline is what makes their actual cost visible.
+this bring-up baseline is what makes their actual cost visible. **Wi-Fi's, in
+the build, 2026-10-21** (phase 4e, `docs/adr/0032-wifi-on-the-board.md`): an
+image with a network against the same tree without one, +51,140 bytes of
+static internal RAM -- 30,184 of it Wi-Fi code in IRAM (ESP-IDF's default
+`CONFIG_ESP_WIFI_IRAM_OPT` and `_RX_IRAM_OPT`), 13,136 `.bss`, 7,820 `.data`
+-- and +501 KB of image, 1,215,097 bytes in all, 29 % of the app partition. The
+run-time share is the board's to measure (open item "Wi-Fi on the board").
+Measured on the board the same day, 68 KB; with that, the IRAM optimisations
+were turned off: static internal RAM 131,379 bytes with a network, Wi-Fi's
+share 33,576.
 
 ## Known constraints (vendor warning, verbatim intent)
 
@@ -1688,7 +1697,10 @@ layout settles, not before.
       while Wi-Fi is active. The ESP32-S3 TRM documents ADC2 as unreliable
       under Wi-Fi; confirm on this board before phase 3/4 tries to read
       battery level during a Wi-Fi window, rather than assuming the divider
-      alone is the whole story.
+      alone is the whole story. **Readable since phase 4e**: the console's
+      `vbat` reads it 32 times through ESP-IDF's oneshot driver, which
+      arbitrates ADC2 with Wi-Fi and refuses what it cannot read -- the open
+      item "Wi-Fi on the board" says what to compare.
 - [ ] Whether `esp_timer`-backed `now_ms()` (`platform/esp32_t5s3/adp_clock.c`)
       genuinely resets to 0 across this board's deep sleep, the way a plain
       power-on reset would, or behaves some other way. `adp_clock.c` and
@@ -2088,8 +2100,10 @@ layout settles, not before.
       held a minute, and no longer on the state message's `net_connected`,
       which nothing draws.
 - [ ] **The network on the screen (phase 4d).** Built 2026-10-21, verified on
-      the host only (`docs/adr/0031-the-network-on-the-screen.md`). **What the
-      board shows now**, with no reporter composed: no word where the bar
+      the host only (`docs/adr/0031-the-network-on-the-screen.md`). Phase 4e
+      brings the Wi-Fi adapter, not yet the reporter: what follows waits for
+      the MQTT adapter too. **What the board shows now**, with no reporter
+      composed: no word where the bar
       said "offline", the battery text at the right margin instead; on the
       diagnostics screen a smaller title and two network lines, `Wi-Fi off`
       and `MQTT off` (the boot's full refresh draws the new layout, so the
@@ -2120,3 +2134,170 @@ layout settles, not before.
         `info()`'s checks included -- the name terminated and the same up and
         down, an address only while up -- with the cut and restore checks "not
         exercised".
+- [ ] **Wi-Fi on the board (phase 4e).** Built 2026-10-21, verified on the
+      host only (`docs/adr/0032-wifi-on-the-board.md`): the station behind
+      `port_net` (`platform/esp32_t5s3/adp_net.c`), its decisions tested on
+      the host, the firmware and the test app built. **Needs credentials**:
+      copy `apps/firmware_esp32/sdkconfig.credentials.example` to
+      `sdkconfig.credentials`, fill in both lines, delete the build's sdkconfig
+      and reconfigure (the build refuses a stale one); `grep CONFIG_HAC_WIFI_SSID
+      sdkconfig` names the network. Without them the image is the firmware of
+      before -- `main: Wi-Fi off: no network in this image` -- and links no
+      Wi-Fi at all. Nothing uses the link yet, and the screen shows nothing of
+      it (no reporter composed: the bar stays empty, the diagnostics screen
+      says `Wi-Fi off`); the console's `wifi` is the view. What each check is
+      to show, and the lines that show it:
+      - *A boot*: `main: device device_id=hac-<12 hex digits>`; `adp_net:
+        station ready, the radio off until up() ssid=... password_len=...
+        took_ms=... free_internal=...` before the first frame; `event_loop:
+        first frame over now_ms=...` after it, then `adp_net: asked up:
+        starting the radio`, `radio started esp_err=0 took_ms=...` (the RF
+        calibration; at the first boot of this image also the PHY data's flash
+        write), `associated bssid=... channel=...`, `up address=... gateway=...
+        rssi=... took_ms=...`, and once `memory with the link up
+        free_internal=... min_free_internal=...`. The router's client list
+        names the device `hac-...`.
+      - *Many boots on USB alone*: no `previous reset reason=BROWNOUT`, no
+        `interrupt_watchdog`, through the radio's start in particular -- its
+        RF calibration comes seconds after `PWR_EN`'s rise and between two
+        panel drives by design. A reset there says the radio's current reaches
+        `VDD3V3` as the rail's inrush did (open item "A reboot loop when the
+        switched 3V3 comes up"): the levers then are the radio's transmit power
+        and the supply, not the firmware's order. Also a few with the card in
+        and the battery connected.
+      - *Recovery*: the access point rebooted -- `link lost: sought again at
+        once reason=...`, `attempt failed reason=no_ap_found ...` while it is
+        gone, `up ... failed_attempts=N took_ms=...` within about 30 s of its
+        return (`ADP_NET_BACKOFF_MAX_MS`, a CHOICE). The access point gone for
+        an hour: the same, with the backoff at its ceiling and the failures
+        logged once (and again only when their reason changes); `wifi` shows
+        the count and the next attempt. A wrong password, if tried: `attempt
+        refused: is the password right?` from the second, never a give-up.
+      - *Memory*: `memory with the link up free_internal=` against phase 3g's
+        176,143 after the card's mount (the build added 51,140 bytes of static
+        internal RAM; the run-time share is an ESTIMATE of 40-60 KB more), the
+        event loop's and the station task's `stack low-water mark` lines
+        (`adp_net`, 6,144 bytes), and `idf.py size-components` of the image
+        flashed (ADR 0032 has the build's).
+      - *The panel*: EPDiy's per-update timing lines with Wi-Fi up against
+        ADR 0008's table -- a full refresh 3.2-3.7 s, a partial by its rows --
+        and the glass by eye, greys especially: Wi-Fi's interrupts on core 0
+        can delay the two completion interrupts EPDiy's row loop on core 1
+        waits for, which stretches a frame, not a row's drive.
+      - *BSEC*: `BSEC called late` lines per day from the card's `log/`,
+        against a day with the same image and no `sdkconfig.credentials`, the
+        board otherwise alike.
+      - *Heating*: the BME68x's temperature against the SCD41's, from a day's
+        recordings (`data/<day>_bme68x.csv`, `_scd4x.csv`) with Wi-Fi and a
+        day without -- the heating requirements 12 warns of, and
+        `HAC_BSEC_DEVICE_HEAT_C`'s first measured value (open item "BSEC on the
+        board", *Temperature*).
+      - *GPIO14 with Wi-Fi on* (closes the open item on `BOARD_BATTERY_ADC_GPIO`):
+        `vbat` at the console with Wi-Fi up and with an image without it --
+        `VBAT ... N reads, N ok, 0 refused` and the battery's millivolts
+        steady says ADC2 reads beside Wi-Fi; refusals or a wandering value say
+        it does not. Battery connected, and with USB alone.
+      - *The test app*: with the overlay in place, `idf.py -T hac_platform
+        build` from a fresh `test_app/sdkconfig` adds `contract port_net
+        adp_net+ESP-IDF station` lines, every one PASS -- five of them "not
+        exercised", which need the access point taken away -- and a summary
+        line with the connections and the stack;
+        without it the case is IGNORED and says why.
+      **First run 2026-10-21** (ELF `4734936f1...`, the BSEC image with the
+      owner's network, a WPA3-SAE access point on channel 11; the owner's YAT
+      logs of 20:19 and 20:43 local -- a boot after flashing, 24 minutes up,
+      then `restart` and a second boot):
+      - *Boots*: both ran through, no brownout, no interrupt watchdog --
+        `previous reset reason=usb`, then `=software`. Two boots, not yet the
+        many the item asks for.
+      - *The radio's start*: `first frame over` at 4.27 and 4.32 s, `radio
+        started` 40-60 ms later (62 ms at the first boot, which calibrated in
+        full -- `phy_init: failed to load RF calibration data`, then `Saving
+        new calibration data` -- and 43 ms at the second, from the data NVS
+        now held: the partition opens, and is used). The next panel drive came
+        5 s after, as designed.
+      - *Joining*: `up` 6,867 and 6,699 ms after `asked up`, at the first
+        attempt both times: the all-channel scan about 2.4 s, authentication
+        and association 0.95 s, DHCP 3.3 s. RSSI -62 to -72 dBm. DHCP was
+        told the hostname `hac-...`.
+      - *Memory*: `memory with the link up free_internal=56703` and `56711`,
+        `min_free_internal=42691` and `44371`. Against phase 3g's 176,143
+        after the card's mount: 119,440 bytes less -- the build's 51,140 of
+        static RAM and **68 KB at run time**, above ADR 0032's estimate of
+        40-60: about 54 KB of it taken by the station's set-up before the
+        radio starts (`card mounted free_internal=70939` came after it at the
+        second boot), 13 KB by the start, the least free 13 KB below that.
+        `free_internal_after_epd_init=143935` (201,375 in 3g). The event loop's
+        stack low-water mark unchanged (3,368 bytes free); the station task's
+        2,644 bytes free of 6,144 at its lowest, the card's 2,560. Before
+        MQTT is added, ADR 0032's levers are worth weighing: the Wi-Fi IRAM
+        optimisation off (~30 KB back), fewer static receive buffers.
+      - *The panel*: EPDiy's draw times with the radio on are the old ones to
+        the millisecond -- a 54-row partial 321-322 ms (322-323 before), a
+        381-row one 564-566 (563-568), the 916 x 440 status redraw that ran
+        during the association and DHCP 699 (699-701), the boot's full GC16
+        draw at 25 C 911 (913) -- so Wi-Fi's interrupts do not measurably
+        stretch the row output. The tap's 920 x 514 change of screen 1,136 ms,
+        latency 1,231-1,244 ms. The glass by eye: not reported yet.
+      - *BSEC*: late calls 437-439 ms at the boot's full refresh, 600 at a
+        status redraw, 790 at a change of screen -- the pattern of before; the
+        per-day count is still to compare.
+      - *GPIO14*: `vbat` with Wi-Fi up (idle, modem sleep), the battery
+        connected: 32 reads, 32 ok, none refused, raw 2,456-2,469, the pin
+        2,106-2,117 mV, the battery 4,224 mV. ADC2 reads beside an idle link;
+        under traffic, with Wi-Fi off, and on USB alone are still to see.
+      - *Restart*: `restart` stops Wi-Fi in ESP-IDF's shutdown handlers, so
+        the last lines before the reset read `esp_wifi_connect refused ...
+        esp_err=12290` (`ESP_ERR_WIFI_NOT_STARTED`) and `link lost: sought
+        again at once reason=assoc_leave` -- the adapter seeking the link the
+        shutdown took. Harmless, and misleading in a log.
+      - *The screen*: nothing of the link, as designed -- `Wi-Fi off` on the
+        diagnostics screen while the station is up (ADR 0032).
+      Still to see: many boots, the access point rebooted and gone, the glass
+      by eye, a day's late BSEC calls and the heating against a day without
+      Wi-Fi, `vbat` under traffic and without Wi-Fi, the test app.
+      **Changed the same day** (ADR 0032): the Wi-Fi IRAM optimisations off,
+      17,564 bytes of static internal RAM back by `idf.py size` -- the next
+      image's `memory with the link up` should read about 74 KB free and 60 KB
+      at the least, and the link come up as before (6-7 s; a slower driver
+      would show there first) -- and a `restart` that no longer logs a lost
+      link: the last line before the ROM's is `RESTART esp_restart() now`, or
+      ESP-IDF's own Wi-Fi lines, but no `adp_net` one.
+      **The test app, 2026-10-21** (ELF `93d6c0b1f...`, the BSEC variant with
+      the overlay, the owner's YAT log of 21:32): `11 Tests 1 Failures` -- every
+      other case PASS, and in the `port_net` contract every check but one.
+      `up() returns without waiting` FAILED on the first `up()`: the test task
+      (priority 1) shares core 0 with the station's task (4), which preempted
+      it the moment it was woken and started the radio -- `radio started
+      took_ms=39`, the RF calibration's CPU -- before `up()` returned; the second
+      `up()`, whose start took 5 ms, passed. The runner's fault, not the port's:
+      the firmware's caller is the event loop, above the station's task and on
+      the other core. The runner now runs the contract at the event loop's
+      priority (`tests/contract/esp32/test_port_net_contract.c`); the next run
+      is to show all PASS. Also seen: the first attempt refused (`auth_fail`,
+      202) and the second failed (`connection_fail`, 205) a minute after the
+      firmware's session ended with esptool's reset and no deauthentication --
+      the access point still holding the old association -- and the third
+      joined, 14.8 s after `up()`: the backoff at work, and the case for never
+      giving up on a refusal (ADR 0032). The stack: 2,664 bytes free of 6,144.
+      **Run again with the runner's fix** (the image built for it, `0ef8e316c...`
+      -- the log begins after the boot's hash line; the owner's YAT log of
+      21:37): `11 Tests 0 Failures 0 Ignored`, `HAC_TEST_APP_RESULT ... OK`;
+      every one of the 29 `contract port_net` lines PASS, five of them "not
+      exercised" -- `up() returns without waiting` now printed before the
+      station's `asked up`, the caller back before the task ran. Both joins at
+      the first attempt, 6,580 and 6,521 ms after `up()`; the radio's first
+      start 39 ms, the second 4; the station task's stack 3,016 bytes free at
+      its lowest. The test app's checks for Wi-Fi are done.
+      **The image with the IRAM optimisations off and the shutdown handler**
+      (ELF `8baab9290...`, the owner's YAT log of 21:41: a boot after flashing,
+      then two `restart`s): `memory with the link up free_internal=74419`,
+      `74231`, `74231`, `min_free_internal=62035`, `60159`, `60159` -- the
+      17.6 KB the build gave back, as predicted;
+      `free_internal_after_epd_init=161599` (143,935 before). The link up at
+      the first attempt in 6,786-6,866 ms, as with the optimisations on: the
+      slower driver does not show. Each `restart`: `RESTART esp_restart()
+      now`, ESP-IDF's own Wi-Fi lines, the ROM's -- no `adp_net` line. No
+      brownout, no watchdog in the three boots (five with Wi-Fi so far). EPDiy's
+      draw times as before (322-323, 699-700, 910 ms); `vbat` 32 of 32 again,
+      4,222-4,224 mV.
