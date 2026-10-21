@@ -9,8 +9,9 @@
 #     card sees -- the redraw decisions and the recordings of three runs, one
 #     without telemetry, one with, one with the outage, are the same, byte for
 #     byte (requirements 15.1) -- while the broker sees the session dropped,
-#     the last will 90 s later, nothing published meanwhile, and the next
-#     session announce itself again: online, every discovery config, the state;
+#     the last will one and a half keepalives after the last message it had,
+#     nothing published meanwhile, and the next session announce itself again:
+#     online, every discovery config, the state;
 #   * stdout: every message the broker takes, printed;
 #   * a malformed --device-id or --net-script refused before anything runs.
 #
@@ -103,14 +104,34 @@ foreach(run loopback outage)
 endforeach()
 
 set(out "${out_outage}")
-# In this order: the network goes, the session with it, the will a keepalive
-# and a half later, the network back after its association, the second
-# session announcing itself.
+# The will falls due a keepalive and a half (90 s) after the last packet the
+# broker had from the device, as a real broker counts it (MQTT 3.1.1,
+# 3.1.2.10; ADR 0030's amendment) -- its last message before the network
+# went, since the heartbeat sends one at least every keepalive and so no ping
+# came between -- not 90 s after the network went.
+string(REGEX MATCHALL "\\[publish\\][^\n]*now_ms=[0-9]+" published "${out}")
+set(heard 0)
+foreach(p IN LISTS published)
+    string(REGEX REPLACE ".*now_ms=([0-9]+)" "\\1" t "${p}")
+    if(t LESS_EQUAL 600000 AND t GREATER heard)
+        set(heard ${t})
+    endif()
+endforeach()
+math(EXPR quiet "600000 - ${heard}")
+if(heard EQUAL 0 OR quiet GREATER 60000)
+    message(FATAL_ERROR "the last message before the outage was at ${heard} ms, "
+                        "not within a heartbeat of it:\n${out}")
+endif()
+math(EXPR will_at "${heard} + 90000")
+message(STATUS "an outage: the last message at ${heard} ms, the will at ${will_at} ms")
+
+# In this order: the network goes, the session with it, the will, the
+# network back after its association, the second session announcing itself.
 set(expected
     "\\[broker\\] simulator dropped: its network went now_ms=600000"
     "\\[net\\] connecting now_ms=600000"
     "\\[INFO\\] reporter: session lost session=1 why=network now_ms=600000"
-    "\\[broker\\] last will of simulator: homeair/simulator/status offline now_ms=690000"
+    "\\[broker\\] last will of simulator: homeair/simulator/status offline now_ms=${will_at}"
     "\\[net\\] up now_ms=1203000"
     "\\[broker\\] simulator connected now_ms=1203000"
     "\\[publish\\] online, 9 discovery configs session=2 now_ms=1203000"

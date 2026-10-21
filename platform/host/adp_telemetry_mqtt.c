@@ -685,7 +685,7 @@ static bool mq_poll(port_telemetry_t *port, telemetry_message_t *out)
 // waits on the socket -- libmosquitto's loop is a cancellation point there,
 // and nothing of ours runs then -- and the socket stays open, unread and
 // unwritten, as a board's does when Wi-Fi goes: the broker hears nothing more
-// and drops it after one and a half keepalives.
+// and drops it one and a half keepalives after the last packet it heard.
 static void sever(adp_telemetry_mqtt_t *m, client_t *c)
 {
     pthread_mutex_lock(&m->lock);

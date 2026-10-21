@@ -39,8 +39,9 @@
 //   * the network taken away (adp_telemetry_mqtt_set_link(), the
 //     simulator's --net-script): the session goes silent -- its thread is
 //     stopped and the socket left open, as when Wi-Fi goes -- so the broker
-//     drops it one and a half keepalives later and publishes the will; or at
-//     once, when the network comes back and the old socket is closed.
+//     drops it one and a half keepalives after the last packet it heard and
+//     publishes the will; or at once, when the network comes back and the
+//     old socket is closed.
 //   * the broker going (a restart, a refusal): the session is over, and the
 //     log says why.
 //   * adp_telemetry_mqtt_destroy(): every socket closed without a

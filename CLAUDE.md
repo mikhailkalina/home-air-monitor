@@ -567,7 +567,7 @@ never waits, a drop stops the loop instead of reconnecting (`mosquitto_disconnec
 `on_disconnect`), and nothing is resent into a later session. The callbacks queue under a lock
 and call a waker; the next session's CONNECT waits for the last one's DISCONNECT (at most 1 s);
 the network going silences the session -- its thread cancelled, the socket left open -- so the
-broker publishes the will after one and a half keepalives; the end of a run closes every socket
+broker publishes the will one and a half keepalives after the last packet it heard; the end of a run closes every socket
 without a DISCONNECT, so the will goes out. Simulator: `--broker mqtt://<host>[:<port>]` (no
 TLS, no user or password in the URL), `--mqtt-user`, the password from `HAC_MQTT_PASSWORD`,
 printed nowhere; the loop follows real time with `--broker`, headless too, at `--time-scale` 1
@@ -591,8 +591,13 @@ container in WSL, Ubuntu's mosquitto 2.0.22, the board's recordings of 2026-10-1
 device and its nine entities, Home Assistant's restart (discovery again), the broker's restart
 (session 2 after 15 s -- 10 of them the reporter's connect timeout on an attempt the adapter
 knew was refused: the port cannot say so, a port change to weigh with the board's adapter),
-Ctrl-C (unavailable at once, the will). Still to see: history and long-term statistics, an
-outage, a broker with a password, Home Assistant on its own machine (the amendment's list).
+Ctrl-C (unavailable at once, the will), and an outage (`--net-script "120:down;300:up"`: the
+will 34 s after the cut, 90 s after the last packet the broker had heard -- a real broker counts
+the keepalive from there, MQTT 3.1.1 3.1.2.10, so a vanished device is offline 30 to 90 s later;
+the loopback broker model now counts the same way, with the client's pings, where it counted
+from the cut and was up to a keepalive late). Still to
+see: history and long-term statistics, a broker with a password, Home Assistant on its own
+machine (the amendment's list).
 
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
 recordable unattended -- and this unit's own figures for the remaining estimates; the rest of

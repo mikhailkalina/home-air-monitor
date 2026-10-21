@@ -45,10 +45,13 @@
 
 // --- the session (reporter.h) ------------------------------------------------
 
-// CHOICE: the session's keepalive. A device that vanishes without a word is
-// reported offline by its last will one and a half keepalives later -- 90 s,
-// inside expire_after's three heartbeats -- and the heartbeat already sends
-// something every minute, so keeping alive costs nothing more.
+// CHOICE: the session's keepalive. A broker drops a session it has heard
+// nothing from for one and a half keepalives, 90 s, counted from the last
+// packet (MQTT 3.1.1, 3.1.2.10); the heartbeat or a ping goes out at least
+// every minute, so a device that vanishes without a word is reported offline
+// by its last will 30 to 90 s later -- 34 s seen on a real broker (ADR 0030's
+// amendment), inside expire_after's three heartbeats -- and keeping alive
+// costs nothing more.
 #define REPORT_KEEPALIVE_S 60u
 
 // ESTIMATE: how long a connection attempt may take before it is given up --

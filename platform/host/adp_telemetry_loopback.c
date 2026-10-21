@@ -4,7 +4,8 @@
 
 #include <string.h>
 
-// MQTT 3.1.1, 3.1.2.10: one and a half keepalives without a packet.
+// MQTT 3.1.1, 3.1.2.10: one and a half keepalives without a packet from the
+// client, which pings at least once a keepalive.
 #define KEEPALIVE_GRACE_NUM 3u
 #define KEEPALIVE_GRACE_DEN 2u
 #define MS_PER_S 1000u
@@ -178,6 +179,7 @@ static void pump(adp_telemetry_loopback_t *c)
     loopback_broker_t *b = c->broker;
     while (c->connected && c->link && !b->stalled && c->out_count > 0u) {
         const loopback_message_t *m = &c->outbox[c->out_head];
+        c->last_out_ms = now_ms(b);
         b->messages++;
         tap(b, LOOPBACK_EVENT_MESSAGE, c->client_id, m, now_ms(b));
         take(b, m);
@@ -311,6 +313,7 @@ static hal_status_t lb_connect(port_telemetry_t *port, const telemetry_session_t
     c->out_head = 0u;
     c->out_count = 0u;
     c->connected = true;
+    c->last_out_ms = now_ms(b);
     b->sessions++;
     tap(b, LOOPBACK_EVENT_CONNECTED, c->client_id, NULL, now_ms(b));
     return HAL_OK;
@@ -379,6 +382,7 @@ static hal_status_t lb_subscribe(port_telemetry_t *port, const char *filter, uin
     if (slot == ADP_TELEMETRY_LOOPBACK_MAX_SUBSCRIPTIONS) {
         return HAL_ERR_NO_MEM;
     }
+    c->last_out_ms = now_ms(c->broker);
     memset(c->subs[slot].filter, 0, sizeof(c->subs[slot].filter));
     memcpy(c->subs[slot].filter, filter, strlen(filter));
     c->subs[slot].qos = qos;
@@ -498,18 +502,30 @@ void adp_telemetry_loopback_set_link(adp_telemetry_loopback_t *c, bool present, 
     if (!c->connected) {
         return;
     }
+    const uint64_t heard_ms = loopback_last_heard_ms(c, at_ms);
     end_session(c);
     tap(b, LOOPBACK_EVENT_DROPPED, c->client_id, NULL, at_ms);
-    // A keepalive of 0 is never dropped for silence: the will waits for a
-    // connection that takes the id over.
+    // Counted from the last packet the broker heard, not from the moment the
+    // network went, which the broker cannot see. A keepalive of 0 is never
+    // dropped for silence: the will waits for a connection that takes the id
+    // over.
     if (c->keepalive_s > 0u) {
         const uint64_t grace_ms =
             (uint64_t)c->keepalive_s * MS_PER_S * KEEPALIVE_GRACE_NUM / KEEPALIVE_GRACE_DEN;
-        will_pending(b, c, at_ms + grace_ms, false);
+        will_pending(b, c, heard_ms + grace_ms, false);
     } else {
         will_pending(b, c, LOOPBACK_BROKER_NO_DEADLINE, false);
     }
     wake(c);
+}
+
+uint64_t loopback_last_heard_ms(const adp_telemetry_loopback_t *c, uint64_t at_ms)
+{
+    const uint64_t keepalive_ms = (uint64_t)c->keepalive_s * MS_PER_S;
+    if (keepalive_ms == 0u || at_ms <= c->last_out_ms) {
+        return c->last_out_ms;
+    }
+    return c->last_out_ms + (at_ms - c->last_out_ms) / keepalive_ms * keepalive_ms;
 }
 
 void adp_telemetry_loopback_net_listener(void *client, bool present, uint64_t at_ms)

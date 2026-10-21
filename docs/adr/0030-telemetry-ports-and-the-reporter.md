@@ -95,7 +95,9 @@ offline, connecting, online:
   does not provide -- then the state, at once.
 - **The last will** is "offline", retained, on the status topic; the keepalive
   60 s (`REPORT_KEEPALIVE_S`). A device that vanishes is offline in Home
-  Assistant 90 s later, before `expire_after`'s three heartbeats.
+  Assistant 90 s later, before `expire_after`'s three heartbeats. (*Corrected by
+  the amendment*: 90 s after the last packet the broker heard, which a real
+  broker counts from -- 30 to 90 s after the device vanished; 34 s seen.)
 - **Home Assistant's birth** -- "online" on its status topic -- makes the nine
   configs due again. Only a live one: a birth the broker delivers from its
   store when the subscription is made (MQTT 3.1.1 marks those retained) says
@@ -201,7 +203,9 @@ drift; the simulator's CLI test holds one of them.
   I2C device models. A broker as MQTT 3.1.1 has it -- retained messages, `+`
   and `#`, sessions by client id starting clean, a second connection with an
   id taking the session over, the last will one and a half keepalives after
-  the network went or at once on a takeover, deliveries from the store marked
+  the network went (*corrected by the amendment*: after the last packet the
+  broker heard, with the client's pings) or at once on a takeover, deliveries
+  from the store marked
   retained -- and a client of it behind `port_telemetry`, whose queue fills
   while the broker is stalled. Scriptable: attempts refused at once
   (`HAL_ERR_IO`) or never answered, and a stall. The simulator's network
@@ -228,7 +232,8 @@ drift; the simulator's CLI test holds one of them.
 - *Unit tests*: the publish policy at every delta's boundary, every status,
   the heartbeat to the millisecond, the cycle, a restarted clock; the reporter
   on a fake clock -- the first session's messages in order, the heartbeat, an
-  outage (nothing published, the will at 90 s, the next session with
+  outage (nothing published, the will at 90 s -- 90 s after the last message
+  since the amendment -- the next session with
   everything and the newest state), a session dropped with the network up (the
   old will at the takeover, before the new "online"), Home Assistant's birth
   live and retained, a refused publish and the newest reading after it,
@@ -360,8 +365,9 @@ threads are still ending; past that `connect()` says `HAL_ERR_IO` at once.
   broker): the session goes **silent** -- its thread is cancelled where it
   waits on the socket, and the socket left open, unread and unwritten, as a
   board's is when Wi-Fi goes. The broker drops it one and a half keepalives
-  later and publishes the will (seen in the broker's log: "has exceeded
-  timeout", 15 s after the cut with the contract's 10 s keepalive); when the
+  after the last packet it heard and publishes the will (seen in the broker's
+  log: "has exceeded timeout", 15 s after the cut with the contract's 10 s
+  keepalive, which publishes just before it cuts); when the
   network comes back the old socket is closed, and a broker that has not yet
   dropped the session publishes the will then.
 - The broker going -- a restart, a refusal: the session is over, and the
@@ -509,8 +515,40 @@ refused connection as quickly, so the board will wait the same. A remedy is a po
 change -- a way for `port_telemetry` to say that an attempt is over -- and is not made
 here; it is worth weighing with the board's adapter.
 
+**An outage**, the same set-up, `--duration 420 --net-script "120:down;300:up"`, watched
+with `mosquitto_sub -F '%I %t %p'` on the status topic and in Home Assistant's activity
+(local time, UTC+3):
+
+| | the simulator, from its start at about 11:01:21 | the status topic, Home Assistant |
+|---|---|---|
+| session 1 | `session up session=1` at 3.0 s; the state at 3.0 s, the heartbeat at 63.0 s | "online"; available from 11:01:24 |
+| the cut | `[net] connecting`, `session lost session=1 why=network` at 120.0 s | nothing |
+| the will | -- | "offline" at 11:03:55, about 154 s: unavailable |
+| the network back | `[net] up` at 303.0 s, `session up session=2`, the configs and the state | "online" at 11:06:24: available |
+| the end | `the session ends without a DISCONNECT` at 420 s | "offline" at 11:08:21: unavailable |
+
+**Found: the will came 34 s after the cut, not 90 s** as this amendment, the 4b text and
+`report_limits.h` had it. A broker counts one and a half keepalives from the last packet it
+heard (MQTT 3.1.1, 3.1.2.10) -- here the heartbeat at 63.0 s, and 63 + 90 = 153 s. Since the
+heartbeat or libmosquitto's ping goes out at least once a keepalive, a device that vanishes is
+offline 30 to 90 s later, never more. The statements were corrected.
+
+**And the broker model made exact.** `adp_telemetry_loopback.c` counted from the moment the
+network went, so it published the will up to a keepalive later than a real broker, and its
+tests held that. It now counts as a broker does: one and a half keepalives after the last
+packet it heard from the client -- its CONNECT, a SUBSCRIBE, a message the broker took (one
+waiting in a stall is not heard) or a ping, which the client sends whenever a keepalive passes
+without another packet (`loopback_last_heard_ms()`, the pings worked out rather than stored).
+The tests follow: `test_telemetry_loopback` checks the will after the CONNECT, a message, a
+message held by a stall, the pings, and a drop just before and at a ping -- half a keepalive to
+one and a half after the drop; `test_reporter`'s outage expects the will 90 s after the last
+state message, 30 to 90 s after the drop; `tests/cli/simulator_telemetry.cmake` finds the last
+message before its outage (585 s) and expects the will 90 s later (675 s, where the model had
+690 s). Each of the three was seen failing against the old model, and the `port_telemetry`
+contract, which waits one and a half keepalives after its cut, passes either way. Nothing the
+reporter decides depended on the difference.
+
 **Still to see**: the history graphs and the long-term statistics (Developer tools,
-Statistics, after the first full hour); an outage with `--net-script "600:down;1200:up"`
--- unavailable 90 s after the cut, back after it; a broker with a password, `--mqtt-user`
+Statistics, after the first full hour); a broker with a password, `--mqtt-user`
 and `HAC_MQTT_PASSWORD` (seen only in `tests/cli/simulator_broker.py`); and Home
 Assistant on its own machine with the Mosquitto add-on, the way the board will meet it.
