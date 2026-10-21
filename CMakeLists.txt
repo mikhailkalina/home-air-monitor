@@ -25,6 +25,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 # With SIM_GUI=OFF, platform/host does not even look for SDL2, so the
 # ci-headless preset configures and builds on a machine that has none.
 option(SIM_GUI "Build the SDL2 simulator window" ON)
+# The simulator's way to a real MQTT broker, and so to a Home Assistant: over
+# libmosquitto, when it is found (platform/host/CMakeLists.txt). Host only:
+# nothing of it reaches a firmware image.
+option(SIM_MQTT "Build the simulator's MQTT client over libmosquitto, when it is found" ON)
 # Off by default and in CI: Bosch's BSEC2 library is downloaded separately and
 # never committed (THIRD_PARTY_NOTICES.md). With it, the BME68x's BSEC source
 # and its tests build against the x86-64 Linux library Bosch ships

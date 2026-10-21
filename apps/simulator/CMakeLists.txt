@@ -7,13 +7,20 @@
 #
 # hac_platform_host_gui exists only when SIM_GUI is ON and SDL2 was found; it
 # carries the HAC_SIM_GUI definition, so main.c falls back to the headless
-# display when it is absent.
+# display when it is absent. hac_platform_host_mqtt, the same for
+# libmosquitto and --broker.
 
 add_executable(simulator main.c)
 target_link_libraries(simulator PRIVATE hac_core hac_drivers hac_platform_host)
 
 if(TARGET hac_platform_host_gui)
     target_link_libraries(simulator PRIVATE hac_platform_host_gui)
+endif()
+
+# hac_platform_host_mqtt exists only when libmosquitto was found; it carries
+# HAC_SIM_MQTT, so main.c offers --broker only then.
+if(TARGET hac_platform_host_mqtt)
+    target_link_libraries(simulator PRIVATE hac_platform_host_mqtt)
 endif()
 
 # board_config.h only, for the addresses the board's sensors answer at -- it

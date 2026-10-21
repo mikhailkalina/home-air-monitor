@@ -87,11 +87,29 @@ add_test(NAME test_port_input_contract COMMAND test_port_input_contract)
 # the shared bodies against the simulator's network and the loopback client
 # of the in-memory broker -- each taken away and given back, the broker
 # stalled -- plus broken wrappers that prove each body catches what it
-# claims to. The board's Wi-Fi and MQTT adapters (phase 4c) are to run the
-# same bodies in the test app.
+# claims to. The board's Wi-Fi and MQTT adapters are to run the same bodies
+# in the test app.
 foreach(test IN ITEMS test_port_net_contract test_port_telemetry_contract)
     add_executable(${test} ${test}.c)
     target_link_libraries(${test} PRIVATE hac_contract_bodies hac_platform_host hac_test_support)
     hac_apply_warnings(${test})
     add_test(NAME ${test} COMMAND ${test})
 endforeach()
+
+# port_telemetry against libmosquitto and a real broker as well, where the
+# build has the client (docs/adr/0030, amendment "The simulator on a real
+# broker"): a private mosquitto started from the binary found at configure
+# time (HAC_MOSQUITTO_BROKER, tests/CMakeLists.txt), or the broker
+# HAC_TEST_MQTT_BROKER names. On real time, so this run takes half a minute.
+if(TARGET hac_platform_host_mqtt)
+    target_sources(test_port_telemetry_contract PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../support/mqtt_test_broker.c)
+    target_link_libraries(test_port_telemetry_contract PRIVATE hac_platform_host_mqtt)
+    target_compile_definitions(test_port_telemetry_contract PRIVATE
+        HAC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+    if(HAC_MOSQUITTO_BROKER)
+        target_compile_definitions(test_port_telemetry_contract PRIVATE
+            HAC_MOSQUITTO_BROKER="${HAC_MOSQUITTO_BROKER}")
+    endif()
+    set_tests_properties(test_port_telemetry_contract PROPERTIES TIMEOUT 180)
+endif()

@@ -4,17 +4,35 @@
 // loopback client of the in-memory broker
 // (platform/host/adp_telemetry_loopback.h) -- its network taken away and
 // given back, the broker stalled and released. Then against six deliberately
-// broken wrappers over it, each of which the suite must catch.
+// broken wrappers over it, each of which the suite must catch. Then against
+// the libmosquitto client (platform/host/adp_telemetry_mqtt.h) and a real
+// broker: a private mosquitto this runner starts, or the one
+// HAC_TEST_MQTT_BROKER names -- on real time, its network taken away and
+// given back, the broker never stalled. A build without libmosquitto, or
+// without a broker to run, says that case was not exercised.
+
+// getenv() and getpid() for the real broker's case: POSIX, before the first
+// system header (platform/host/host_time.c says why).
+#define _POSIX_C_SOURCE 200809L
 
 #include "port_telemetry_contract.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "adp_clock_virtual.h"
 #include "adp_telemetry_loopback.h"
 #include "contract_print.h"
 #include "hac_test.h"
+
+#if defined(HAC_SIM_MQTT)
+#include <unistd.h>
+
+#include "adp_telemetry_mqtt.h"
+#include "host_time.h"
+#include "mqtt_test_broker.h"
+#endif
 
 static adp_clock_virtual_t g_clock;
 static loopback_broker_t g_broker;
@@ -256,10 +274,164 @@ static void the_suite_catches_each_broken_wrapper(void)
     }
 }
 
+// --- libmosquitto and a real broker -------------------------------------------------
+
+// The environment that names a broker of one's own for this case, and the
+// user and password it takes there -- the simulator's password variable.
+#define BROKER_ENV "HAC_TEST_MQTT_BROKER"
+#define BROKER_USER_ENV "HAC_TEST_MQTT_USER"
+#define BROKER_PASSWORD_ENV "HAC_MQTT_PASSWORD"
+
+#define WHY_MAX 256u
+
+#if defined(HAC_SIM_MQTT)
+
+// A real broker lives in real time, and so does this case's clock.
+static uint64_t g_real_origin_ms;
+
+static uint64_t real_now_ms(const port_clock_t *self)
+{
+    (void)self;
+    return host_monotonic_ms() - g_real_origin_ms;
+}
+
+static uint64_t real_wall_ms(const port_clock_t *self)
+{
+    (void)self;
+    return 0u;
+}
+
+static void real_delay_ms(const port_clock_t *self, uint32_t ms)
+{
+    (void)self;
+    host_sleep_ms(ms);
+}
+
+static void real_advance(void *ctx, uint64_t ms)
+{
+    (void)ctx;
+    host_sleep_ms((uint32_t)ms);
+}
+
+static void mqtt_cut(void *ctx)
+{
+    adp_telemetry_mqtt_set_link((adp_telemetry_mqtt_t *)ctx, false);
+}
+
+static void mqtt_restore(void *ctx)
+{
+    adp_telemetry_mqtt_set_link((adp_telemetry_mqtt_t *)ctx, true);
+}
+
+static void the_libmosquitto_client_satisfies_the_contract_with_a_real_broker(void)
+{
+    adp_telemetry_mqtt_url_t where;
+    memset(&where, 0, sizeof(where));
+    mqtt_test_broker_t broker;
+    memset(&broker, 0, sizeof(broker));
+    char why[WHY_MAX];
+
+    const char *url = getenv(BROKER_ENV);
+    if (url != NULL && url[0] != '\0') {
+        if (adp_telemetry_mqtt_parse_url(url, &where, why, sizeof(why)) != HAL_OK) {
+            printf("%s: %s\n", BROKER_ENV, why);
+            HAC_CHECK(false);
+            return;
+        }
+    } else {
+#if defined(HAC_MOSQUITTO_BROKER)
+        // A broker found when the build was configured that does not run is
+        // a broken machine, not a missing one: it fails.
+        const bool started = mqtt_test_broker_start(&broker, HAC_MOSQUITTO_BROKER, HAC_TEST_TMP_DIR,
+                                                    why, sizeof(why));
+        if (!started) {
+            printf("contract port_telemetry adp_telemetry_mqtt: cannot start %s: %s\n",
+                   HAC_MOSQUITTO_BROKER, why);
+        }
+        HAC_CHECK(started);
+        if (!started) {
+            return;
+        }
+        (void)snprintf(where.host, sizeof(where.host), "127.0.0.1");
+        where.port = broker.port;
+#else
+        printf("contract port_telemetry adp_telemetry_mqtt: not exercised: no mosquitto broker "
+               "was found when this build was configured, and %s names none\n",
+               BROKER_ENV);
+        return;
+#endif
+    }
+
+    const port_clock_t clock = {
+        .now_ms = real_now_ms, .wall_ms = real_wall_ms, .delay_ms = real_delay_ms, .impl = NULL};
+    g_real_origin_ms = host_monotonic_ms();
+    const adp_telemetry_mqtt_config_t cfg = {
+        .host = where.host,
+        .port = where.port,
+        .username = getenv(BROKER_USER_ENV),
+        .password = (getenv(BROKER_USER_ENV) != NULL) ? getenv(BROKER_PASSWORD_ENV) : NULL,
+        .log = NULL,
+    };
+    adp_telemetry_mqtt_t *client = adp_telemetry_mqtt_create(&cfg, why, sizeof(why));
+    HAC_CHECK(client != NULL);
+    if (client == NULL) {
+        printf("adp_telemetry_mqtt_create: %s\n", why);
+        mqtt_test_broker_stop(&broker);
+        return;
+    }
+
+    // An id and a subtree of this process's own, so that runs side by side
+    // -- the debug and the ASan builds' -- never take each other's sessions.
+    char client_id[PORT_TELEMETRY_CLIENT_ID_MAX + 1u];
+    char root[PORT_TELEMETRY_CONTRACT_ROOT_MAX + 1u];
+    (void)snprintf(client_id, sizeof(client_id), "hac-contract-%ld", (long)getpid());
+    (void)snprintf(root, sizeof(root), "hac-contract/mqtt-%ld", (long)getpid());
+
+    port_telemetry_contract_env_t env;
+    memset(&env, 0, sizeof(env));
+    env.clock = &clock;
+    env.advance = real_advance;
+    env.client_id = client_id;
+    env.topic_root = root;
+    env.cut = mqtt_cut;
+    env.restore = mqtt_restore;
+    env.stall = NULL;  // a real broker takes what it is sent
+    env.ctx = client;
+    printf("contract port_telemetry adp_telemetry_mqtt: libmosquitto %s, broker %s:%u%s\n",
+           adp_telemetry_mqtt_library_version(), where.host, (unsigned)where.port,
+           (broker.pid != 0) ? " (private)" : "");
+    contract_print_ctx_t ctx = {.port = "port_telemetry", .implementation = "adp_telemetry_mqtt"};
+    HAC_CHECK_EQ_INT((int)port_telemetry_contract_run(adp_telemetry_mqtt_port(client), &env,
+                                                      report_to_hac_test, &ctx),
+                     0);
+
+    const adp_telemetry_mqtt_stats_t st = adp_telemetry_mqtt_stats(client);
+    printf("contract port_telemetry adp_telemetry_mqtt: %u attempts, %u sessions, %u severed, "
+           "%u published, %u acknowledged, %u received\n",
+           st.attempts, st.sessions, st.severed, st.published, st.acknowledged, st.received);
+    adp_telemetry_mqtt_destroy(client);
+    mqtt_test_broker_stop(&broker);
+    if (broker.log_path[0] != '\0') {
+        printf("contract port_telemetry adp_telemetry_mqtt: the broker's log is %s\n",
+               broker.log_path);
+    }
+}
+
+#else
+
+static void the_libmosquitto_client_satisfies_the_contract_with_a_real_broker(void)
+{
+    printf("contract port_telemetry adp_telemetry_mqtt: not exercised: this build has no "
+           "libmosquitto (platform/host/CMakeLists.txt)\n");
+}
+
+#endif
+
 int main(void)
 {
     HAC_RUN(the_loopback_client_satisfies_the_port_telemetry_contract);
     HAC_RUN(a_runner_without_the_network_or_the_broker_is_told_so);
     HAC_RUN(the_suite_catches_each_broken_wrapper);
+    HAC_RUN(the_libmosquitto_client_satisfies_the_contract_with_a_real_broker);
     return hac_test_summary();
 }
