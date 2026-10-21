@@ -596,9 +596,11 @@ Ctrl-C (unavailable at once, the will), and an outage (`--net-script "120:down;3
 will 34 s after the cut, 90 s after the last packet the broker had heard -- a real broker counts
 the keepalive from there, MQTT 3.1.1 3.1.2.10, so a vanished device is offline 30 to 90 s later;
 the loopback broker model now counts the same way, with the client's pings, where it counted
-from the cut and was up to a keepalive late). Still to
-see: history and long-term statistics, a broker with a password, Home Assistant on its own
-machine (the amendment's list).
+from the cut and was up to a keepalive late). History and long-term statistics seen the same
+day, 2 h 37 min from a copy of Home Assistant's database: seven statistics, the hourly means
+within 0.04 % of the recording's; and two simulators with one `--device-id` take each other's
+session over for as long as both run, so each needs its own (its help says so). Still to see:
+a broker with a password, Home Assistant on its own machine (the amendment's list).
 
 Phase 4d on branch `phase-4d-network-on-screen` (ADR 0031): the network on the screen. The
 status bar says `online` (an MQTT session -- Home Assistant's word), `no broker` (the Wi-Fi up,
