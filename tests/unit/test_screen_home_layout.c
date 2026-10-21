@@ -13,6 +13,11 @@
 // baseline that would make two things touch fails here before it reaches the
 // glass.
 //
+// The status bar's link -- "online", "no broker", "no Wi-Fi", nothing
+// (docs/adr/0031-the-network-on-the-screen.md) -- is held to the same: every
+// word beside the widest battery text, and a change of word moving nothing
+// but the word.
+//
 // The golden tests (tests/golden/) show what the screen looks like; this one
 // says it still fits when the numbers are at their widest.
 
@@ -185,9 +190,15 @@ static void check_layout(const char *what)
                                SCREEN_HOME_HEAD_RULE_Y - 1, LINE_CLEARANCE) == 2,
                    "the CO2 label stays clear of the reading", what, __LINE__);
 
-    // The two halves of the status bar and of the footer stay apart.
+    // The two halves of the status bar and of the footer stay apart -- in the
+    // bar, the title and the battery: the link's place may hold a wider gap
+    // of its own.
     hac_test_check(widest_gap(0, SCREEN_HOME_BAR_RULE_Y - 1) >= HALVES_CLEARANCE,
                    "the status bar's halves stay apart", what, __LINE__);
+    const int32_t title_end = m + gfx_measure_text_ink(&font_dejavu_sans_40, "Home Air Monitor");
+    hac_test_check(
+        clear(title_end, 0, title_end + HALVES_CLEARANCE - 1, SCREEN_HOME_BAR_RULE_Y - 1),
+        "the title and the battery stay apart", what, __LINE__);
     hac_test_check(widest_gap(SCREEN_HOME_FOOT_RULE_Y + rule, PANEL_H - 1) >= HALVES_CLEARANCE,
                    "the footer's halves stay apart", what, __LINE__);
 }
@@ -204,7 +215,7 @@ static air_reading_t widest_numbers(void)
     r.pressure_hpa = measurement_ok(1100.0f, RENDER_TS_MS, SOURCE_ID);  // the BME68x's range
     r.gas_resistance_ohm = measurement_ok(9999000.0f, RENDER_TS_MS, SOURCE_ID);  // "9999" kOhm
     r.battery_percent = measurement_ok(100.0f, RENDER_TS_MS, SOURCE_ID);
-    r.net_connected = true;
+    r.link = LINK_NO_BROKER;  // the widest word the bar's link has
     r.wall_time_ms = RENDER_WALL_MS;
     return r;
 }
@@ -399,6 +410,62 @@ static void the_longest_calibration_notes_fit(void)
     check_layout("5 not calibrated");
 }
 
+// Every link word -- and none -- beside the widest battery texts; and from
+// one word to another nothing changes on the screen but the word, in the
+// place the bar keeps for the widest of them.
+static void every_link_word_fits_and_moves_nothing_else(void)
+{
+    static const link_status_t k_links[] = {LINK_OFF, LINK_UNKNOWN, LINK_NO_WIFI, LINK_NO_BROKER,
+                                            LINK_ONLINE};
+    static const value_status_t k_battery[] = {VAL_OK, VAL_WARMUP, VAL_ERROR};
+    for (size_t b = 0u; b < sizeof(k_battery) / sizeof(k_battery[0]); ++b) {
+        for (size_t i = 0u; i < sizeof(k_links) / sizeof(k_links[0]); ++i) {
+            air_reading_t r = widest_numbers();
+            if (k_battery[b] != VAL_OK) {
+                r.battery_percent = measurement_status(k_battery[b], RENDER_TS_MS, SOURCE_ID);
+            }
+            r.link = k_links[i];
+            render(&r);
+            check_layout(link_status_name(k_links[i]));
+        }
+    }
+
+    // Against the frame with the place kept and no word in it, only the
+    // word's own columns differ.
+    const font_t *font = &font_dejavu_sans_40;
+    int32_t widest = 0;
+    for (size_t i = 2u; i < sizeof(k_links) / sizeof(k_links[0]); ++i) {
+        const int32_t w = gfx_measure_text_ink(font, view_model_link_text(k_links[i]));
+        widest = (w > widest) ? w : widest;
+    }
+    const int32_t word_left = PANEL_W - SCREEN_HOME_MARGIN - widest;
+    air_reading_t r = widest_numbers();
+    r.link = LINK_UNKNOWN;
+    render(&r);
+    static uint8_t empty[SCREEN_HOME_BAR_RULE_Y][PANEL_W];
+    for (int32_t y = 0; y < SCREEN_HOME_BAR_RULE_Y; ++y) {
+        for (int32_t x = 0; x < PANEL_W; ++x) {
+            empty[y][x] = framebuffer_get_pixel(&g_fb, x, y);
+        }
+    }
+    for (size_t i = 2u; i < sizeof(k_links) / sizeof(k_links[0]); ++i) {
+        r.link = k_links[i];
+        render(&r);
+        bool only_the_word = true;
+        bool word_drawn = false;
+        for (int32_t y = 0; y < SCREEN_HOME_BAR_RULE_Y; ++y) {
+            for (int32_t x = 0; x < PANEL_W; ++x) {
+                if (framebuffer_get_pixel(&g_fb, x, y) != empty[y][x]) {
+                    word_drawn = true;
+                    only_the_word = only_the_word && x >= word_left;
+                }
+            }
+        }
+        hac_test_check(only_the_word && word_drawn, link_status_name(k_links[i]), __FILE__,
+                       __LINE__);
+    }
+}
+
 // The headline's unit and mark never share a pixel with any reading, and
 // never move. When "ppm" followed the reading, a four-digit reading was drawn
 // over the place a three-digit one had left the unit, and the unit was drawn
@@ -505,6 +572,7 @@ int main(void)
     HAC_RUN(the_widest_iaq_bands_fit);
     HAC_RUN(the_longest_calibration_notes_fit);
     HAC_RUN(the_widest_update_times_fit);
+    HAC_RUN(every_link_word_fits_and_moves_nothing_else);
     HAC_RUN(the_co2_unit_and_mark_stay_off_every_reading);
 
     free(g_pixels);

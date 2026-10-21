@@ -13,6 +13,13 @@ event loop and no adapters to give it: nothing is sent from the board until
 phase 4c brings Wi-Fi and esp-mqtt behind these ports. Nothing has been seen
 in a real broker or a real Home Assistant.
 
+**Amended 2026-10-21 by ADR 0031** (phase 4d, the network on the screen): the
+status bar says `online`, `no broker` or `no Wi-Fi` once the link has held
+that state for a minute, so the network now reaches the screen's reading --
+held, as `air_reading_t.link` -- and an outage longer than a minute redraws
+twice. `telemetry_connected` is gone; `net_connected` and the signal stay the
+state message's. "Not decided here: the status bar", below, is decided there.
+
 **Amended 2026-10-20, phase 4c** (branch `phase-4c-simulator-mqtt`; "Amendment
 (phase 4c): the simulator on a real broker", at the end): the simulator
 reaches a real broker over libmosquitto, verified against mosquitto on the
@@ -285,7 +292,9 @@ next sub-phase's since the amendment below):
   while MQTT works. Feeding it the link costs two status redraws per outage,
   and Wi-Fi that flaps would flap the panel; it wants a rule of its own --
   a hysteresis, or the session rather than the link -- when phase 4c shows how
-  the link behaves.
+  the link behaves. **Decided by ADR 0031**: a hold of a minute on the link
+  and the session together, before the board has shown how its link behaves
+  -- the minute an estimate the board's days replace.
 - *A real broker from the simulator* (architecture section 10: "the simulator
   appears in Home Assistant"). A host adapter over libmosquitto is a new
   dependency -- dual-licensed EPL-2.0 and EDL-1.0, as far as known here, not

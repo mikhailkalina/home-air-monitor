@@ -72,6 +72,9 @@ typedef struct {
     const sensor_manager_t *sensors;  // may be NULL
     diag_recorder_t recorder;
     const char *clock_source;  // may be NULL (diagnostics_view.h)
+    // The reporter and its network (reporter_status()), or NULL without
+    // telemetry; the held link the bar shows is the reading's.
+    const reporter_status_t *network;
 } screen_inputs_t;
 
 // What a redraw that reached the panel carried.

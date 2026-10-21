@@ -2,8 +2,10 @@
 //
 // The diagnostics screen's view model (core/ui/diagnostics_view.h): each
 // source's state, failures and restarts; each reading's status, accuracy and
-// source; the clock and the recorder -- and diag_view_equal(), which decides
-// whether the screen redraws, ignoring what changes at every poll.
+// source; the clock and the recorder; the network -- and diag_view_equal(),
+// which decides whether the screen redraws, ignoring what changes at every
+// poll and the network's words that are as of the drawing
+// (docs/adr/0031-the-network-on-the-screen.md).
 
 #include <stdint.h>
 #include <string.h>
@@ -204,6 +206,215 @@ static void without_a_sensor_manager_there_are_no_sources(void)
     HAC_CHECK(strcmp(v.fields[DIAG_FIELD_CO2].source, "") == 0);
 }
 
+// --- the network -------------------------------------------------------------------
+
+#define NOW_MS 100000000u  // the monotonic time the reading's wall time was read at
+
+static const time_zone_t k_vilnius_utc2 = {120, 0, {0u, 0u, 0u, 0}, {0u, 0u, 0u, 0}};
+
+// A session working: the simulator's network, 412 messages, the last 30 s ago.
+static reporter_status_t online(void)
+{
+    reporter_status_t n;
+    memset(&n, 0, sizeof(n));
+    n.link = LINK_ONLINE;
+    n.has_net = true;
+    n.net = NET_UP;
+    n.rssi_dbm = -61;
+    strcpy(n.net_info.ssid, "sim-ap");
+    n.net_info.ipv4[0] = 192u;
+    n.net_info.ipv4[1] = 0u;
+    n.net_info.ipv4[2] = 2u;
+    n.net_info.ipv4[3] = 10u;
+    n.state = REPORTER_ONLINE;
+    n.state_messages = 412u;
+    n.published = true;
+    n.last_published_ms = NOW_MS - 30000u;
+    return n;
+}
+
+static diag_view_t build_net(const reporter_status_t *n, link_status_t held)
+{
+    g_r.link = held;
+    const diag_facts_t f = {
+        .reading = &g_r,
+        .sensors = &g_mgr,
+        .recorder = {.present = true, .state = RECORDER_ON},
+        .clock_source = "rtc",
+        .network = n,
+        .now_ms = NOW_MS,
+        .zone = &k_vilnius_utc2,
+    };
+    diag_view_t v;
+    diag_view_build(&v, &f);
+    return v;
+}
+
+static void a_working_session_and_its_network(void)
+{
+    setup();
+    const reporter_status_t n = online();
+    const diag_view_t v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK(v.network_present);
+    HAC_CHECK_EQ_INT(v.link, LINK_ONLINE);
+    HAC_CHECK(strcmp(v.wifi_state, "up") == 0 && !v.wifi_trouble);
+    HAC_CHECK(strcmp(v.ssid, "sim-ap") == 0);
+    HAC_CHECK(strcmp(v.rssi, "-61 dBm") == 0);
+    HAC_CHECK(strcmp(v.address, "192.0.2.10") == 0);
+    HAC_CHECK(strcmp(v.broker_state, "online") == 0 && !v.broker_trouble);
+    HAC_CHECK(strcmp(v.sent, "sent 412") == 0);
+    HAC_CHECK(strcmp(v.refused, "refused 0") == 0 && !v.refused_trouble);
+    // 2026-10-16T11:07:12Z, at UTC+2.
+    HAC_CHECK(strcmp(v.last, "last 13:07") == 0);
+    // The bar's word, drawn in the title line: what redraws the network.
+    HAC_CHECK(strcmp(v.link_text, "online") == 0 && !v.link_trouble);
+    diag_view_t w = build_net(&n, LINK_NO_BROKER);
+    HAC_CHECK(strcmp(w.link_text, "no broker") == 0 && w.link_trouble);
+    w = build_net(&n, LINK_NO_WIFI);
+    HAC_CHECK(strcmp(w.link_text, "no Wi-Fi") == 0 && w.link_trouble);
+    w = build_net(&n, LINK_UNKNOWN);
+    HAC_CHECK(strcmp(w.link_text, "") == 0 && !w.link_trouble);
+}
+
+static void the_network_in_trouble(void)
+{
+    setup();
+    reporter_status_t n = online();
+    n.link = LINK_NO_WIFI;
+    n.net = NET_CONNECTING;
+    n.rssi_dbm = PORT_NET_RSSI_NONE;
+    memset(n.net_info.ipv4, 0, sizeof(n.net_info.ipv4));
+    n.state = REPORTER_CONNECTING;
+    n.refusals = 3u;
+    n.last_published_ms = NOW_MS - 14u * 3600000u;  // late the evening before
+    diag_view_t v = build_net(&n, LINK_NO_WIFI);
+    HAC_CHECK(strcmp(v.wifi_state, "joining") == 0 && v.wifi_trouble);
+    HAC_CHECK(strcmp(v.ssid, "sim-ap") == 0);  // the name asked for, also while not up
+    HAC_CHECK(v.rssi[0] == '\0' && v.address[0] == '\0');
+    HAC_CHECK(strcmp(v.broker_state, "offline") == 0 && v.broker_trouble);
+    HAC_CHECK(strcmp(v.refused, "refused 3") == 0 && v.refused_trouble);
+    HAC_CHECK(strcmp(v.last, "last 15.10 23:07") == 0);
+
+    n.net = NET_FAILED;
+    v = build_net(&n, LINK_NO_WIFI);
+    HAC_CHECK(strcmp(v.wifi_state, "failed") == 0);
+    n.net = NET_DOWN;
+    v = build_net(&n, LINK_NO_WIFI);
+    HAC_CHECK(strcmp(v.wifi_state, "off") == 0);
+    n.refusals = 5000u;
+    v = build_net(&n, LINK_NO_WIFI);
+    HAC_CHECK(strcmp(v.refused, "refused 999+") == 0);
+}
+
+static void the_last_message_without_a_time_to_give(void)
+{
+    setup();
+    reporter_status_t n = online();
+    n.published = false;
+    diag_view_t v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK(strcmp(v.last, "last -") == 0);  // none yet
+
+    n = online();
+    g_r.wall_time_ms = 0u;  // the clock not set
+    v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK(strcmp(v.last, "last --:--") == 0);
+
+    setup();
+    n.last_published_ms = NOW_MS + 1u;  // the monotonic clock restarted
+    v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK(strcmp(v.last, "last --:--") == 0);
+}
+
+static void messages_sent_in_thousands_past_four_digits(void)
+{
+    setup();
+    static const struct {
+        uint32_t n;
+        const char *text;
+    } cases[] = {
+        {0u, "sent 0"},
+        {9999u, "sent 9999"},
+        {10000u, "sent 10k"},
+        {123456u, "sent 123k"},
+        {999999u, "sent 999k"},
+        {1000000u, "sent 999k+"},
+        {UINT32_MAX, "sent 999k+"},
+    };
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reporter_status_t n = online();
+        n.state_messages = cases[i].n;
+        const diag_view_t v = build_net(&n, LINK_ONLINE);
+        hac_test_check(strcmp(v.sent, cases[i].text) == 0, cases[i].text, __FILE__, __LINE__);
+    }
+}
+
+static void a_name_that_is_not_text_is_shown_with_question_marks(void)
+{
+    setup();
+    reporter_status_t n = online();
+    strcpy(n.net_info.ssid, "caf\xc3\xa9\x01net");  // UTF-8 and a control octet
+    diag_view_t v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK(strcmp(v.ssid, "caf???net") == 0);
+    memset(n.net_info.ssid, 'W', PORT_NET_SSID_MAX);  // the longest name there can be
+    n.net_info.ssid[PORT_NET_SSID_MAX] = '\0';
+    v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK_EQ_U64(strlen(v.ssid), PORT_NET_SSID_MAX);
+}
+
+static void without_telemetry_both_say_off(void)
+{
+    setup();
+    diag_view_t v = build_net(NULL, LINK_OFF);
+    HAC_CHECK(!v.network_present);
+    HAC_CHECK(strcmp(v.wifi_state, "off") == 0 && !v.wifi_trouble);
+    HAC_CHECK(strcmp(v.broker_state, "off") == 0 && !v.broker_trouble);
+    HAC_CHECK(v.ssid[0] == '\0' && v.sent[0] == '\0' && v.refused[0] == '\0' && v.last[0] == '\0');
+    const reporter_status_t off = {.link = LINK_OFF};
+    v = build_net(&off, LINK_OFF);  // a reporter that never started
+    HAC_CHECK(!v.network_present);
+
+    // A reporter with no network port: the link taken as up.
+    reporter_status_t n = online();
+    n.has_net = false;
+    v = build_net(&n, LINK_ONLINE);
+    HAC_CHECK(strcmp(v.wifi_state, "-") == 0 && !v.wifi_trouble);
+    HAC_CHECK(v.ssid[0] == '\0' && v.rssi[0] == '\0' && v.address[0] == '\0');
+}
+
+// What changes with every message or attempt is as of the drawing; the held
+// link and the network's name redraw.
+static void the_network_redraws_only_for_the_held_link_and_its_name(void)
+{
+    setup();
+    const reporter_status_t n = online();
+    const diag_view_t a = build_net(&n, LINK_ONLINE);
+
+    // The link as it is now gone, an attempt under way, messages sent and
+    // refused, the signal moved: nothing to redraw while the bar's link holds.
+    reporter_status_t m = online();
+    m.link = LINK_NO_WIFI;
+    m.net = NET_CONNECTING;
+    m.rssi_dbm = PORT_NET_RSSI_NONE;
+    memset(m.net_info.ipv4, 0, sizeof(m.net_info.ipv4));
+    m.state = REPORTER_CONNECTING;
+    m.state_messages = 9000u;
+    m.refusals = 2u;
+    m.last_published_ms = NOW_MS - 1000u;
+    const diag_view_t b = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(diag_view_equal(&a, &b));
+
+    // The bar's link changing does.
+    const diag_view_t c = build_net(&m, LINK_NO_WIFI);
+    HAC_CHECK(!diag_view_equal(&b, &c));
+    // So does the network's name, and telemetry coming or going.
+    m = online();
+    strcpy(m.net_info.ssid, "other-ap");
+    const diag_view_t d = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &d));
+    const diag_view_t e = build_net(NULL, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &e));
+}
+
 int main(void)
 {
     HAC_RUN(every_source_with_its_state_and_counts);
@@ -213,5 +424,12 @@ int main(void)
     HAC_RUN(the_clock_and_the_recorder);
     HAC_RUN(equal_ignores_what_changes_every_poll);
     HAC_RUN(without_a_sensor_manager_there_are_no_sources);
+    HAC_RUN(a_working_session_and_its_network);
+    HAC_RUN(the_network_in_trouble);
+    HAC_RUN(the_last_message_without_a_time_to_give);
+    HAC_RUN(messages_sent_in_thousands_past_four_digits);
+    HAC_RUN(a_name_that_is_not_text_is_shown_with_question_marks);
+    HAC_RUN(without_telemetry_both_say_off);
+    HAC_RUN(the_network_redraws_only_for_the_held_link_and_its_name);
     return hac_test_summary();
 }

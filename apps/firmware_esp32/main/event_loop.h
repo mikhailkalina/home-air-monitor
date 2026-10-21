@@ -28,12 +28,19 @@
 // update_policy's and the reporter's. The network and MQTT adapters wake it
 // through event_loop_post_network() when something changed. Until phase 4c
 // brings those adapters, the composition has no reporter to give it.
+//
+// Since phase 4d (docs/adr/0031-the-network-on-the-screen.md) it holds the
+// link the reporter reports (core/app/link_hold.h) and puts the held state
+// into the screen's reading, so the status bar says "online", "no broker" or
+// "no Wi-Fi" once the link has held it for a minute -- and nothing without a
+// reporter; the hold's end is a fourth deadline.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 #define HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 
 #include <stdint.h>
 
+#include "app/link_hold.h"
 #include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
@@ -78,6 +85,7 @@ typedef struct {
     void *facts_ctx;
 
     reporter_t *reporter;  // may be NULL: no telemetry; already reporter_init()-ed
+    link_hold_t *link;     // may be NULL: no link on the screen; already link_hold_init()-ed
 } event_loop_deps_t;
 
 // Starts the FreeRTOS task that runs the pump: forever, it polls the sensor

@@ -24,7 +24,7 @@ static void a_zero_filled_reading_is_unavailable_not_zero_valued(void)
     HAC_CHECK(!measurement_has_value(&r.co2_ppm));
 
     HAC_CHECK(!r.net_connected);
-    HAC_CHECK(!r.telemetry_connected);
+    HAC_CHECK_EQ_INT(r.link, LINK_OFF);  // a reading built without a link shows none
     HAC_CHECK(!r.charging);
     HAC_CHECK_EQ_INT(r.wifi_rssi_dbm, 0);
     HAC_CHECK_EQ_U64(r.boot_count, 0u);

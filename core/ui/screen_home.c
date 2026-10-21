@@ -176,6 +176,25 @@ static void battery_text(char *dst, size_t cap, const vm_field_view_t *battery)
     dst[len] = '\0';
 }
 
+// The place the bar keeps for the link's word: as wide as the widest word
+// (view_model_link_text()), so that one word giving way to another moves
+// nothing beside it -- moving text leaves its old place's pixels driven, and
+// the panel keeps them (docs/adr/0021-measurement-accuracy-and-iaq-levels.md).
+// None without telemetry, which no runtime change brings.
+static int32_t link_slot_px(const font_t *font, const view_model_t *vm)
+{
+    if (!vm->link_slot) {
+        return 0;
+    }
+    static const link_status_t k_worded[] = {LINK_ONLINE, LINK_NO_BROKER, LINK_NO_WIFI};
+    int32_t widest = 0;
+    for (size_t i = 0u; i < sizeof(k_worded) / sizeof(k_worded[0]); ++i) {
+        const int32_t w = gfx_measure_text_ink(font, view_model_link_text(k_worded[i]));
+        widest = (w > widest) ? w : widest;
+    }
+    return widest + MARK_GAP;
+}
+
 static void draw_status_bar(framebuffer_t *fb, const view_model_t *vm)
 {
     const font_t *font = &font_dejavu_sans_40;
@@ -188,18 +207,19 @@ static void draw_status_bar(framebuffer_t *fb, const view_model_t *vm)
     char battery[VM_TEXT_MAX + 16];
     battery_text(battery, sizeof(battery), &vm->battery);
 
-    // Laid out right to left -- link state, battery mark, battery text -- so
-    // that a battery value appearing or disappearing does not shift the link
-    // text, which would dirty a region that did not actually change.
-    const int32_t net_x = right - gfx_measure_text_ink(font, vm->net_text);
-    const int32_t mark_x = net_x - MARK_GAP - mark_px;
+    // Laid out right to left -- the link's place, battery mark, battery text
+    // -- so that a battery value appearing or disappearing does not shift the
+    // link's word, and the word changing does not shift the battery: either
+    // would dirty a region that did not actually change. The word sits at the
+    // right end of its place.
+    const int32_t link_x = right - gfx_measure_text_ink(font, vm->link_text);
+    const int32_t mark_x = right - link_slot_px(font, vm) - mark_px;
     const int32_t battery_x = mark_x - MARK_GAP - gfx_measure_text(font, battery);
 
     (void)gfx_draw_text(fb, battery_x, BAR_BASELINE, font, battery, ink(fb, vm->battery.ink));
     draw_mark_scaled(fb, mark_x, BAR_BASELINE - mark_px, vm->battery.mark, vm->battery.ink,
                      MARK_SCALE_BAR);
-    (void)gfx_draw_text(fb, net_x, BAR_BASELINE, font, vm->net_text,
-                        ink(fb, vm->net_connected ? VM_INK_PRIMARY : VM_INK_STALE));
+    (void)gfx_draw_text(fb, link_x, BAR_BASELINE, font, vm->link_text, ink(fb, vm->link_ink));
 
     draw_rule(fb, SCREEN_HOME_BAR_RULE_Y);
 }

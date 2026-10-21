@@ -67,6 +67,10 @@ typedef struct {
     // The least free stack this task has had, in bytes, as last logged.
     uint32_t stack_free_min_bytes;
 
+    // What the reporter and its network said at the last step: the
+    // diagnostics screen's, and the link the hold is fed.
+    reporter_status_t network;
+
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
     // whole panel a screen's render unconditionally repaints every time.
@@ -95,7 +99,34 @@ static screen_inputs_t screen_inputs(const event_loop_state_t *s, uint64_t now_m
     if (s->deps.facts != NULL) {
         s->deps.facts(s->deps.facts_ctx, &in.recorder, &in.clock_source);
     }
+    in.network = (s->deps.reporter != NULL) ? &s->network : NULL;
     return in;
+}
+
+// The link as it is now, held before the screen shows it
+// (core/app/link_hold.h); a change of what the bar says is logged, with what
+// the link has been doing meanwhile in the reporter's own lines. Returns the
+// hold's deadline.
+static uint64_t hold_link(event_loop_state_t *s, uint64_t now_ms)
+{
+    reporter_status(s->deps.reporter, &s->network);
+    if (s->deps.link == NULL) {
+        s->reading.link = LINK_OFF;
+        return LINK_HOLD_NO_DEADLINE;
+    }
+    bool changed = false;
+    const uint64_t due = link_hold_step(s->deps.link, s->network.link, now_ms, &changed);
+    s->reading.link = link_hold_shown(s->deps.link);
+    if (changed) {
+        const log_field_t fields[] = {
+            log_str("shown", link_status_name(s->reading.link)),
+            log_u64("changes", s->deps.link->changes),
+            log_u64("now_ms", now_ms),
+        };
+        port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "link on the screen", fields,
+                       sizeof(fields) / sizeof(fields[0]));
+    }
+    return due;
 }
 
 // A redraw that put a new screen on the glass: which, and, for a tap, how
@@ -218,14 +249,13 @@ static bool redraw(event_loop_state_t *s, const update_decision_t *d, uint64_t n
         if (!framebuffer_diff_dirty_rect(fb, &s->previous_fb, &dirty_rect)) {
             // update_policy decided a redraw was due, but nothing that
             // actually reaches the glass moved. This is expected, not a
-            // bug: statuses_differ() also fires on `charging` and
-            // `telemetry_connected`, neither of which screen_home draws yet
-            // (docs/hardware/board_notes.md open items), so this path can be
-            // reached every tick, harmless but wasteful, until `reading`
-            // changes again. Flushing anyway would spend a partial-refresh
-            // budget slot for zero visible change, which is exactly what
-            // that budget exists to prevent, so update_policy_commit() is
-            // skipped along with the flush.
+            // bug: statuses_differ() also fires on `charging`, which
+            // screen_home does not draw yet (docs/hardware/board_notes.md
+            // open items), so this path can be reached every tick, harmless
+            // but wasteful, until `reading` changes again. Flushing anyway
+            // would spend a partial-refresh budget slot for zero visible
+            // change, which is exactly what that budget exists to prevent,
+            // so update_policy_commit() is skipped along with the flush.
             port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG,
                            "redraw skipped: partial refresh diff was empty", NULL, 0u);
             return false;
@@ -332,6 +362,7 @@ static void pump_task(void *arg)
             report_due = reporter_step(s->deps.reporter, &s->reading, now_ms, &note);
             log_report(s, &note, now_ms);
         }
+        const uint64_t link_due = hold_link(s, now_ms);
 
         const uint64_t screens_due =
             screen_controller_tick(s->deps.screens, s->deps.policy, now_ms);
@@ -391,6 +422,9 @@ static void pump_task(void *arg)
         }
         if (report_due < wake_at) {
             wake_at = report_due;
+        }
+        if (link_due < wake_at) {
+            wake_at = link_due;
         }
         const uint32_t wait_ms = wait_ms_until(wake_at, clock->now_ms(clock));
 

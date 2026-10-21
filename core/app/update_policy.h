@@ -158,9 +158,9 @@ typedef enum {
     UPDATE_REASON_PRESSURE,
     UPDATE_REASON_IAQ,
     UPDATE_REASON_SETTLE,  // an offset of more than half a delta held settle_after_ms
-    // A value_status_t, the accuracy mark, a link flag, or whether the wall
-    // time is known, changed -- or, on a screen that compares its own
-    // content, that content.
+    // A value_status_t, the accuracy mark, the link the bar shows, or whether
+    // the wall time is known, changed -- or, on a screen that compares its
+    // own content, that content.
     UPDATE_REASON_STATUS,
     UPDATE_REASON_REQUEST,  // a person asked: update_policy_request()
 } update_reason_t;

@@ -8,8 +8,9 @@
 // air_reading_init() and every "no data yet" path rely on this: a zero-filled
 // reading must read as unavailable, not as a set of valid zeroes.
 _Static_assert(VAL_UNAVAILABLE == 0, "VAL_UNAVAILABLE must be the zero value");
-// ...and as saying nothing about its accuracy.
+// ...and as saying nothing about its accuracy, nor about a link.
 _Static_assert(ACC_NOT_REPORTED == 0, "ACC_NOT_REPORTED must be the zero value");
+_Static_assert(LINK_OFF == 0, "LINK_OFF must be the zero value");
 
 measurement_f32_t measurement_unavailable(void)
 {
@@ -71,6 +72,23 @@ const char *measurement_accuracy_name(value_accuracy_t accuracy)
             break;
     }
     return "-";
+}
+
+const char *link_status_name(link_status_t link)
+{
+    switch (link) {
+        case LINK_OFF:
+            return "off";
+        case LINK_UNKNOWN:
+            return "unknown";
+        case LINK_NO_WIFI:
+            return "no-wifi";
+        case LINK_NO_BROKER:
+            return "no-broker";
+        case LINK_ONLINE:
+            return "online";
+    }
+    return "?";
 }
 
 uint64_t measurement_age_ms(const measurement_f32_t *m, uint64_t now_ms)

@@ -331,6 +331,8 @@ static void send_state(reporter_t *r, uint64_t now_ms, reporter_note_t *note)
     }
     publish_policy_commit(&r->policy, &r->latest, now_ms);
     r->state_messages++;
+    r->published = true;
+    r->last_published_ms = now_ms;
     r->state_by_reason[d.reason]++;
     note->state_published = true;
     note->reason = d.reason;
@@ -413,7 +415,6 @@ uint64_t reporter_step(reporter_t *r, const air_reading_t *reading, uint64_t now
     const bool has_link = r->net != NULL && r->net->state(r->net) == NET_UP;
     r->latest.net_connected = has_link;
     r->latest.wifi_rssi_dbm = has_link ? r->net->rssi_dbm(r->net) : (int8_t)PORT_NET_RSSI_NONE;
-    r->latest.telemetry_connected = true;  // only ever published within a session
 
     drain(r, note);
     advance_session(r, now_ms, note);
@@ -422,6 +423,38 @@ uint64_t reporter_step(reporter_t *r, const air_reading_t *reading, uint64_t now
     }
     note->session = r->sessions;
     return next_deadline(r, now_ms);
+}
+
+link_status_t reporter_link(const reporter_t *r)
+{
+    if (r == NULL || r->telemetry == NULL) {
+        return LINK_OFF;
+    }
+    if (!network_up(r)) {
+        return LINK_NO_WIFI;
+    }
+    return (r->state == REPORTER_ONLINE) ? LINK_ONLINE : LINK_NO_BROKER;
+}
+
+void reporter_status(const reporter_t *r, reporter_status_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->link = reporter_link(r);
+    out->rssi_dbm = (int8_t)PORT_NET_RSSI_NONE;
+    if (out->link == LINK_OFF) {
+        return;
+    }
+    if (r->net != NULL) {
+        out->has_net = true;
+        out->net = r->net->state(r->net);
+        out->rssi_dbm = r->net->rssi_dbm(r->net);
+        r->net->info(r->net, &out->net_info);
+    }
+    out->state = r->state;
+    out->state_messages = r->state_messages;
+    out->refusals = r->refusals;
+    out->published = r->published;
+    out->last_published_ms = r->last_published_ms;
 }
 
 const char *reporter_state_name(reporter_state_t state)

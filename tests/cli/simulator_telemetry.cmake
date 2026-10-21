@@ -5,13 +5,17 @@
 #   * a day: normal_day.csv for 24 virtual hours over the broker model, and
 #     the state messages within bounds -- at least one a heartbeat, never more
 #     than a minute apart, not many more than the heartbeat's;
-#   * an outage: ten minutes of no network change nothing the panel or the
-#     card sees -- the redraw decisions and the recordings of three runs, one
-#     without telemetry, one with, one with the outage, are the same, byte for
-#     byte (requirements 15.1) -- while the broker sees the session dropped,
-#     the last will one and a half keepalives after the last message it had,
-#     nothing published meanwhile, and the next session announce itself again:
-#     online, every discovery config, the state;
+#   * an outage: ten minutes of no network change nothing the card sees --
+#     the recordings of three runs, one without telemetry, one with, one with
+#     the outage, are the same, byte for byte (requirements 15.1) -- and reach
+#     the screen only as the status bar's link, a minute late each way
+#     (docs/adr/0031-the-network-on-the-screen.md): the same redraws with and
+#     without the outage until it has lasted a minute, then "no-wifi" and,
+#     a minute after the session is back, "online", each on the glass within
+#     a sensor cycle; while the broker sees the session dropped, the last will
+#     one and a half keepalives after the last message it had, nothing
+#     published meanwhile, and the next session announce itself again: online,
+#     every discovery config, the state;
 #   * stdout: every message the broker takes, printed;
 #   * a malformed --device-id or --net-script refused before anything runs.
 #
@@ -88,11 +92,64 @@ list(LENGTH policy_none n_policy)
 if(n_policy LESS 20)
     message(FATAL_ERROR "only ${n_policy} redraw decisions without telemetry:\n${out_none}")
 endif()
-foreach(run loopback outage)
-    if(NOT policy_${run} STREQUAL policy_none)
-        message(FATAL_ERROR "the redraws of '${run}' differ from those without telemetry:\n"
-                            "${out_${run}}")
+
+# The link on the screen: nothing without telemetry; with it, a place kept
+# from the first frame and "online" once the session has held a minute -- the
+# association 3 s, the session at once -- and in the outage "no-wifi" a minute
+# after the network went, "online" a minute after the session was back.
+set(links_none "")
+set(links_loopback "unknown@0;online@63000")
+set(links_outage "unknown@0;online@63000;no-wifi@660000;online@1263000")
+foreach(run none loopback outage)
+    string(REGEX MATCHALL "\\[link\\] [a-z-]+ now_ms=[0-9]+" lines "${out_${run}}")
+    set(links "")
+    foreach(line IN LISTS lines)
+        string(REGEX REPLACE "\\[link\\] ([a-z-]+) now_ms=([0-9]+)" "\\1@\\2" link "${line}")
+        list(APPEND links ${link})
+    endforeach()
+    if(NOT "${links}" STREQUAL "${links_${run}}")
+        message(FATAL_ERROR "the link on the screen in '${run}' was \"${links}\", "
+                            "not \"${links_${run}}\":\n${out_${run}}")
     endif()
+    # Each change after the first frame on the glass within a sensor cycle:
+    # a redraw for it, or for anything else that carries it.
+    foreach(link IN LISTS links)
+        string(REGEX REPLACE ".*@" "" at "${link}")
+        if(at EQUAL 0)
+            continue()
+        endif()
+        math(EXPR by "${at} + 5000")
+        set(drawn FALSE)
+        foreach(p IN LISTS policy_${run})
+            string(REGEX REPLACE ".*now_ms=([0-9]+).*" "\\1" t "${p}")
+            if(t GREATER_EQUAL at AND t LESS_EQUAL by)
+                set(drawn TRUE)
+            endif()
+        endforeach()
+        if(NOT drawn)
+            message(FATAL_ERROR "the link's change ${link} in '${run}' reached no redraw by "
+                                "${by} ms:\n${out_${run}}")
+        endif()
+    endforeach()
+endforeach()
+
+# Until the outage has lasted the hold, the screen does not know of it: the
+# same redraws as without it.
+foreach(run loopback outage)
+    set(early_${run} "")
+    foreach(p IN LISTS policy_${run})
+        string(REGEX REPLACE ".*now_ms=([0-9]+).*" "\\1" t "${p}")
+        if(t LESS 660000)
+            list(APPEND early_${run} "${p}")
+        endif()
+    endforeach()
+endforeach()
+if(NOT early_outage STREQUAL early_loopback)
+    message(FATAL_ERROR "the outage reached the screen before it had lasted a minute:\n"
+                        "${out_outage}")
+endif()
+
+foreach(run loopback outage)
     foreach(file 2026-10-16_scd4x.csv 2026-10-16_bme68x.csv)
         file(READ ${WORK}/none/data/${file} a)
         file(READ ${WORK}/${run}/data/${file} b)

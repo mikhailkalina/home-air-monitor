@@ -17,10 +17,12 @@
 //                   configured). up() again tries again.
 //
 // In phase 4 the composition calls up() once, at start, and the core only
-// reads state() and rssi_dbm(); phase 5's power policy will be the caller of
-// down(). What uses the link -- the MQTT client behind port_telemetry --
-// notices a loss on its own; this port is how the core knows why, and the
-// signal strength the state message carries.
+// reads state(), rssi_dbm() and info(); phase 5's power policy will be the
+// caller of down(). What uses the link -- the MQTT client behind
+// port_telemetry -- notices a loss on its own; this port is how the core
+// knows why, the signal strength the state message carries, and the
+// network's name and the device's address the diagnostics screen shows
+// (docs/adr/0031-the-network-on-the-screen.md).
 //
 // The adapter wakes the event loop when the state changes, as port_input's
 // does when a touch arrives: through a waker the composition gives it, which
@@ -30,6 +32,7 @@
 #ifndef HAC_PORTS_PORT_NET_H
 #define HAC_PORTS_PORT_NET_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "hal_status.h"
@@ -47,6 +50,24 @@ typedef enum {
 
 // What rssi_dbm() says while the link is not up.
 #define PORT_NET_RSSI_NONE 0
+
+// An SSID is up to 32 octets (IEEE 802.11), and need not be text.
+#define PORT_NET_SSID_MAX 32u
+
+// The octets of an IPv4 address.
+#define PORT_NET_IPV4_LEN 4u
+
+// What info() says about the link.
+typedef struct {
+    // The network the adapter is asked to join, as configured -- also while
+    // the link is not up, so that a wrong name can be seen. Up to
+    // PORT_NET_SSID_MAX octets of any value, terminated; empty when nothing
+    // is configured. (An SSID with a NUL octet in it ends there.)
+    char ssid[PORT_NET_SSID_MAX + 1u];
+    // This device's IPv4 address on the link, most significant octet first,
+    // while state() is NET_UP; 0.0.0.0 otherwise.
+    uint8_t ipv4[PORT_NET_IPV4_LEN];
+} net_info_t;
 
 typedef struct port_net_s port_net_t;
 
@@ -67,8 +88,18 @@ struct port_net_s {
     // PORT_NET_RSSI_NONE otherwise.
     int8_t (*rssi_dbm)(const port_net_t *self);
 
+    // The network's name and this device's address (net_info_t), into
+    // `out`, every field written: never waits.
+    void (*info)(const port_net_t *self, net_info_t *out);
+
     void *impl;
 };
+
+// Whether `ip` is an address rather than 0.0.0.0.
+static inline bool port_net_ipv4_set(const uint8_t ip[PORT_NET_IPV4_LEN])
+{
+    return (ip[0] | ip[1] | ip[2] | ip[3]) != 0u;
+}
 
 // "down", "connecting", "up", "failed"; never NULL.
 static inline const char *port_net_state_name(net_state_t state)

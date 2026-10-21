@@ -2,7 +2,7 @@
 //
 // Host runner for port_net_contract.c, the shared body, against the
 // simulator's network (platform/host/adp_net_sim.h), whose access point the
-// runner takes away and gives back. Then against six deliberately broken
+// runner takes away and gives back. Then against nine deliberately broken
 // wrappers over it, each of which the suite must catch.
 
 #include "port_net_contract.h"
@@ -89,6 +89,9 @@ typedef enum {
     MUTANT_NO_RECONNECT,     // a lost link stays lost until up() again
     MUTANT_DOWN_IGNORED,     // down() does nothing
     MUTANT_UP_UNASKED,       // comes up without up()
+    MUTANT_ADDRESS_ALWAYS,   // an address reported while down
+    MUTANT_NO_ADDRESS,       // up, without an address
+    MUTANT_NAME_WHILE_UP,    // the network's name only while up
 } mutant_kind_t;
 
 typedef struct {
@@ -132,6 +135,21 @@ static int8_t mutant_rssi(const port_net_t *port)
     }
     return (mutant_state(port) == NET_UP) ? m->inner->rssi_dbm(m->inner)
                                           : (int8_t)PORT_NET_RSSI_NONE;
+}
+
+static void mutant_info(const port_net_t *port, net_info_t *out)
+{
+    const mutant_t *m = (const mutant_t *)port->impl;
+    m->inner->info(m->inner, out);
+    const bool up = mutant_state(port) == NET_UP;
+    if (m->kind == MUTANT_ADDRESS_ALWAYS) {
+        out->ipv4[0] = 10u;
+        out->ipv4[3] = 7u;
+    } else if (m->kind == MUTANT_NO_ADDRESS) {
+        memset(out->ipv4, 0, sizeof(out->ipv4));
+    } else if (m->kind == MUTANT_NAME_WHILE_UP && !up) {
+        out->ssid[0] = '\0';
+    }
 }
 
 static hal_status_t mutant_up(port_net_t *port)
@@ -180,6 +198,9 @@ static void the_suite_catches_each_broken_wrapper(void)
         {MUTANT_NO_RECONNECT, "no_reconnect", "the link back: up again without being asked"},
         {MUTANT_DOWN_IGNORED, "down_ignored", "down(): NET_DOWN once it returns"},
         {MUTANT_UP_UNASKED, "up_unasked", "never asked: still NET_DOWN a while later"},
+        {MUTANT_ADDRESS_ALWAYS, "address_always", "not up: info() gives no address, 0.0.0.0"},
+        {MUTANT_NO_ADDRESS, "no_address", "up: info() gives an address"},
+        {MUTANT_NAME_WHILE_UP, "name_while_up", "up: info()'s name is the one it gave while down"},
     };
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         fresh();
@@ -188,6 +209,7 @@ static void the_suite_catches_each_broken_wrapper(void)
         m.port.down = mutant_down;
         m.port.state = mutant_state;
         m.port.rssi_dbm = mutant_rssi;
+        m.port.info = mutant_info;
         m.port.impl = &m;
         const port_net_contract_env_t env = env_with(true);
         mutant_watch_t w = {.must_fail = cases[i].must_fail};
@@ -197,6 +219,24 @@ static void the_suite_catches_each_broken_wrapper(void)
         hac_test_check(failures > 0u && w.failed, "the suite catches the mutant", cases[i].name,
                        __LINE__);
     }
+}
+
+// --- what info() says -----------------------------------------------------------------
+
+static void the_simulated_link_has_a_name_and_an_address_while_up(void)
+{
+    fresh();
+    port_net_t *net = adp_net_sim_port(&g_net);
+    net_info_t info;
+    net->info(net, &info);
+    HAC_CHECK(strcmp(info.ssid, ADP_NET_SIM_DEFAULT_SSID) == 0);
+    HAC_CHECK(!port_net_ipv4_set(info.ipv4));
+    (void)net->up(net);
+    adp_clock_virtual_advance(&g_clock, ADP_NET_SIM_CONNECT_MS);
+    net->info(net, &info);
+    HAC_CHECK(strcmp(info.ssid, ADP_NET_SIM_DEFAULT_SSID) == 0);
+    HAC_CHECK(info.ipv4[0] == ADP_NET_SIM_ADDRESS_0 && info.ipv4[1] == ADP_NET_SIM_ADDRESS_1 &&
+              info.ipv4[2] == ADP_NET_SIM_ADDRESS_2 && info.ipv4[3] == ADP_NET_SIM_ADDRESS_3);
 }
 
 // --- the script -------------------------------------------------------------------------
@@ -275,13 +315,34 @@ static void a_malformed_script_is_refused_whole(void)
     }
 }
 
+// The table holds a link that flaps for half an hour; one change more is
+// refused, and refused whole.
+static void a_long_script_fits_up_to_the_table(void)
+{
+    fresh();
+    static char text[ADP_NET_SIM_MAX_EVENTS * 16u];
+    size_t len = 0u;
+    for (unsigned i = 0u; i < ADP_NET_SIM_MAX_EVENTS; ++i) {
+        len += (size_t)snprintf(text + len, sizeof(text) - len, "%s%u:%s", (i > 0u) ? ";" : "",
+                                10u + i * 2u, (i % 2u == 0u) ? "down" : "up");
+    }
+    char err[160] = "";
+    HAC_CHECK_EQ_INT(adp_net_sim_add_script(&g_net, text, err, sizeof(err)), HAL_OK);
+    HAC_CHECK_EQ_INT((int)g_net.count, (int)ADP_NET_SIM_MAX_EVENTS);
+    HAC_CHECK_EQ_INT(adp_net_sim_add_script(&g_net, "99999:down", err, sizeof(err)),
+                     HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_INT((int)g_net.count, (int)ADP_NET_SIM_MAX_EVENTS);
+}
+
 int main(void)
 {
     HAC_RUN(adp_net_sim_satisfies_the_port_net_contract);
     HAC_RUN(a_runner_that_cannot_cut_the_link_is_told_so);
     HAC_RUN(the_suite_catches_each_broken_wrapper);
+    HAC_RUN(the_simulated_link_has_a_name_and_an_address_while_up);
     HAC_RUN(the_script_cuts_and_restores_the_link_at_its_times);
     HAC_RUN(the_listener_hears_each_change_at_its_own_time);
     HAC_RUN(a_malformed_script_is_refused_whole);
+    HAC_RUN(a_long_script_fits_up_to_the_table);
     return hac_test_summary();
 }

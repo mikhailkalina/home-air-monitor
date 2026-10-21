@@ -53,11 +53,22 @@
 // (core/domain/air_quality.h), in a word that fits the cell at 32px beside a
 // mark: "Excellent", "Good", "Fair" for lightly polluted -- Bosch's own
 // "Lightly polluted" is half again too wide -- "Moderate" and "Poor".
+//
+// The status bar's link (docs/adr/0031-the-network-on-the-screen.md) says
+// where the readings go, in the held state the reading carries
+// (core/app/link_hold.h): "online" -- an MQTT session, the readings
+// published, Home Assistant's word for the device being there -- in black;
+// "no broker" -- the Wi-Fi up, no session -- and "no Wi-Fi" in the stale
+// grey, a weaker claim, as before; and nothing at all without telemetry
+// (LINK_OFF) or before a state has held (LINK_UNKNOWN). The words replace
+// requirements 9.2's "Connected / Offline", which cannot tell the two ways of
+// being offline apart.
 
 #ifndef HAC_CORE_UI_VIEW_MODEL_H
 #define HAC_CORE_UI_VIEW_MODEL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "domain/air_quality.h"
@@ -156,8 +167,13 @@ typedef struct {
     // gas resistance in its place included. Its text is the IAQ field's unit.
     iaq_level_t iaq_level;
 
-    bool net_connected;
-    const char *net_text;  // "Wi-Fi" / "offline"
+    // The link (above): the held state, its word -- "" for LINK_OFF and
+    // LINK_UNKNOWN -- and its ink. link_slot is false only without
+    // telemetry: the bar then keeps no place for a word.
+    link_status_t link;
+    const char *link_text;
+    uint8_t link_ink;
+    bool link_slot;
 
     // When the screen's data was measured, in local time: "14:07", or
     // "15.10 23:58" from an earlier day; "--:--", with has_updated false,
@@ -194,6 +210,18 @@ const char *view_model_level_text(vm_level_t level);
 // What the IAQ cell says under its number: "Excellent", "Good", "Fair",
 // "Moderate", "Poor", and "" for IAQ_LEVEL_UNKNOWN.
 const char *view_model_iaq_level_text(iaq_level_t level);
+
+// The status bar's word for a link: "online", "no broker", "no Wi-Fi", and
+// "" for LINK_OFF and LINK_UNKNOWN. The bar keeps a place as wide as the
+// widest of them, so a change of word moves nothing else.
+const char *view_model_link_text(link_status_t link);
+
+// A local time of day as the screens write it: "HH:MM", or "DD.MM HH:MM"
+// when `at_wall_ms` falls on an earlier local day than `now_wall_ms`; both
+// UTC milliseconds, `zone` the composition's. Into `dst`, terminated, cut
+// short if `cap` is smaller than VM_UPDATED_TEXT_MAX.
+void view_model_local_time_text(char *dst, size_t cap, uint64_t at_wall_ms, uint64_t now_wall_ms,
+                                const time_zone_t *zone);
 
 #ifdef __cplusplus
 }

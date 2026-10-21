@@ -22,6 +22,10 @@
 //            23:58" (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md)
 //   no_wall_time  the normal reading on a device whose clock is not set:
 //            "updated --:--"
+//   no_broker  the normal reading with the Wi-Fi up and no MQTT session for a
+//            minute: "no broker" in the bar
+//            (docs/adr/0031-the-network-on-the-screen.md); the normal frame
+//            says "online", the warm-up one -- no telemetry -- nothing
 //
 // Run with UPDATE_GOLDEN=1 to adopt an intentional rendering change:
 //   UPDATE_GOLDEN=1 ./build/host-debug/tests/golden/test_golden_screen_home
@@ -92,9 +96,7 @@ static air_reading_t base_reading(void)
     r.pressure_hpa = measurement_ok(1012.8f, SAMPLE_TS_MS, 2u);
     r.iaq = measurement_ok(84.0f, SAMPLE_TS_MS, 2u);
     r.battery_percent = measurement_ok(87.0f, SAMPLE_TS_MS, 3u);
-    r.net_connected = true;
-    r.telemetry_connected = true;
-    r.wifi_rssi_dbm = -61;
+    r.link = LINK_ONLINE;
     r.uptime_s = 3600u;
     r.boot_count = 1u;
     r.wall_time_ms = RENDER_WALL_MS;
@@ -163,13 +165,20 @@ static void no_wall_time(void)
     render_and_check(&r, "screen_home_no_wall_time");
 }
 
+static void no_broker(void)
+{
+    air_reading_t r = base_reading();
+    r.link = LINK_NO_BROKER;  // held a minute: the broker gone, the Wi-Fi still there
+    render_and_check(&r, "screen_home_no_broker");
+}
+
 static void everything_warming_up(void)
 {
     air_reading_t r;
 
     // A cold start: both sensors are powered but neither has settled, and the
     // battery gauge has not been read at all -- so this frame also covers
-    // VAL_UNAVAILABLE and the offline link state.
+    // VAL_UNAVAILABLE, and a build without telemetry: no link in the bar.
     air_reading_init(&r);
     r.co2_ppm = measurement_status(VAL_WARMUP, SAMPLE_TS_MS, 1u);
     r.temperature_c = measurement_status(VAL_WARMUP, SAMPLE_TS_MS, 2u);
@@ -188,5 +197,6 @@ int main(void)
     HAC_RUN(iaq_not_calibrated);
     HAC_RUN(updated_yesterday);
     HAC_RUN(no_wall_time);
+    HAC_RUN(no_broker);
     return hac_test_summary();
 }

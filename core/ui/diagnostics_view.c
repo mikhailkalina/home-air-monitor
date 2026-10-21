@@ -4,6 +4,9 @@
 
 #include <string.h>
 
+#include "text/text_append.h"
+#include "ui/view_model.h"
+
 // --- text, without stdio ---------------------------------------------------------
 
 // Appends `src` to `dst`, which holds `len` characters, never past `cap`;
@@ -138,6 +141,117 @@ static const char *recorder_word(recorder_state_t state)
     return "failed";
 }
 
+// --- the network --------------------------------------------------------------------
+
+static const char *wifi_word(net_state_t state)
+{
+    switch (state) {
+        case NET_UP:
+            return "up";
+        case NET_CONNECTING:
+            return "joining";  // "connecting" does not fit the column
+        case NET_FAILED:
+            return "failed";
+        case NET_DOWN:
+            break;
+    }
+    return "off";
+}
+
+// The name as the port gives it, every octet outside printable ASCII -- which
+// the fonts do not cover -- as '?'.
+static void printable(char *dst, size_t cap, const char *src)
+{
+    size_t n = 0u;
+    for (; src[n] != '\0' && n + 1u < cap; ++n) {
+        const unsigned char c = (unsigned char)src[n];
+        dst[n] = (c >= (unsigned char)' ' && c <= (unsigned char)'~') ? (char)c : '?';
+    }
+    dst[n] = '\0';
+}
+
+static void address_text(char *dst, size_t cap, const uint8_t ip[PORT_NET_IPV4_LEN])
+{
+    size_t len = 0u;
+    for (size_t i = 0u; i < PORT_NET_IPV4_LEN; ++i) {
+        if (i > 0u) {
+            len = text_append_char(dst, cap, len, '.');
+        }
+        len = text_append_u64(dst, cap, len, ip[i], 1u);
+    }
+}
+
+// "sent 412", "sent 12k", "sent 999k+" (DIAG_SENT_EXACT_MAX).
+static void sent_text(char *dst, size_t cap, uint32_t n)
+{
+    size_t len = text_append_str(dst, cap, 0u, "sent ");
+    if (n <= DIAG_SENT_EXACT_MAX) {
+        (void)text_append_u64(dst, cap, len, n, 1u);
+        return;
+    }
+    const uint32_t thousands = n / DIAG_SENT_PER_THOUSAND;
+    len = text_append_u64(
+        dst, cap, len, (thousands > DIAG_SENT_THOUSANDS_MAX) ? DIAG_SENT_THOUSANDS_MAX : thousands,
+        1u);
+    (void)text_append_str(dst, cap, len, (thousands > DIAG_SENT_THOUSANDS_MAX) ? "k+" : "k");
+}
+
+// When the last state message went, in local time.
+static void last_text(char *dst, size_t cap, const reporter_status_t *n, const diag_facts_t *f)
+{
+    const size_t len = text_append_str(dst, cap, 0u, "last ");
+    if (!n->published) {
+        (void)text_append_str(dst, cap, len, "-");
+        return;
+    }
+    const uint64_t wall = f->reading->wall_time_ms;
+    const uint64_t age = f->now_ms - n->last_published_ms;
+    if (wall == 0u || f->zone == NULL || f->now_ms < n->last_published_ms || age > wall) {
+        (void)text_append_str(dst, cap, len, "--:--");  // no local time to give
+        return;
+    }
+    char when[VM_UPDATED_TEXT_MAX];
+    view_model_local_time_text(when, sizeof(when), wall - age, wall, f->zone);
+    (void)text_append_str(dst, cap, len, when);
+}
+
+static void build_network(diag_view_t *v, const diag_facts_t *f)
+{
+    v->link = f->reading->link;
+    v->link_text = view_model_link_text(v->link);
+    v->link_trouble = v->link == LINK_NO_WIFI || v->link == LINK_NO_BROKER;
+    const reporter_status_t *n = f->network;
+    v->network_present = n != NULL && n->link != LINK_OFF;
+    if (!v->network_present) {
+        v->wifi_state = "off";
+        v->broker_state = "off";
+        return;
+    }
+    if (n->has_net) {
+        v->wifi_state = wifi_word(n->net);
+        v->wifi_trouble = n->net != NET_UP;
+        printable(v->ssid, sizeof(v->ssid), n->net_info.ssid);
+        if (n->net == NET_UP) {
+            size_t len = text_append_i64(v->rssi, sizeof(v->rssi), 0u, n->rssi_dbm);
+            (void)text_append_str(v->rssi, sizeof(v->rssi), len, " dBm");
+            if (port_net_ipv4_set(n->net_info.ipv4)) {
+                address_text(v->address, sizeof(v->address), n->net_info.ipv4);
+            }
+        }
+    } else {
+        v->wifi_state = "-";  // no network to watch: the reporter takes the link as up
+    }
+    v->broker_state = (n->state == REPORTER_ONLINE) ? "online" : "offline";
+    v->broker_trouble = n->state != REPORTER_ONLINE;
+    sent_text(v->sent, sizeof(v->sent), n->state_messages);
+    char count[DIAG_COUNT_TEXT_MAX];
+    count_text(count, sizeof(count), n->refusals);
+    const size_t len = text_append_str(v->refused, sizeof(v->refused), 0u, "refused ");
+    (void)text_append_str(v->refused, sizeof(v->refused), len, count);
+    v->refused_trouble = n->refusals > 0u;
+    last_text(v->last, sizeof(v->last), n, f);
+}
+
 void diag_view_build(diag_view_t *v, const diag_facts_t *facts)
 {
     memset(v, 0, sizeof(*v));
@@ -177,6 +291,8 @@ void diag_view_build(diag_view_t *v, const diag_facts_t *facts)
                               facts->recorder.state == RECORDER_FULL ||
                               facts->recorder.state == RECORDER_FAILED;
     }
+
+    build_network(v, facts);
 }
 
 static bool same_text(const char *a, const char *b)
@@ -192,6 +308,13 @@ bool diag_view_equal(const diag_view_t *a, const diag_view_t *b)
     if (a->slot_count != b->slot_count || a->clock_set != b->clock_set ||
         a->recorder_trouble != b->recorder_trouble || !same_text(a->clock_text, b->clock_text) ||
         !same_text(a->recorder_text, b->recorder_text)) {
+        return false;
+    }
+    // The network: what redraws it -- the held link, drawn as the title's
+    // word -- and nothing that is as of the drawing.
+    if (a->network_present != b->network_present || a->link != b->link ||
+        a->link_trouble != b->link_trouble || !same_text(a->link_text, b->link_text) ||
+        !same_text(a->ssid, b->ssid)) {
         return false;
     }
     for (size_t i = 0u; i < a->slot_count; ++i) {

@@ -12,7 +12,10 @@
 //   --net-script "<t_s>:down;<t_s>:up;..."
 //
 // at t_s seconds (a decimal) the access point goes away, or comes back, in
-// time order. The signal strength is fixed (ADP_NET_SIM_DEFAULT_RSSI_DBM);
+// time order. The signal strength is fixed (ADP_NET_SIM_DEFAULT_RSSI_DBM),
+// and so are the network's name and the address the link gives
+// (ADP_NET_SIM_DEFAULT_SSID, ADP_NET_SIM_ADDRESS_*), which info() reports as
+// the board's Wi-Fi will (docs/adr/0031-the-network-on-the-screen.md);
 // scenarios/wifi_flapping.csv, a profile with RSSI, is not read yet.
 //
 // A listener, when set, hears each change of the link with its own time --
@@ -34,7 +37,9 @@
 extern "C" {
 #endif
 
-#define ADP_NET_SIM_MAX_EVENTS 64u
+// Room for a link that flaps every few seconds for half an hour
+// (tests/cli/simulator_link_flapping.cmake).
+#define ADP_NET_SIM_MAX_EVENTS 1024u
 
 // ESTIMATE: an association and an address -- Wi-Fi's handshakes and DHCP on
 // a home network take one to a few seconds. Nothing has measured the
@@ -44,6 +49,15 @@ extern "C" {
 // CHOICE: the signal the simulated link reports: a good one, as
 // mqtt_messages_dump.c's.
 #define ADP_NET_SIM_DEFAULT_RSSI_DBM (-61)
+
+// CHOICES: the network's name, and the address the link gives -- 192.0.2.10,
+// in TEST-NET-1, the block RFC 5737 sets aside for documentation, so it is
+// never mistaken for a real host on someone's network.
+#define ADP_NET_SIM_DEFAULT_SSID "sim-ap"
+#define ADP_NET_SIM_ADDRESS_0 192u
+#define ADP_NET_SIM_ADDRESS_1 0u
+#define ADP_NET_SIM_ADDRESS_2 2u
+#define ADP_NET_SIM_ADDRESS_3 10u
 
 #define ADP_NET_SIM_NO_EVENT UINT64_MAX
 

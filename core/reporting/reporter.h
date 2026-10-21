@@ -27,8 +27,11 @@
 //
 // The state message carries the reading the screen shows, with the network's
 // signal strength set here from port_net (mqtt_payload.h's "rssi"): the
-// screen's reading is never written to, so the link going up or down redraws
-// nothing (requirements 15.1).
+// screen's reading is never written to. What the screen says about the link
+// is its own: reporter_link() is the link as it is now, which the
+// composition holds (core/app/link_hold.h) before the screen shows it, and
+// reporter_status() is what the diagnostics screen shows
+// (docs/adr/0031-the-network-on-the-screen.md).
 //
 // The event loops call reporter_step() after each poll, as they call the
 // recorder's watch, and wake at the deadline it returns among the others'.
@@ -108,6 +111,21 @@ typedef struct {
     hal_status_t refused;     // HAL_OK, or what refused the last message tried
 } reporter_note_t;
 
+// What the reporter and its network say now, as plain data for the
+// diagnostics screen (core/ui/diagnostics_view.h), read after a step.
+typedef struct {
+    link_status_t link;  // reporter_link(): the link as it is now
+    bool has_net;        // a network to ask; without one the next three say nothing
+    net_state_t net;
+    int8_t rssi_dbm;      // PORT_NET_RSSI_NONE while the network is not up
+    net_info_t net_info;  // its name, and the address while up
+    reporter_state_t state;
+    uint32_t state_messages;     // since reporter_init(): the readings sent
+    uint32_t refusals;           // messages the adapter refused (its queue full)
+    bool published;              // a state message has gone out since reporter_init()
+    uint64_t last_published_ms;  // and when the last one went, on port_clock
+} reporter_status_t;
+
 typedef struct {
     port_telemetry_t *telemetry;
     const port_net_t *net;
@@ -145,6 +163,8 @@ typedef struct {
     uint32_t state_messages;
     uint32_t state_by_reason[PUBLISH_REASON_COUNT];
     uint32_t refusals;
+    bool published;  // a state message, and when the last one went
+    uint64_t last_published_ms;
 } reporter_t;
 
 // REPORT_* of report_limits.h.
@@ -165,6 +185,17 @@ hal_status_t reporter_init(reporter_t *r, const reporter_deps_t *deps,
 // it waits for the network, whose adapter wakes the loop. `note` may be NULL.
 uint64_t reporter_step(reporter_t *r, const air_reading_t *reading, uint64_t now_ms,
                        reporter_note_t *note);
+
+// The link as it is now: LINK_NO_WIFI while the network is not up,
+// LINK_NO_BROKER while it is and there is no session, LINK_ONLINE with one.
+// Without a network port the network counts as up. LINK_OFF for a NULL or
+// uninitialised reporter -- no telemetry.
+link_status_t reporter_link(const reporter_t *r);
+
+// Fills `out` from the reporter and its network port (state(), rssi_dbm(),
+// info(): calls that never wait). A NULL or uninitialised reporter gives
+// LINK_OFF and nothing else.
+void reporter_status(const reporter_t *r, reporter_status_t *out);
 
 // "offline", "connecting", "online"; never NULL.
 const char *reporter_state_name(reporter_state_t state);

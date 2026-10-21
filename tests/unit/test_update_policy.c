@@ -285,6 +285,35 @@ static void a_status_change_alone_reaches_the_glass(void)
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
 }
 
+// The link the status bar shows -- held already, so each change has lasted a
+// minute -- redraws as any status does; the state message's link, which
+// nothing draws, never does (docs/adr/0031-the-network-on-the-screen.md).
+static void the_held_link_redraws_and_the_messages_link_does_not(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);  // LINK_OFF
+    update_decision_t d;
+
+    static const link_status_t k_links[] = {LINK_UNKNOWN, LINK_ONLINE, LINK_NO_BROKER,
+                                            LINK_NO_WIFI, LINK_ONLINE, LINK_OFF};
+    for (size_t i = 0u; i < sizeof(k_links) / sizeof(k_links[0]); ++i) {
+        fake_clock_advance(&f.clock, 5000u);
+        r.link = k_links[i];
+        update_policy_evaluate(&f.policy, &r, &d);
+        hac_test_check(d.action == UPDATE_PARTIAL && d.reason == UPDATE_REASON_STATUS,
+                       link_status_name(k_links[i]), __FILE__, __LINE__);
+        update_policy_commit(&f.policy, &r, &d);
+    }
+
+    fake_clock_advance(&f.clock, 5000u);
+    r.net_connected = !r.net_connected;
+    r.wifi_rssi_dbm = -80;
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, UPDATE_POLICY_NO_DEADLINE);
+}
+
 // --- an offset that persists (docs/adr/0028-redraw-a-persistent-offset.md) --
 
 #define SETTLE_MS UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS
@@ -1353,6 +1382,7 @@ int main(void)
     HAC_RUN(with_no_number_on_the_screen_there_is_no_timer);
     HAC_RUN(the_wall_time_becoming_known_redraws_and_its_ticking_does_not);
     HAC_RUN(a_status_change_alone_reaches_the_glass);
+    HAC_RUN(the_held_link_redraws_and_the_messages_link_does_not);
     HAC_RUN(an_iaq_moving_past_its_delta_redraws_whatever_its_band);
     HAC_RUN(a_change_of_band_alone_does_not_redraw);
     HAC_RUN(an_iaq_trembling_on_a_boundary_never_redraws);

@@ -4,9 +4,11 @@
 // (ports/port_net.h): nothing waits; down until asked; up() brings the link
 // up within PORT_NET_CONTRACT_UP_MS and keeps it -- a lost link is sought
 // again without being asked, and is never NET_DOWN while up() is in force;
-// the signal strength is a signal only while up; down() is down at once and
-// stays down; both calls can be repeated
-// (docs/adr/0030-telemetry-ports-and-the-reporter.md).
+// the signal strength is a signal only while up, and so is the address
+// info() gives, while the network's name it gives stays the same up or not;
+// down() is down at once and stays down; both calls can be repeated
+// (docs/adr/0030-telemetry-ports-and-the-reporter.md,
+// docs/adr/0031-the-network-on-the-screen.md).
 //
 // The shared body: cmake/sources_contract.cmake compiles this file,
 // unmodified, into the host runner (tests/contract/test_port_net_contract.c,

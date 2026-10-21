@@ -112,7 +112,7 @@ home-air-monitor/
 │   ├── port_i2c.h
 │   ├── port_display.h
 │   ├── port_input.h
-│   ├── port_net.h
+│   ├── port_net.h                  # the link: state, signal, name and address (ADR 0030, 0031)
 │   ├── port_telemetry.h
 │   ├── port_storage.h
 │   ├── port_files.h                # append-only files on a medium that may not be there (ADR 0024)
@@ -129,6 +129,7 @@ home-air-monitor/
 │   │   ├── app_core.h/.c           # state machine: event → actions; next_deadline()
 │   │   ├── sensor_manager.h/.c     # polling, source priority, fault tolerance
 │   │   ├── screen_controller.h/.c  # which screen; port_input's consumer (ADR 0025)
+│   │   ├── link_hold.h/.c          # the link the status bar shows, once held a minute (ADR 0031)
 │   │   ├── tap.h/.c                # what counts as a tap
 │   │   ├── update_policy.h/.c      # display refresh thresholds (publishing's: reporting/, ADR 0030)
 │   │   ├── power_policy.h/.c       # duty cycle: usb_mode / battery_mode
@@ -141,7 +142,7 @@ home-air-monitor/
 │   │   ├── view_model.h/.c         # air_reading_t → what actually gets drawn
 │   │   ├── screen_home.c
 │   │   ├── diagnostics_view.h/.c   # the diagnostics screen's view model (ADR 0025)
-│   │   ├── screen_diagnostics.c    # sources, readings, clock, recorder; a tap away
+│   │   ├── screen_diagnostics.c    # sources, readings, network, clock, recorder; a tap away
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c
 │   │   └── screen_graphs.c
@@ -344,9 +345,9 @@ typedef struct {
     measurement_f32_t battery_mv;
     bool              charging;
 
-    int8_t   wifi_rssi_dbm;
+    link_status_t link;        /* the screen's: held a minute (ADR 0031) */
+    int8_t   wifi_rssi_dbm;    /* these two the state message's: the link now */
     bool     net_connected;
-    bool     telemetry_connected;
 
     uint32_t uptime_s;
     uint32_t boot_count;
@@ -553,12 +554,14 @@ struct port_input_s {
 
 /* ports/port_net.h -- up() asks for the link and keeps asking; nothing waits */
 typedef enum { NET_DOWN, NET_CONNECTING, NET_UP, NET_FAILED } net_state_t;
+typedef struct { char ssid[33]; uint8_t ipv4[4]; } net_info_t;  /* address only while up */
 typedef struct port_net_s port_net_t;
 struct port_net_s {
     hal_status_t (*up)(port_net_t*);
     hal_status_t (*down)(port_net_t*);
     net_state_t  (*state)(const port_net_t*);
     int8_t       (*rssi_dbm)(const port_net_t*);
+    void         (*info)(const port_net_t*, net_info_t *out);   /* phase 4d, ADR 0031 */
     void *impl;
 };
 
@@ -602,7 +605,7 @@ struct port_power_s {
 
 `deep_sleep_ms` is marked as non-returning, which forces the logic to be written correctly: anything that must be preserved is saved before the call. The simulator behaves identically — it destroys the core object and recreates it from the retained block.
 
-**Telemetry is polled, as input is** (phase 4b, ADR 0030). Every call returns at once: `publish()` copies the message into the adapter's queue -- `HAL_ERR_NOT_READY` without a session, `HAL_ERR_NO_MEM` when the queue is full -- and what arrives waits for `poll()`, the adapter waking the event loop as the touch adapter does. The sketch above once had no `poll()`, which would have meant a callback into the core from the MQTT client's task. Neither port reconnects or queues on the core's behalf: `core/reporting/reporter.c` decides when to connect, and starts each session with `online`, every discovery config and the state, so nothing published while offline is kept for later -- the card keeps the history (ADR 0024). The network's state reaches the state message's `rssi`, never the screen's reading, so a Wi-Fi outage redraws nothing.
+**Telemetry is polled, as input is** (phase 4b, ADR 0030). Every call returns at once: `publish()` copies the message into the adapter's queue -- `HAL_ERR_NOT_READY` without a session, `HAL_ERR_NO_MEM` when the queue is full -- and what arrives waits for `poll()`, the adapter waking the event loop as the touch adapter does. The sketch above once had no `poll()`, which would have meant a callback into the core from the MQTT client's task. Neither port reconnects or queues on the core's behalf: `core/reporting/reporter.c` decides when to connect, and starts each session with `online`, every discovery config and the state, so nothing published while offline is kept for later -- the card keeps the history (ADR 0024). The network's state reaches the state message's `rssi` as it is; the screen's reading gets the link only held -- `online`, `no broker` or `no Wi-Fi` once it has lasted a minute (`core/app/link_hold.h`, ADR 0031) -- so a link that flaps redraws nothing, and an outage longer than a minute redraws twice, its start and its end.
 
 **Files on a removable medium are a port of their own** (phase 3f, ADR 0024), not `port_storage`'s `log_append`: the sensor recordings and the debug log are streams of rows on a microSD card that may be absent, pulled out or full, where `port_storage` holds small values written whole into NVS and RTC memory.
 
