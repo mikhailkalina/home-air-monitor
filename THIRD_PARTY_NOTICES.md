@@ -11,7 +11,7 @@ whenever a dependency is added or removed.
 | argtable3 (inside ESP-IDF's `console` component) | 3.2.2 | BSD-3-Clause, plus the BSD/Tcl-style notices of code it bundles | `apps/firmware_esp32/main/console.c` (command parsing, `help`) | No — part of ESP-IDF; see below |
 | FatFs (ChaN, inside ESP-IDF's `fatfs` component) | R0.15 w/patch2, ESP-IDF 5.5's copy | FatFs licence (one-clause BSD-style) | `platform/esp32_t5s3/adp_sd.c` (the microSD card's filesystem, phase 3f) | No — part of ESP-IDF; see below |
 | Espressif's Wi-Fi and PHY libraries (`libnet80211`, `libpp`, `libphy` and their kin, ESP-IDF's `esp_wifi/lib` and `esp_phy/lib`) | ESP-IDF 5.5's (`esp_wifi/lib` at `8a1b7bbc00e895d040c5c9a6fb9d1db2bbfc7958`) | Apache-2.0, as object code | `platform/esp32_t5s3/adp_net.c` (the Wi-Fi station, phase 4e) -- only in an image built with a network | No — part of ESP-IDF; see below |
-| lwIP (inside ESP-IDF's `lwip` component) | 2.2.0, ESP-IDF 5.5's copy | BSD-3-Clause | the same: the station's TCP/IP, through `esp_netif` | No — part of ESP-IDF; see below |
+| lwIP (inside ESP-IDF's `lwip` component) | 2.2.0, ESP-IDF 5.5's copy | BSD-3-Clause | the same: the station's TCP/IP, through `esp_netif`; since phase 4f also its SNTP client and DNS resolver (`apps/firmware_esp32/main/net_time.c`) | No — part of ESP-IDF; see below |
 | wpa_supplicant (inside ESP-IDF's `wpa_supplicant` component) | ESP-IDF 5.5's copy | BSD-3-Clause | the same: WPA2/WPA3's handshakes | No — part of ESP-IDF; see below |
 | Mbed TLS (inside ESP-IDF's `mbedtls` component) | 3.6.3 | Apache-2.0 OR GPL-2.0-or-later -- **used under Apache-2.0** | the same: the supplicant's cryptography | No — part of ESP-IDF; see below |
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
@@ -128,7 +128,16 @@ Checked in `~/esp/esp-idf/components` (ESP-IDF 5.5), 2026-10-21:
   provided in the file LICENSE", which is Apache-2.0's text; `esp_phy/lib`
   carries the same file.
 - **lwIP** 2.2.0 (`lwip/lwip/COPYING`, Swedish Institute of Computer
-  Science): BSD-3-Clause.
+  Science): BSD-3-Clause. Phase 4f (`docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`,
+  "Amendment (phase 4f)") links two more of its parts into the same image:
+  its SNTP client (`lwip/src/apps/sntp/sntp.c`, Copyright (c) 2007-2009
+  Frédéric Bernon and Simon Goldschmidt) and its DNS resolver
+  (`lwip/src/core/dns.c`, Jim Pettinato's port of Adam Dunkels's uIP
+  resolver, Copyright (c) 2002-2003 Adam Dunkels), both under the same
+  three-clause BSD terms -- checked 2026-10-21 --
+  so the binary notice below gains their copyright lines. ESP-IDF's
+  `esp_netif_sntp` and its SNTP glue (`lwip/apps/sntp/sntp.c`) are its own,
+  Apache-2.0.
 - **wpa_supplicant** (`wpa_supplicant/README`, Jouni Malinen and
   contributors): "the BSD license (the one with advertisement clause
   removed)", three clauses.

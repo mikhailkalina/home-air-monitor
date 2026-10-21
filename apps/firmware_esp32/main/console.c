@@ -25,6 +25,7 @@
 #include "domain/civil_time.h"
 #include "gt911_touch.h"
 #include "i2c_scan.h"
+#include "net_time.h"
 #include "pcf8563.h"
 #include "port_clock.h"
 #include "port_net.h"
@@ -76,6 +77,8 @@ static console_deps_t s_deps;
 // "YYYY-MM-DDTHH:MM:SSZ" and its terminator; "YYYY-MM-DD HH:MM:SS UTC+hh:mm".
 #define UTC_TEXT_LEN (CIVIL_ISO8601_UTC_LEN + 1u)
 #define LOCAL_TEXT_LEN 32u
+// A signed 64-bit number of milliseconds as text, or "none".
+#define STEP_TEXT_LEN 24u
 #define MINUTES_PER_HOUR 60
 static const char *hal_status_text(hal_status_t s)
 {
@@ -174,9 +177,68 @@ static void format_local(char *dst, size_t cap, uint64_t unix_ms)
                    (int)(magnitude / MINUTES_PER_HOUR), (int)(magnitude % MINUTES_PER_HOUR));
 }
 
-// Two lines: the system time and where it came from, or why there is none;
-// then what the RTC holds now, with its registers, so a VL bit or a stopped
-// clock shows as it is on the chip.
+// What the network has said (phase 4f, net_time.h): where SNTP stands, its
+// last answer, where the RTC's sync is and what it measured, and the RTC's
+// INT on IO9 -- its edges so far and its level, high while no alarm is due.
+static void print_sntp(void)
+{
+    net_time_status_t st;
+    net_time_status(&st);
+    if (!st.started) {
+        printf("TIME_SNTP off: %s\n",
+               (s_deps.net == NULL) ? "no network in this image" : "net_time did not start");
+        return;
+    }
+    printf("TIME_SNTP rtc sync: %s; INT on IO9 %s, %u edges; next write planned with "
+           "first_tick_ms=%u (%s)\n",
+           rtc_sync_phase_name(st.phase), st.int_low ? "low" : "high", (unsigned)st.int_edges,
+           (unsigned)st.first_tick_ms, st.first_tick_learned ? "measured" : "the datasheet's");
+    if (!st.sntp_running) {
+        if (st.sntp_err != 0) {
+            printf("TIME_SNTP not started: esp_netif_sntp_init() esp_err=%d\n", (int)st.sntp_err);
+        } else {
+            printf("TIME_SNTP waiting for Wi-Fi's first address; then asks %s\n", st.server);
+        }
+        return;
+    }
+    if (st.syncs == 0u) {
+        printf("TIME_SNTP asking %s, no answer yet; refused=%u\n", st.server, (unsigned)st.refused);
+        return;
+    }
+    const port_clock_t *clock = adp_clock_port(s_deps.clock);
+    const uint64_t now = clock->now_ms(clock);
+    char last[UTC_TEXT_LEN];
+    format_utc(last, sizeof(last), st.last_sync_utc_ms);
+    char step[STEP_TEXT_LEN] = "none";
+    if (st.step_known) {
+        (void)snprintf(step, sizeof(step), "%lld", (long long)st.system_minus_sntp_ms);
+    }
+    printf("TIME_SNTP server=%s syncs=%u last=%s (%llu s ago) system_minus_sntp_ms=%s "
+           "refused=%u\n",
+           st.server, (unsigned)st.syncs, last,
+           (unsigned long long)((now - st.last_sync_ms) / 1000u), step, (unsigned)st.refused);
+    if (st.offset_known) {
+        printf("TIME_SNTP before the last write: rtc_minus_sntp_ms=%lld (+-%u)",
+               (long long)st.rtc_minus_sntp_ms, (unsigned)st.offset_uncertainty_ms);
+    } else {
+        printf("TIME_SNTP before the last write: no tick to compare");
+    }
+    if (st.drift_known) {
+        printf(" drift_ppm=%.2f (+-%.2f)\n", (double)st.drift_ppm,
+               (double)st.drift_uncertainty_ppm);
+    } else {
+        printf(" drift: not known -- it needs this boot's last write ten minutes back\n");
+    }
+    printf("TIME_SNTP writes=%u failed=%u", (unsigned)st.writes, (unsigned)st.write_failures);
+    if (st.landed_known) {
+        printf(" landed residual_ms=%lld", (long long)st.residual_ms);
+    }
+    printf("\n");
+}
+
+// The system time and where it came from, or why there is none; what SNTP
+// has said; then what the RTC holds now, with its registers, so a VL bit or
+// a stopped clock shows as it is on the chip.
 static void print_time(void)
 {
     wall_clock_rtc_t rtc;
@@ -192,9 +254,11 @@ static void print_time(void)
         printf("TIME utc=%s %s=\"%s\" source=\"%s\"\n", utc, s_deps.zone_name, local,
                wall_clock_source_name(*s_deps.wall_source));
     } else {
-        printf("TIME none: %s -- set it with time_set YYYY-MM-DDTHH:MM:SSZ (UTC)\n",
-               wall_clock_rtc_reason(&rtc));
+        printf("TIME none: %s -- set it with time_set YYYY-MM-DDTHH:MM:SSZ (UTC)%s\n",
+               wall_clock_rtc_reason(&rtc),
+               (s_deps.net != NULL) ? ", or wait for the network's" : "");
     }
+    print_sntp();
 
     if (rtc.chip.verdict == PCF8563_TIME_NOT_ANSWERING) {
         printf("TIME_RTC %s (bus: %s)\n", wall_clock_rtc_reason(&rtc),
@@ -242,6 +306,8 @@ static int cmd_time_set(void *context, int argc, char **argv)
 
     const hal_status_t rtc =
         wall_clock_write_rtc(adp_i2c_port(s_deps.bus), BOARD_RTC_I2C_ADDRESS, unix_ms);
+    // Written to the second, not to its start: no drift from the last mark.
+    net_time_forget_rtc_mark();
     const hal_status_t system = adp_clock_set_wall_ms(s_deps.clock, unix_ms);
     if (system == HAL_OK) {
         *s_deps.wall_source = WALL_CLOCK_SOURCE_CONSOLE;
@@ -261,8 +327,34 @@ static int cmd_time_set(void *context, int argc, char **argv)
                    (rtc == HAL_OK && system == HAL_OK) ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR,
                    "console", "time_set", fields, sizeof(fields) / sizeof(fields[0]));
 
+    if (s_deps.net != NULL) {
+        printf("TIME_SET until the network's next answer, which sets both again\n");
+    }
     print_time();
     return (rtc == HAL_OK && system == HAL_OK) ? 0 : 1;
+}
+
+// The RTC with no time for a boot to find: its STOP bit set, as a clock
+// that stopped would read ("rtc: stopped"). For the check that a boot with
+// nothing in the RTC still shows the right time once the network answers
+// (docs/hardware/board_notes.md, open item "Time from the network on the
+// board"). The system time is left as it is; time_set, or SNTP's next
+// answer, starts the RTC again.
+static int cmd_rtc_stop(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    const hal_status_t st = pcf8563_stop(adp_i2c_port(s_deps.bus), BOARD_RTC_I2C_ADDRESS);
+    net_time_forget_rtc_mark();
+    printf("TIME_RTC_STOP %s: the RTC stands still -- a boot now finds no time in it; "
+           "time_set or the network's next answer starts it again\n",
+           hal_status_text(st));
+    const log_field_t fields[] = {log_str("status", hal_status_text(st))};
+    port_log_write(s_deps.log, (st == HAL_OK) ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",
+                   "rtc_stop", fields, 1u);
+    print_time();
+    return (st == HAL_OK) ? 0 : 1;
 }
 
 // --- the card ------------------------------------------------------------------------
@@ -750,6 +842,12 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_time_set,
         .context = NULL,
     };
+    const esp_console_cmd_t rtc_stop_cmd = {
+        .command = "rtc_stop",
+        .help = "Stop the RTC, so that a boot finds no time in it (time_set or SNTP restarts it)",
+        .func_w_context = cmd_rtc_stop,
+        .context = NULL,
+    };
     const esp_console_cmd_t sd_cmd = {
         .command = "sd",
         .help = "The microSD card: mounted or not and why, its size and free space, the files",
@@ -818,6 +916,9 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         err = esp_console_cmd_register(&time_set_cmd);
     }
     if (err == ESP_OK) {
+        err = esp_console_cmd_register(&rtc_stop_cmd);
+    }
+    if (err == ESP_OK) {
         err = esp_console_cmd_register(&sd_cmd);
     }
     if (err == ESP_OK) {
@@ -872,8 +973,8 @@ hal_status_t console_start(const console_deps_t *deps)
 
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
-        log_str("commands", "help i2c_scan i2c_recover restart time time_set sd sd_mount "
-                            "sd_eject rec touch touch_sleep touch_wake wifi vbat"),
+        log_str("commands", "help i2c_scan i2c_recover restart time time_set rtc_stop sd "
+                            "sd_mount sd_eject rec touch touch_sleep touch_wake wifi vbat"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

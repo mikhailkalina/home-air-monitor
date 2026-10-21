@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// The PCF8563 real-time clock over port_i2c: read the time, set the time.
+// The PCF8563 real-time clock over port_i2c: read the time, set the time --
+// since phase 4f also to a second's start -- and arm its alarm, whose INT
+// marks the clock's own tick.
 // Plain functions, not a port -- there is one RTC, on the board, and the
 // simulator's wall time comes from adp_clock_virtual, so there is no second
 // implementation for a port to abstract over (CLAUDE.md). Like the sensor
@@ -30,6 +32,11 @@
 //   0x06 Weekdays          0-6 in 2:0 -- a counter the chip only increments
 //   0x07 Century_months    C (7); months 1-12 in 4:0
 //   0x08 Years             0-99
+//   0x01 Control_status_2  AF (3), AIE (1); TI_TP (4), TF (2) and TIE (0)
+//                          are the timer's, never used here. Writing 0 to
+//                          AF clears it; 1 leaves it (Table 6).
+//   0x09-0x0C              the minute, hour, day and weekday alarms, each
+//                          AE_x in bit 7 -- 1 is off (Tables 18-21)
 //
 // Years are 2000-2099: the years register and nothing else. The century bit
 // is not read: its polarity differs between this chip and its look-alikes
@@ -43,7 +50,17 @@
 //
 // The chip holds its time counters still while an I2C access is in progress
 // (for up to a second), so one burst read of 0x00-0x08 sees a coherent time
-// and one burst write sets one.
+// and one burst write sets one. A tick that falls inside an access is held
+// and counted when it ends (datasheet Rev. 11.1, 8.5).
+//
+// Where in its second a clock is set (phase 4f,
+// docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md, "Amendment:
+// time from the network"): writing the time registers of a running clock
+// leaves its prescaler where it was, so the next tick comes wherever in the
+// second the old phase puts it -- anything up to a second off. Only STOP
+// resets the prescaler (8.10): pcf8563_stop(), pcf8563_write_time(), then
+// pcf8563_start() at the right moment, and the first tick follows the start
+// by PCF8563_FIRST_TICK_AFTER_START_US.
 
 #ifndef HAC_DRIVERS_PCF8563_PCF8563_H
 #define HAC_DRIVERS_PCF8563_PCF8563_H
@@ -65,6 +82,13 @@ extern "C" {
 
 #define PCF8563_YEAR_MIN 2000u
 #define PCF8563_YEAR_MAX 2099u
+
+// The datasheet's (Rev. 11.1, 8.10, Table 26 and Figure 11): "The first
+// increment of the time circuits is between 0.507813 s and 0.507935 s after
+// the STOP bit is released" -- the prescaler's upper stages restart from 0,
+// its lowest two and the crystal's own phase are not known. The middle of
+// that range, in microseconds; it is off by 61 us at most.
+#define PCF8563_FIRST_TICK_AFTER_START_US 507874u
 
 // A time as the clock holds it: UTC.
 typedef struct {
@@ -103,8 +127,43 @@ void pcf8563_read(port_i2c_t *bus, uint8_t address, pcf8563_reading_t *out);
 // Sets the clock to `utc`: Control_status_1 to 0 -- running, not in a test
 // mode -- then registers 0x02-0x08, which clears VL. HAL_ERR_INVALID_ARG,
 // with nothing written, when `utc` is out of range (pcf8563_encode()); else
-// the first failed transfer's status.
+// the first failed transfer's status. To the second only: a clock that was
+// running keeps its prescaler's phase (above).
 hal_status_t pcf8563_set(port_i2c_t *bus, uint8_t address, const pcf8563_time_t *utc);
+
+// Control_status_1 to STOP: the prescaler's upper stages held at 0, no tick,
+// the time standing at what it reads until pcf8563_start(). A clock left so
+// reads PCF8563_TIME_STOPPED.
+hal_status_t pcf8563_stop(port_i2c_t *bus, uint8_t address);
+
+// Registers 0x02-0x08 to `utc` in one access, VL clear; Control_status_1 is
+// not touched, so a running clock keeps its prescaler's phase and a stopped
+// one stays stopped. HAL_ERR_INVALID_ARG, with nothing written, when `utc`
+// is out of range (pcf8563_encode()).
+hal_status_t pcf8563_write_time(port_i2c_t *bus, uint8_t address, const pcf8563_time_t *utc);
+
+// Control_status_1 to 0: running, not in a test mode. After pcf8563_stop()
+// the first tick comes PCF8563_FIRST_TICK_AFTER_START_US after this write,
+// and one every second after that -- by the datasheet; what this board's
+// chip does is measured, not assumed (phase 4f's rtc_sync.h).
+hal_status_t pcf8563_start(port_i2c_t *bus, uint8_t address);
+
+// The alarm, as a mark of the clock's own tick (phase 4f). The flag AF
+// "sets ... when the time increments to match the alarm condition" (8.6.5):
+// with the minute alarm alone enabled, at the tick that starts that minute;
+// with AIE set, the open-drain INT follows AF, low until AF is cleared.
+//
+// Arms it for `minute` (0-59): registers 0x09-0x0C in one access -- the
+// minute alarm on, the hour, day and weekday alarms off -- then
+// Control_status_2 to AIE alone, which clears AF and TF and leaves the
+// timer's interrupt off. A minute that matches already does not set AF: only
+// the increment into it does. HAL_ERR_INVALID_ARG for a minute above 59,
+// nothing written.
+hal_status_t pcf8563_alarm_at_minute(port_i2c_t *bus, uint8_t address, uint8_t minute);
+
+// Control_status_2 to 0 -- AF and TF cleared, both interrupts off, INT let go
+// -- then the minute alarm off.
+hal_status_t pcf8563_alarm_off(port_i2c_t *bus, uint8_t address);
 
 // The judgement pcf8563_read() makes of what it read, without a bus.
 // out->bus is set to HAL_OK.

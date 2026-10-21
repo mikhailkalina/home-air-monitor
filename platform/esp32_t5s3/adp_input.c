@@ -14,13 +14,9 @@
 #include "esp_rom_sys.h"
 
 #include "board_config.h"
+#include "board_gpio_isr.h"
 
 #define TAG "adp_input"
-
-// The shared GPIO ISR service's interrupt flags: none -- any priority level,
-// a handler not in IRAM. Named also because scripts/check_sources.sh reads a
-// bare literal as the first argument of a gpio_*() call as a pin number.
-#define ISR_SERVICE_FLAGS 0
 
 static adp_input_t *self_of(void *ctx)
 {
@@ -159,11 +155,8 @@ static hal_status_t start_isr(adp_input_t *a)
     const gt911_trigger_t trigger = gt911_info(&a->gt.dev)->trigger;
     a->level_triggered = trigger == GT911_TRIGGER_LOW_LEVEL || trigger == GT911_TRIGGER_HIGH_LEVEL;
 
-    // Someone else may have installed the shared GPIO ISR service already.
-    esp_err_t err = gpio_install_isr_service(ISR_SERVICE_FLAGS);
-    if (err == ESP_ERR_INVALID_STATE) {
-        err = ESP_OK;
-    }
+    // The shared GPIO ISR service, installed once for every adapter on it.
+    esp_err_t err = board_gpio_isr_service();
     if (err == ESP_OK) {
         err = gpio_set_intr_type(BOARD_TOUCH_IRQ_GPIO, intr_type_of(trigger));
     }

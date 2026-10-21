@@ -32,8 +32,15 @@
 // (adp_net.c), for the network sdkconfig.credentials names -- none, and the
 // firmware runs as before. Its driver is set up with the rest; its radio
 // starts once the first frame is on the glass (start_radio()), and the
-// console's wifi shows it. Nothing uses the link yet: MQTT is the next
-// sub-phase's.
+// console's wifi shows it. Nothing uses the link yet but phase 4f's time:
+// MQTT is the next sub-phase's. Phase 4f
+// (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md, "Amendment
+// (phase 4f): time from the network"): once Wi-Fi first has an address,
+// SNTP sets the system time, and after each answer the event loop measures
+// the RTC by its alarm's tick on INT -- stamped in an interrupt on IO9 -- and
+// writes it to a second's start (net_time.c, rtc_sync.c): the drift, logged
+// every hour. The console's time shows it, and rtc_stop leaves the RTC with
+// no time for a boot to find.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -44,7 +51,9 @@
 // bring_up_i2c()) -- then the system time from the RTC (set_clock_from_rtc()),
 // then the card's SPI bus and its task, which mounts the card -- after the
 // rail as well (see start_card()) -- then the touch controller and its task
-// (start_touch()), the Wi-Fi station with its radio off (start_network()),
+// (start_touch()), the Wi-Fi station with its radio off (start_network())
+// and the wait for its first address, the RTC's INT interrupting
+// (start_net_time()),
 // optionally the whole-panel bring-up
 // diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
@@ -62,6 +71,7 @@
 
 #include "sdkconfig.h"  // CONFIG_HAC_*: which display and which BME68x source
 
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "esp_system.h"
@@ -75,6 +85,7 @@
 #include "adp_net.h"
 #include "adp_sd.h"
 #include "board_config.h"
+#include "board_gpio_isr.h"
 #include "board_power.h"
 
 #include "app/link_hold.h"
@@ -107,6 +118,7 @@
 #include "epd_calibration.h"
 #include "event_loop.h"
 #include "log_tee.h"
+#include "net_time.h"
 #include "wall_clock.h"
 
 // Phase 2a's figure was 6144: ~2 KB IDF/vsnprintf baseline, ~400 B
@@ -467,6 +479,14 @@ static void start_console(const console_deps_t *deps)
 static void start_touch(adp_input_t *touch, adp_i2c_t *i2c, const port_clock_t *clock,
                         const port_log_t *log)
 {
+    // The GPIO ISR service, here on app_main before the touch task or the
+    // RTC's INT asks for it: installed once, no second call logged as an
+    // error (board_gpio_isr.h).
+    const esp_err_t isr = board_gpio_isr_service();
+    if (isr != ESP_OK) {
+        const log_field_t fields[] = {log_i64("esp_err", (int64_t)isr)};
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "GPIO ISR service not installed", fields, 1u);
+    }
     const adp_input_config_t cfg = {
         .bus = adp_i2c_port(i2c),
         .clock = clock,
@@ -549,6 +569,30 @@ static port_net_t *start_network(adp_net_t *net, const char *hostname, const por
     return adp_net_port(net);
 }
 
+// Time from the network, for an image with one: the RTC's alarm taken
+// back, its INT interrupting, and the wait for the station's first address,
+// when SNTP starts; the rest is the event loop's, through net_time_step().
+// The condition is a constant, as start_network()'s: without a network
+// nothing here is called, and the linker drops SNTP with the rest of the
+// stack. True when the event loop is to step it.
+static bool start_net_time(port_net_t *net, adp_i2c_t *i2c, const port_clock_t *clock,
+                           const port_log_t *log, wall_clock_source_t *wall_source)
+{
+    if (CONFIG_HAC_WIFI_SSID[0] == '\0' || net == NULL) {
+        return false;
+    }
+    const net_time_config_t cfg = {
+        .bus = adp_i2c_port(i2c),
+        .rtc_address = BOARD_RTC_I2C_ADDRESS,
+        .clock = clock,
+        .log = log,
+        .wall_source = wall_source,
+        .server = CONFIG_HAC_SNTP_SERVER,
+        .wake = event_loop_post_time,
+    };
+    return net_time_init(&cfg) == HAL_OK;
+}
+
 // event_loop.h's first-frame hook: the radio on, now that the switched rail
 // has long settled and the panel has stopped being driven. up() only asks;
 // the station's task starts the radio -- its RF calibration the current this
@@ -573,6 +617,8 @@ static const char *clock_word(wall_clock_source_t source)
             return "console";
         case WALL_CLOCK_SOURCE_KEPT:
             return "kept";
+        case WALL_CLOCK_SOURCE_SNTP:
+            return "sntp";
         case WALL_CLOCK_SOURCE_NONE:
             break;
     }
@@ -580,8 +626,8 @@ static const char *clock_word(wall_clock_source_t source)
 }
 
 // event_loop.h's facts hook: what the diagnostics screen shows that only the
-// composition knows. Read on the event loop's task; the card's task and the
-// console write them, a word each.
+// composition knows. Read on the event loop's task; the card's task and
+// the console write them, a word each, and net_time_step() on this task.
 static void screen_facts(void *ctx, diag_recorder_t *recorder, const char **clock_source)
 {
     const wall_clock_source_t *wall_source = (const wall_clock_source_t *)ctx;
@@ -813,14 +859,14 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 4e: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch, Wi-Fi",
+                   "phase 4f: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch, Wi-Fi, SNTP",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 4e: EPDiy driving the panel, " SENSORS_TEXT
-                   ", the RTC, the microSD card, touch, Wi-Fi",
+                   "phase 4f: EPDiy driving the panel, " SENSORS_TEXT
+                   ", the RTC, the microSD card, touch, Wi-Fi, SNTP",
 #endif
                    NULL, 0u);
 
@@ -892,6 +938,7 @@ void app_main(void)
     // After the rail, the log's release, the card and touch; the radio itself
     // waits for the first frame (start_radio()).
     port_net_t *net = start_network(&s_net, s_device_id, clock, log);
+    const bool net_time = start_net_time(net, &s_i2c, clock, log, &s_wall_source);
 
     const update_policy_config_t cfg = update_policy_config_default();
     const update_policy_limits_t limits = update_policy_limits_from_display(display);
@@ -937,6 +984,10 @@ void app_main(void)
         .link = &s_link,
         .after_first_frame = start_radio,
         .after_first_frame_ctx = net,
+        // The constant first, as in start_net_time(): without a network the
+        // step is not referenced at all.
+        .step = (CONFIG_HAC_WIFI_SSID[0] != '\0' && net_time) ? net_time_step : NULL,
+        .step_ctx = NULL,
     };
     event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
                      EVENT_LOOP_TASK_CORE);

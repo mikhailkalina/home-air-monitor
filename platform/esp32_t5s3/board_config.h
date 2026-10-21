@@ -149,7 +149,9 @@
 // PWR_EN, no reset stops it, and it should keep time with the board
 // unpowered, if the cell is fitted and charged (open item). Its open-drain
 // INT goes to IO9, pulled up to VDD3V3 through 10 kOhm: alarm and timer
-// interrupts, unused -- a candidate wake source for phase 5's deep sleep.
+// interrupts. Since phase 4f the alarm marks the RTC's tick there, stamped in
+// an interrupt (board_rtc_int.c); an RTC GPIO, so a wake source for phase 5's
+// deep sleep too.
 // CLKOUT is pulled up and goes nowhere this firmware uses.
 #define BOARD_RTC_INT_GPIO 9
 

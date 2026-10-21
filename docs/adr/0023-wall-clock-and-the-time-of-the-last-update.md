@@ -19,6 +19,17 @@ cell is fitted and holds. Still to see there: whether it kept counting
 through the cut (`time` against a reference), longer outages, `restart`, the
 drift and the autumn change.
 
+**Amended 2026-10-21, phase 4f** (branch `phase-4f-sntp`; "Amendment (phase
+4f): time from the network", at the end): SNTP sets the system time once
+Wi-Fi is up, and after each answer the event loop measures the RTC by its
+alarm's tick on INT, stamped in an interrupt, and writes it to a second's
+start. Verified on the host against a model of the chip that keeps time and
+raises its alarm. A first version, with a task of its own that polled the
+RTC for its tick, ran on the board the same evening; what it showed is in
+the amendment, and changed the design. The design as it stands ran on the
+board on 2026-10-22: INT on IO9 works, the write went out on time, and the
+landing measured this chip's first tick a whole second after a start.
+
 Supersedes the periodic redraw ADR 0019 kept ("The periodic redraw only
 while the data is getting older"), and departs from `docs/requirements.md`
 9.1's example "Time since last update > 2 min -> update display". Shortens
@@ -262,8 +273,298 @@ step at its next redraw.
 
 - **Phase 4**: SNTP sets the system time with nothing changed here; it should
   then write the RTC, so a reboot does not fall back to the crystal's drift.
+  Done in phase 4f, with more changed than this foresaw (the amendment below).
 - **Phase 5**: the RTC's INT on IO9 (`BOARD_RTC_INT_GPIO`, pulled up, unused
   now) is a wake-source candidate for deep sleep; the RTC keeps its time
   through deep sleep on `VCC_RTC`, while `now_ms()` restarts -- so a value's
   wall time across a sleep cannot come from `ts_ms`, which is
   `persisted_state_t`'s problem, already open in `board_notes.md`.
+
+## Amendment (phase 4f): time from the network
+
+Date: 2026-10-21. Branch `phase-4f-sntp`.
+
+Phase 4e gave the board a network (ADR 0032). Until now the clock was set by
+hand -- `time_set` -- and drifted at the crystal's rate, the ESTIMATE above of
+about a minute a month, with nothing to measure it but someone reading `time`
+beside a reference weeks apart (`board_notes.md`, open item "The RTC on the
+board", *Drift*).
+
+### SNTP, from Wi-Fi's first address
+
+`apps/firmware_esp32/main/net_time.c` registers for ESP-IDF's
+`IP_EVENT_STA_GOT_IP`; at the first, the event loop starts ESP-IDF's
+`esp_netif_sntp` with one server, `CONFIG_HAC_SNTP_SERVER`
+(`main/Kconfig.projbuild`, `pool.ntp.org` by default: the NTP Pool's own name
+suits one person's device; a product sold in numbers would ask the Pool for a
+vendor zone), and an hour between answers (`NET_TIME_SYNC_INTERVAL_MS`,
+ESP-IDF's default made this project's choice). From then on lwIP asks by
+itself: an unanswered request again 15 s later, doubling to 150 s, through any
+outage. A later address does not restart it. No server from DHCP (option 42,
+which needs `CONFIG_LWIP_DHCP_GET_NTP_SRV`): the owner names one, a router's or
+Home Assistant's as well as the Pool.
+
+### lwIP's answer on lwIP's task; the rest on the event loop
+
+lwIP hands an answer to `sntp_sync_time()` on its own tcpip task, which must
+not wait on the I2C bus. ESP-IDF declares that function weak and documents
+replacing it (`components/lwip/include/apps/esp_sntp.h`); `net_time.c`
+replaces it. The server's time is held to `wall_clock_believable_ms()` --
+2026 to 2099, this firmware's floor and the chip's last year -- because lwIP
+as ESP-IDF builds it checks little of an answer (`SNTP_CHECK_RESPONSE` 0: no
+leap indicator, no stratum but the kiss of death), a server that has not
+synchronised itself can answer anything, and what is set here is written into
+the RTC. A believable time is set at once with `settimeofday()`, as the
+default does, and the sync status completed; any other is refused and nothing
+is set. Either way the answer is left in a mailbox under a spinlock and the
+event loop woken (`event_loop_post_time()`); nothing else happens there. Not
+`esp_netif_sntp`'s `sync_cb`: it is called after the default has already set
+the time, too late to refuse one. With the default replaced,
+`esp_netif_sntp_sync_wait()` and the notification callback no longer fire;
+nothing here uses them.
+
+Everything else runs on the event loop, through a step hook of its own with a
+deadline (`event_loop_deps_t.step`, `net_time_step()`): the answer logged
+(`synced`, with how far the system time had been from it), the wall clock's
+source set to `sntp` -- `time`'s `source="sntp"`, the diagnostics screen's
+"Clock: set (sntp)" -- and the RTC's sync, `apps/firmware_esp32/main/rtc_sync.c`,
+stepped. When ADR 0022's display task takes the panel off the event loop, the
+step goes with the sensors, which keep the bus. No task of its own: see "The
+first version", below.
+
+### The RTC measured by its own tick, on INT
+
+Reading the PCF8563 says which second it is in; where in that second it is,
+only its tick says. Its alarm marks one: AF "sets ... when the time increments
+to match the alarm condition", and with AIE set the open-drain INT "follows
+the condition of bit AF" (datasheet Rev. 11.1, 8.6.5). With the minute alarm
+alone enabled, INT falls at the tick that starts that minute. It goes to IO9
+(`BOARD_RTC_INT_GPIO`, pulled up to `VDD3V3` -- the schematic's, read, not
+measured), where `platform/esp32_t5s3/board_rtc_int.c` stamps each falling
+edge with `esp_timer_get_time()` in an interrupt. That stamp is the
+measurement, to the interrupt's latency, whatever the tasks are doing; when
+the event loop looks at it does not matter.
+
+`rtc_sync.c`, after each answer:
+
+1. reads the RTC and arms the alarm for its next minute -- the one after, from
+   second 58 on (`RTC_SYNC_ARM_LATEST_SECOND`), so that an increment between the
+   reading and the arming cannot push it an hour away;
+2. at the edge: the RTC's time there is that whole minute, found from a
+   reading taken any time later less the time since the edge, rounded to the
+   minute; the system time there is the edge's stamp carried over from
+   `now_ms()`. Their difference is the RTC's offset, and from the last write's
+   mark its rate (`rtc_sync_drift()`, over at least ten minutes,
+   `WALL_CLOCK_DRIFT_MIN_ELAPSED_MS`). Logged, `rtc against sntp`, before the
+   write. The alarm is taken back, INT let go. No edge by a second and a half
+   after the latest the minute can start (`RTC_SYNC_EDGE_GRACE_MS`): "no INT
+   edge", and the write goes ahead unmeasured;
+3. the write -- below;
+4. the alarm armed again, and the next minute's edge says where the RTC
+   landed: `rtc landed residual_ms=...`, the mark the next drift is measured
+   from. Measured, never predicted.
+
+The whole takes one to three minutes of wall time, two minute boundaries; on
+the event loop it is about six steps of a few I2C transfers, a millisecond
+each, and the write's spin.
+
+### The RTC set to a second's start
+
+Writing the time registers of a running PCF8563 leaves its prescaler where it
+was, so the next tick comes where the old phase puts it -- anything up to a
+second off the second written. Only STOP resets the prescaler's upper stages,
+and by the datasheet "the first increment of the time circuits is between
+0.507813 s and 0.507935 s after the STOP bit is released" (8.10, Table 26).
+`pcf8563_set()`, which `time_set` uses, writes to the second only; a boot then
+reads the RTC to the second, truncated. To the minute the screen shows,
+nothing; to an hour's drift of a hundred milliseconds, everything.
+
+The write is planned for the start whose first tick falls on a second's end,
+at least `RTC_SYNC_WRITE_LEAD_MS` ahead; the event loop is woken
+`RTC_SYNC_SPIN_MAX_MS` (30 ms) before it, stops the clock, writes the second,
+spins the rest in single milliseconds and starts it, stamping the system time
+either side of the start's transfer. A wake too late for the moment -- the
+loop held by a full refresh, 3.7 s today -- plans it again for a later
+second, `RTC_SYNC_MAX_REARMS` (3) times; then the start goes out where the
+loop is, late, and the landing measures how late. The clock stands still for
+the spin at most, 30 ms an hour; a reset in it leaves the clock stopped, which
+the next boot reads as "rtc: stopped" and the next answer starts. A failed
+transfer never leaves it stopped either. The driver gained the writes it
+takes: `pcf8563_stop()`, `pcf8563_write_time()`, `pcf8563_start()`,
+`pcf8563_alarm_at_minute()`, `pcf8563_alarm_off()`.
+
+**The delay from a start to the first tick is learned.** The write is planned
+with the datasheet's 508 ms until a landing has measured this chip's: the
+first tick after a start comes at the landing's tick less its offset, less
+the start's stamps. A measured delay between 0.1 and 1.9 s
+(`RTC_SYNC_FIRST_TICK_MIN_MS`, `_MAX_MS`) is the next write's; outside, a
+measurement gone wrong, and the last believed value stays. It lives in RAM: the
+first write after a boot uses the datasheet's again.
+
+### The first version, on the board, and why it changed
+
+The first version of this amendment gave the work a task of its own
+(`hac_time`, 6 KB, priority 5 on core 0), which found the tick by polling the
+RTC -- every 10 ms until its seconds changed, then every millisecond across
+the next one -- and timed the write by spinning, about 3 s an hour, and
+predicted the landing from the datasheet's delay before measuring it by
+polling again. It ran on the board on 2026-10-21 (ELF `9fb8fd2b5...`, the BSEC
+image, the owner's YAT log of 23:41 local, one sync):
+
+- **The write landed 481 ms behind** (`rtc written ... residual_ms=-481
+  uncertainty_ms=2 stopped_ms=45 start_late_ms=0 rearms=0`): started on time,
+  the RTC's first tick came about 0.989 s after the start, not the
+  datasheet's 0.508. One sample: the chip may be a look-alike of the
+  PCF8563 -- its marking is to be read -- or behave so for another reason. The
+  datasheet's delay cannot be trusted to predict a landing: hence the landing
+  measured, and the delay learned.
+- **The RTC had drifted -12.9 s** (`rtc_minus_sntp_ms=-12918 uncertainty_ms=1`),
+  the system time from it -13.1 s (`system_minus_sntp_ms=-13148`, the boot's
+  truncation the 0.23 s between). Since the `time_set` of
+  2026-10-16T17:35:40Z, if nothing wrote it in between, that is -29 ppm,
+  ±3 for the hand-typed second: outside the ±20 ppm ESTIMATE, some 105 ms an
+  hour.
+- **The task cost 8.4 KB** of internal RAM with the link up
+  (`memory with the link up free_internal=66015`, against 74,419 in phase 4e's
+  last image), its stack 3.2 KB used of 6.
+- **Polling found the tick** to 1-2 ms on the board, but its precision hung
+  on the task running when it read: a wait for the bus's lock, or EPDiy's
+  feeder tasks at the top priority on both cores while a frame is drawn
+  (ADR 0022), shifted a read from the moment stamped before it.
+
+The owner's questions after the log -- why a task, what the event loop holds
+up -- settled it: the interrupt's stamp makes the measurement independent of
+any task's load, the start's stamps make its lateness known instead of
+assumed, and with both there is nothing that needs a task of its own.
+
+### Seen on the board
+
+2026-10-22 (ELF `59c002862...`, the BSEC image, the owner's YAT log of 00:38
+local, one sync; `board_notes.md` has the lines):
+
+- **INT reaches IO9**: the pin high at boot, both of the sync's edges stamped.
+- **The offset**, -554 ms ±2, and the write on time: `start_late_ms=0
+  stopped_ms=21 rearms=0`.
+- **This chip's first tick after a start comes a whole second later**:
+  `rtc landed residual_ms=-492 first_tick_ms=1000 learned=true`. The polling
+  version's 989 ms the evening before was its own error, the start's stamp
+  taken before the wait for the bus. Learned for the next write; not yet seen
+  landing.
+- **The drift between the two images' writes**: 73 ms in 3,483 s, -21 ppm,
+  against -29 over the five days before.
+- **The cost as estimated**: 72,503 bytes of internal RAM free with the link
+  up, 6.5 KB above the version with a task.
+- **One error line at every boot**: the RTC's adapter installed the shared GPIO
+  ISR service before the touch task, whose own install ESP-IDF then logged as
+  an error. Removed after: `platform/esp32_t5s3/board_gpio_isr.c` installs it
+  once, on app_main before either asks; not yet seen on the board.
+
+### Precision
+
+- The offset before the write: ±2 ms, from three readings truncated to the
+  millisecond -- the edge's stamp, `now_ms()` and the system time; the
+  interrupt's latency is microseconds. However late the edge is looked at.
+- An hourly rate: about ±1 ppm from the two ticks; on top, the ESP32's own
+  crystal over the minute or so between the answer and the edge (about a
+  millisecond at ±10 ppm), and SNTP's own lag: lwIP as ESP-IDF builds it takes
+  the server's time as the packet arrives, with no round-trip correction
+  (`SNTP_COMP_ROUNDTRIP` 0), so each answer lags UTC by the packet's one-way
+  trip. What varies from hour to hour is noise on each sample, which a day's
+  samples average. `system_minus_sntp_ms`, hour by hour, is the ESP32's own
+  drift.
+- The landing: ±1-2 ms from the second write of a boot on, the delay learned;
+  the first write after a boot as the datasheet's delay is right for this chip
+  -- 0.49 s off on this board, whose chip first ticks a whole second after a
+  start. Known either way.
+- If INT does not reach IO9, no edges: "no INT edge" twice an hour, the RTC
+  written with no offset measured and no landing seen, and no drift. `time`
+  shows the edges counted and the pin's level.
+- The GPIO interrupt sits on ESP-IDF's shared GPIO ISR service, installed once
+  for it and the touch adapter without `ESP_INTR_FLAG_IRAM`
+  (`board_gpio_isr.c`): while the flash's cache
+  is off -- a write to flash -- it waits, and an edge then is stamped late.
+  Nothing writes the flash in the steady state; the radio's calibration data
+  once, at its first start.
+
+### What does not change
+
+The core: it already redraws when the wall time becomes known (above, "One new
+trigger"), which is what a boot with nothing in the RTC sees at the first
+answer, and a known clock corrected does not redraw. The boot: the RTC is read
+as before, some 15 to 25 s before the first answer. The simulator: its wall
+time is `adp_clock_virtual`'s, and there is no port -- one implementation
+(CLAUDE.md). `adp_clock`: SNTP sets the same system time.
+
+### Console
+
+`time` adds `TIME_SNTP` lines: where the RTC's sync is, INT's level and edges,
+the delay the next write is planned with and whether it was measured; the
+server, the answers, the last one's time and age, how far the system time and
+the RTC were from it, the drift, the writes and the last landing. `time_set`
+says the next answer will set both again. `rtc_stop` sets the RTC's STOP bit:
+a boot then finds no time in it ("rtc: stopped") -- the board check that the
+network alone gives the time. Both stop a sync under way and forget the mark.
+
+### Verified on the host
+
+`platform/host/i2c_models/pcf8563_model.c`, a PCF8563 that keeps time and
+raises its alarm, written from the datasheet independently of the driver: its
+registers, a tick a second on the fake bus's clock with the calendar's
+carries, STOP and the first tick after it, a write that keeps the phase, a
+crystal `ppm` fast or slow, the alarm setting AF only on the increment into
+its minute, INT following AF and AIE and reported with the tick's moment
+(`tests/unit/test_pcf8563_model.c`). Against it, stepped as the event loop
+would be (`tests/unit/test_rtc_sync.c`): offsets of 0, ±1 ms, ±300 to ±999
+ms, -12.9 s, a day and an hour, each from three places in the second, found to
+their stated uncertainty, and the landing on the second; the board's late
+first tick, 0.989 s, landing 481 ms behind and then, learned, on the second;
+the drift over an hour at -29, +20, 0 and +3 ppm and over a day at +17, each
+within 1.5 ppm; the loop held 3.7 s at the start's moment, planned again; a
+loop always half a second late, started late and measured; an edge looked at
+20 s late, exact; no INT edge, an RTC with VL set or stopped, no wall time, a
+time past 2099 and a hung bus, each said, with the clock never left stopped
+nor INT low; an abort, and a second answer mid-sync. Mutations tried: the
+delay not learned, the minute floored instead of rounded, the second-58 rule
+dropped, the edge count taken after the arming -- each failed those tests. A
+bias of a second before the rounding passed them, as it should: the rounding
+absorbs it.
+
+### What it costs
+
+`idf.py size`, the firmware with the same network against `main`'s
+(`1d7beff`), 2026-10-21: static internal RAM 131,379 -> 133,115 bytes, +1,736,
+of which 1,251 is lwIP's DNS client, linked for the first time because the
+server is a name (an address in `CONFIG_HAC_SNTP_SERVER` leaves it out until
+MQTT needs it), 336 `net_time.c`'s, 61 the SNTP client's and 24 the
+interrupt's, whose handler adds 48 bytes of IRAM; the image 1,215,056 ->
+1,235,920 bytes, +20,864. No
+task, no stack: the board's `memory with the link up` should read about 72 KB
+free. Without a network, no SNTP and no lwIP (`size-components`); 336 bytes of
+`net_time.c`'s state stay for the console's status line. Every hour some six
+steps on the event loop, a few I2C transfers each, and a spin of 30 ms at most
+-- inside BSEC's 187 ms tolerance; some eight transfers on the shared bus.
+
+### Not decided here
+
+- **A server's time that is believable and wrong** -- a router serving its
+  firmware's build date after a power cut, say -- is set and written. The
+  floor refuses only the unset. It shows as a large `system_minus_sntp_ms`
+  and `rtc_minus_sntp_ms` in that answer's lines.
+- **The drift corrected, not only measured**: the PCF8563 has no offset
+  register (its successors do), and an hourly write already bounds the RTC's
+  error to an hour's drift. Whether the system time should be held to a
+  measured rate between answers is phase 5's question, where deep sleep makes
+  the RTC the only clock.
+- **The learned delay kept across boots**: in RAM only. The board's first
+  measurement by INT is 1,000 ms; if the next ones hold it, it can replace the
+  datasheet's 508 as the default, and a boot's first write land too.
+- **INT for deep sleep**: IO9 is one of the S3's RTC GPIOs, so phase 5 can wake
+  on the same alarm.
+
+### On the board
+
+`board_notes.md`, open item "Time from the network on the board (phase 4f)":
+INT on IO9 at all, a cold boot with nothing in the RTC showing the right time,
+the first landing and the learned delay, the hourly lines and the drift they
+give, the cost, the RTC chip's marking, and the autumn change on 2026-10-25 if
+the board runs through it.

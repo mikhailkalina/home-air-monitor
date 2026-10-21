@@ -186,4 +186,24 @@ menu "Home Air Monitor"
         default 3 if HAC_LOG_FILE_LEVEL_INFO
         default 4 if HAC_LOG_FILE_LEVEL_DEBUG
 
+    config HAC_SNTP_SERVER
+        string "SNTP server: the network's time"
+        default "pool.ntp.org"
+        help
+            Phase 4f (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md,
+            "Amendment: time from the network"; apps/firmware_esp32/main/net_time.c).
+            The server an image with a network asks for the time, once Wi-Fi
+            first has an address and every hour after: a name, which the
+            network's DNS resolves, or an address. Each answer sets the
+            system time and the RTC.
+
+            The NTP Pool's own name suits a single device of one person's;
+            a product sold in numbers would ask the Pool for a vendor zone. A
+            server on the home network -- the router's, or Home Assistant's
+            -- works as well, and keeps the time while the internet is down.
+
+            Not a secret, so it may be set in sdkconfig.defaults or with
+            menuconfig; it reaches only a fresh sdkconfig, as every default
+            does (CLAUDE.md). Unused in an image without a network.
+
 endmenu

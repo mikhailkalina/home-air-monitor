@@ -40,6 +40,12 @@
 // is when the board starts Wi-Fi: the radio's calibration current is to come
 // neither in the switched rail's inrush nor during a panel drive, and the
 // first frame, a full refresh, follows the rail by a fraction of a second.
+//
+// Since phase 4f (docs/adr/0023's amendment, "Time from the network") it
+// takes the composition's step after the reporter's: work done here in short
+// steps, with a deadline of its own -- the RTC measured and written after
+// each SNTP answer (net_time.c). When ADR 0022's display task takes the panel
+// off this loop, the step goes with the sensors, which keep the bus.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 #define HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
@@ -78,6 +84,13 @@ typedef void (*event_loop_facts_fn)(void *ctx, diag_recorder_t *recorder,
 // panel is no longer being driven. Must not wait.
 typedef void (*event_loop_first_frame_fn)(void *ctx);
 
+// Called after every poll, the reporter's step and the link's hold: the
+// composition's work that runs on this task in short steps and wants waking
+// for -- phase 4f's time from the network. Returns its next deadline on
+// port_clock's now_ms(), UINT64_MAX for none. May use the bus; must not
+// wait longer than a few tens of milliseconds.
+typedef uint64_t (*event_loop_step_fn)(void *ctx, uint64_t now_ms);
+
 typedef struct {
     const port_clock_t *clock;
     port_display_t *display;
@@ -99,6 +112,9 @@ typedef struct {
 
     event_loop_first_frame_fn after_first_frame;  // may be NULL
     void *after_first_frame_ctx;
+
+    event_loop_step_fn step;  // may be NULL
+    void *step_ctx;
 } event_loop_deps_t;
 
 // Starts the FreeRTOS task that runs the pump: forever, it polls the sensor
@@ -121,6 +137,10 @@ void event_loop_post_input(void);
 // From another task: the network or the MQTT session changed, or a message
 // arrived -- the reporter looks now. As event_loop_post_input().
 void event_loop_post_network(void);
+
+// From another task: the network's time arrived, or the RTC was written by
+// hand -- the step looks now. As event_loop_post_input().
+void event_loop_post_time(void);
 
 #ifdef __cplusplus
 }

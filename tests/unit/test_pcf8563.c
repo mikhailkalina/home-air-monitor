@@ -3,7 +3,9 @@
 // The PCF8563 driver against the fake bus, whose register file is the chip
 // as it is (drivers/pcf8563/pcf8563.h). Every BCD field at its last valid
 // value and its first invalid one, the leap day the chip's own rule allows,
-// VL, STOP, garbage, an absent chip -- and a time written, then read back.
+// VL, STOP, garbage, an absent chip -- and a time written, then read back;
+// and the stop, the time's write and the start that set a clock to the
+// millisecond (phase 4f), each the one register write it is meant to be.
 
 #include <string.h>
 
@@ -286,6 +288,95 @@ static void a_set_on_a_broken_bus_says_so(void)
     HAC_CHECK_EQ_INT(r.bus, HAL_ERR_TIMEOUT);
 }
 
+// pcf8563_stop(), pcf8563_write_time(), pcf8563_start(): each one transfer,
+// touching only its own registers -- Control_status_2 and the alarms never.
+static void stop_write_and_start_are_one_transfer_each(void)
+{
+    adp_i2c_fake_t bus;
+    adp_i2c_fake_init(&bus, NULL);
+    adp_i2c_fake_device_t *chip = adp_i2c_fake_add_device(&bus, RTC_ADDR);
+    HAC_CHECK(chip != NULL);
+    if (chip == NULL) {
+        return;
+    }
+    memset(chip->regs, 0xFF, sizeof(chip->regs));
+    chip->regs[0] = 0x08u;  // TESTC, as at power-up
+    chip->regs[1] = 0x12u;
+    port_i2c_t *port = adp_i2c_fake_port(&bus);
+
+    HAC_CHECK_EQ_INT(pcf8563_stop(port, RTC_ADDR), HAL_OK);
+    HAC_CHECK_EQ_INT(chip->regs[0], 0x20);  // STOP alone
+    HAC_CHECK_EQ_U64(bus.transfers, 1u);
+
+    const pcf8563_time_t t = {2026u, 10u, 25u, 1u, 0u, 0u, 0u};
+    HAC_CHECK_EQ_INT(pcf8563_write_time(port, RTC_ADDR, &t), HAL_OK);
+    HAC_CHECK_EQ_U64(bus.transfers, 2u);
+    const uint8_t stopped[PCF8563_READ_LEN] = {0x20u, 0x12u, 0x00u, 0x00u, 0x01u,
+                                               0x25u, 0x00u, 0x10u, 0x26u};
+    HAC_CHECK(memcmp(chip->regs, stopped, sizeof(stopped)) == 0);  // still stopped
+    HAC_CHECK_EQ_INT(chip->regs[9], 0xFF);                         // the alarms untouched
+
+    pcf8563_reading_t r;
+    pcf8563_read(port, RTC_ADDR, &r);
+    HAC_CHECK_EQ_INT(r.verdict, PCF8563_TIME_STOPPED);
+    HAC_CHECK(time_is(&r.time, 2026u, 10u, 25u, 1u, 0u, 0u));
+
+    HAC_CHECK_EQ_INT(pcf8563_start(port, RTC_ADDR), HAL_OK);
+    HAC_CHECK_EQ_INT(chip->regs[0], 0x00);
+    HAC_CHECK_EQ_INT(chip->regs[1], 0x12);
+    pcf8563_read(port, RTC_ADDR, &r);
+    HAC_CHECK_EQ_INT(r.verdict, PCF8563_TIME_VALID);
+
+    // A time out of range is refused before the bus.
+    const uint32_t before = bus.transfers;
+    const pcf8563_time_t bad = {2100u, 1u, 1u, 0u, 0u, 0u, 5u};
+    HAC_CHECK_EQ_INT(pcf8563_write_time(port, RTC_ADDR, &bad), HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_U64(bus.transfers, before);
+}
+
+// The alarm armed for a minute: 09h-0Ch the minute alone, then
+// Control_status_2 to AIE, AF and TF cleared; taken back: Control_status_2 to
+// 0, the minute alarm off. The time registers untouched either way.
+static void the_alarm_is_armed_and_taken_back(void)
+{
+    adp_i2c_fake_t bus;
+    adp_i2c_fake_init(&bus, NULL);
+    adp_i2c_fake_device_t *chip = adp_i2c_fake_add_device(&bus, RTC_ADDR);
+    HAC_CHECK(chip != NULL);
+    if (chip == NULL) {
+        return;
+    }
+    memcpy(chip->regs, k_valid, sizeof(k_valid));
+    chip->regs[1] = 0x0Du;  // AF, TF and TIE set by someone
+    port_i2c_t *port = adp_i2c_fake_port(&bus);
+
+    HAC_CHECK_EQ_INT(pcf8563_alarm_at_minute(port, RTC_ADDR, 59u), HAL_OK);
+    HAC_CHECK_EQ_U64(bus.transfers, 2u);
+    HAC_CHECK_EQ_INT(chip->regs[9], 0x59);
+    HAC_CHECK_EQ_INT(chip->regs[10], 0x80);
+    HAC_CHECK_EQ_INT(chip->regs[11], 0x80);
+    HAC_CHECK_EQ_INT(chip->regs[12], 0x80);
+    HAC_CHECK_EQ_INT(chip->regs[1], 0x02);
+    HAC_CHECK(memcmp(&chip->regs[2], &k_valid[2], PCF8563_TIME_LEN) == 0);
+
+    HAC_CHECK_EQ_INT(pcf8563_alarm_off(port, RTC_ADDR), HAL_OK);
+    HAC_CHECK_EQ_INT(chip->regs[1], 0x00);
+    HAC_CHECK_EQ_INT(chip->regs[9] & 0x80, 0x80);
+    HAC_CHECK(memcmp(&chip->regs[2], &k_valid[2], PCF8563_TIME_LEN) == 0);
+
+    const uint32_t before = bus.transfers;
+    HAC_CHECK_EQ_INT(pcf8563_alarm_at_minute(port, RTC_ADDR, 60u), HAL_ERR_INVALID_ARG);
+    HAC_CHECK_EQ_U64(bus.transfers, before);
+}
+
+// The datasheet's figure for the first tick after STOP, as the driver keeps
+// it: within 0.507813 s to 0.507935 s (Rev. 11.1, 8.10).
+static void the_first_tick_after_a_start_is_the_datasheets(void)
+{
+    HAC_CHECK(PCF8563_FIRST_TICK_AFTER_START_US >= 507813u);
+    HAC_CHECK(PCF8563_FIRST_TICK_AFTER_START_US <= 507935u);
+}
+
 int main(void)
 {
     HAC_RUN(a_valid_time_decodes);
@@ -301,5 +392,8 @@ int main(void)
     HAC_RUN(a_time_written_reads_back_and_clears_vl_and_stop);
     HAC_RUN(a_time_out_of_range_is_not_written);
     HAC_RUN(a_set_on_a_broken_bus_says_so);
+    HAC_RUN(stop_write_and_start_are_one_transfer_each);
+    HAC_RUN(the_first_tick_after_a_start_is_the_datasheets);
+    HAC_RUN(the_alarm_is_armed_and_taken_back);
     return hac_test_summary();
 }
