@@ -68,6 +68,7 @@
 #include "board_config.h"
 #include "board_power.h"
 
+#include "app/link_hold.h"
 #include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
@@ -691,6 +692,7 @@ void app_main(void)
 #endif
     static adp_i2c_t s_i2c;
     static update_policy_t s_policy;
+    static link_hold_t s_link;
     static scd4x_source_t s_scd4x;
     static bme68x_composed_t s_bme68x;
     static sensor_manager_t s_sensors;
@@ -812,6 +814,10 @@ void app_main(void)
     const screen_controller_config_t screens_cfg = screen_controller_config_default();
     screen_controller_init(&s_screens, &screens_cfg);
     adp_input_set_waker(&s_touch, wake_event_loop, NULL);
+    // Without a reporter the link is LINK_OFF: the bar says nothing about it
+    // (docs/adr/0031-the-network-on-the-screen.md).
+    const link_hold_config_t link_cfg = link_hold_config_default();
+    link_hold_init(&s_link, &link_cfg);
 
     event_loop_deps_t deps = {
         .clock = clock,
@@ -827,6 +833,7 @@ void app_main(void)
         .facts = screen_facts,
         .facts_ctx = &s_wall_source,
         .reporter = NULL,  // phase 4c: the Wi-Fi and MQTT adapters, then the reporter
+        .link = &s_link,
     };
     event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
                      EVENT_LOOP_TASK_CORE);

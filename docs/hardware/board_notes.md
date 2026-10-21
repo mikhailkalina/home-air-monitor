@@ -2068,11 +2068,55 @@ layout settles, not before.
       it off between refreshes means clearing `PWR_EN`, which also cuts the
       sensors' `3V3`, so it is the same decision as the sensors' power in
       deep sleep ("The sensor wiring this implies").
-- [ ] `update_policy`'s status trigger can fire on `charging` or
-      `telemetry_connected` alone, neither of which `screen_home` draws yet,
-      making the empty-diff skip in `event_loop.c`'s `redraw()`
-      (`apps/firmware_esp32/main/event_loop.c`) repeat every tick with no
-      visible change -- harmless, just wasteful. Unreachable today: phase
-      2a's bringup reading is fabricated and never sets either flag.
-      Becomes reachable for `telemetry_connected` once MQTT lands in phase
-      4, and for `charging` once the battery adapter lands in phase 5.
+- [ ] `update_policy`'s status trigger can fire on `charging` alone, which
+      `screen_home` does not draw yet, making the empty-diff skip in
+      `event_loop.c`'s `redraw()` (`apps/firmware_esp32/main/event_loop.c`)
+      repeat every tick with no visible change -- wasteful, and **not quite
+      harmless** (found 2026-10-21, ADR 0031): each skip counts as a redraw
+      that made no progress, so the loop's backoff grows -- 1 s doubling to
+      60 s -- and `redraw_not_before_ms` holds every redraw meanwhile, a
+      tap's change of screen included. The diagnostics screen's first
+      network version hit exactly this in the simulator, which retries every
+      second without a backoff; on the board a tap would have waited up to a
+      minute. Whatever a screen redraws for, it must draw; an empty diff
+      that is not a failed flush might better be taken as the frame already
+      on the glass than as a failure.
+      Unreachable until the battery adapter lands in phase 5, which should
+      draw it in the bar or take it out of the trigger. **`telemetry_connected`
+      is gone since phase 4d** (`docs/adr/0031-the-network-on-the-screen.md`):
+      the trigger fires on `air_reading_t.link`, the link the bar draws,
+      held a minute, and no longer on the state message's `net_connected`,
+      which nothing draws.
+- [ ] **The network on the screen (phase 4d).** Built 2026-10-21, verified on
+      the host only (`docs/adr/0031-the-network-on-the-screen.md`). **What the
+      board shows now**, with no reporter composed: no word where the bar
+      said "offline", the battery text at the right margin instead; on the
+      diagnostics screen a smaller title and two network lines, `Wi-Fi off`
+      and `MQTT off` (the boot's full refresh draws the new layout, so the
+      battery's move leaves nothing behind). **What to see once the Wi-Fi and
+      MQTT adapters run**, and the lines that show it:
+      - *The first word*: nothing in the bar's place at boot, then `online`
+        about a minute after the session came -- `event_loop: link on the
+        screen shown=unknown` at the first poll, `shown=online` some 60 s
+        after `reporter: session up`, and a `decision ... reason=status` (or
+        a redraw for something else) within a sensor cycle of it.
+      - *An outage*: the access point switched off for two minutes -- `shown=
+        no-wifi` 60 s after the Wi-Fi adapter's loss, `shown=online` 60 s after
+        the next `session up`; for one of 30 s, no `link on the screen` line
+        at all.
+      - *A broker gone* (Home Assistant's mosquitto add-on stopped): `shown=
+        no-broker` a minute after `session lost ... why=dropped`, while the
+        Wi-Fi stays up.
+      - *The hold's estimate* (`LINK_HOLD_DEFAULT_MS`, 60 s): from the card's
+        `log/`, how long the board's own Wi-Fi drops and broker reconnections
+        last, and how many `link on the screen` lines a day they make. Many
+        drops just past a minute would argue for a longer hold; nothing but
+        real outages, for the minute.
+      - *The diagnostics screen*: the SSID as configured, the signal, the
+        address the router gave (`Wi-Fi up <ssid> -NN dBm a.b.c.d`), `MQTT
+        online sent N refused 0 last HH:MM`; the counts as of the tap,
+        unchanged while the screen stays up.
+      - *The test app*: the `port_net` contract against the Wi-Fi adapter,
+        `info()`'s checks included -- the name terminated and the same up and
+        down, an address only while up -- with the cut and restore checks "not
+        exercised".

@@ -95,10 +95,16 @@ static bool wall_time_known(const air_reading_t *r)
     return r->wall_time_ms != 0u;
 }
 
-// Every status the home screen renders, plus the link flags in its status bar,
-// the accuracy mark and whether the wall time is known. Any of them changing
+// Every status the home screen renders, plus the link in its status bar, the
+// accuracy mark and whether the wall time is known. Any of them changing
 // must reach the glass even when no number moved: docs/requirements.md 15.1
 // requires a sensor error to be visible on screen.
+//
+// The link is the held one (core/app/link_hold.h): by the time it changes
+// here it has stayed so for a minute, and a link that flaps never does. The
+// state message's link -- net_connected, the signal -- is not drawn and
+// redraws nothing (docs/adr/0031-the-network-on-the-screen.md). `charging`
+// is not drawn yet either: phase 5's battery adapter brings it to the bar.
 static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
 {
     return a->temperature_c.status != b->temperature_c.status ||
@@ -108,8 +114,7 @@ static bool statuses_differ(const air_reading_t *a, const air_reading_t *b)
            a->voc_index.status != b->voc_index.status ||
            a->gas_resistance_ohm.status != b->gas_resistance_ohm.status ||
            a->battery_percent.status != b->battery_percent.status || a->charging != b->charging ||
-           a->net_connected != b->net_connected ||
-           a->telemetry_connected != b->telemetry_connected || accuracy_marks_differ(a, b) ||
+           a->link != b->link || accuracy_marks_differ(a, b) ||
            wall_time_known(a) != wall_time_known(b);
 }
 

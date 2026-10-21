@@ -39,7 +39,7 @@ static air_reading_t normal_reading(uint64_t ts_ms)
     r.pressure_hpa = measurement_ok(1012.8f, ts_ms, 2u);
     r.iaq = measurement_ok(84.0f, ts_ms, 2u);
     r.battery_percent = measurement_ok(87.0f, ts_ms, 3u);
-    r.net_connected = true;
+    r.link = LINK_ONLINE;
     return r;
 }
 
@@ -59,7 +59,8 @@ static void a_normal_reading_becomes_numbers_and_units(void)
 
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_CO2].unit, "ppm") == 0);
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_HUMIDITY].unit, "%") == 0);
-    HAC_CHECK(vm.net_connected);
+    HAC_CHECK_EQ_INT(vm.link, LINK_ONLINE);
+    HAC_CHECK(strcmp(vm.link_text, "online") == 0);
     HAC_CHECK(strcmp(vm.status_text, "all sensors OK") == 0);
     HAC_CHECK_EQ_INT(vm.error_count, 0);
 }
@@ -660,6 +661,61 @@ static void several_numbers_not_calibrated_are_counted(void)
     HAC_CHECK(strcmp(vm.fields[VM_FIELD_TEMPERATURE].label, "Temperature") == 0);
 }
 
+// The status bar's link: a word for each held state, black only for
+// "online", nothing at all without telemetry or before a state has held --
+// and a place kept for the word whenever there is telemetry
+// (docs/adr/0031-the-network-on-the-screen.md).
+static void the_link_has_a_word_for_each_held_state(void)
+{
+    static const struct {
+        link_status_t link;
+        const char *text;
+        uint8_t ink;
+        bool slot;
+    } cases[] = {
+        {LINK_OFF, "", VM_INK_STALE, false},
+        {LINK_UNKNOWN, "", VM_INK_STALE, true},
+        {LINK_NO_WIFI, "no Wi-Fi", VM_INK_STALE, true},
+        {LINK_NO_BROKER, "no broker", VM_INK_STALE, true},
+        {LINK_ONLINE, "online", VM_INK_PRIMARY, true},
+    };
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        air_reading_t r = normal_reading(1000u);
+        r.link = cases[i].link;
+        // The message's link is not the screen's: it changes nothing here.
+        r.net_connected = (i % 2u) == 0u;
+        view_model_t vm;
+        view_model_build(&vm, &r, 1000u, &k_utc);
+        const char *name = link_status_name(cases[i].link);
+        hac_test_check(vm.link == cases[i].link, name, __FILE__, __LINE__);
+        hac_test_check(strcmp(vm.link_text, cases[i].text) == 0, name, __FILE__, __LINE__);
+        hac_test_check(strcmp(view_model_link_text(cases[i].link), cases[i].text) == 0, name,
+                       __FILE__, __LINE__);
+        hac_test_check(vm.link_slot == cases[i].slot, name, __FILE__, __LINE__);
+        if (cases[i].text[0] != '\0') {
+            hac_test_check(vm.link_ink == cases[i].ink, name, __FILE__, __LINE__);
+        }
+    }
+    HAC_CHECK(strcmp(view_model_link_text((link_status_t)99), "") == 0);
+}
+
+// The local time of day both screens write: the minute, and the date before
+// it from an earlier day.
+static void the_local_time_text_is_the_minute_and_a_date_from_another_day(void)
+{
+    const uint64_t now = 1792148862000u;  // 2026-10-16T11:07:42Z
+    char text[VM_UPDATED_TEXT_MAX];
+    view_model_local_time_text(text, sizeof(text), now - 30000u, now, &k_utc);
+    HAC_CHECK(strcmp(text, "11:07") == 0);
+    view_model_local_time_text(text, sizeof(text), now - 12u * 3600000u, now, &k_utc);
+    HAC_CHECK(strcmp(text, "15.10 23:07") == 0);
+    const time_zone_t vilnius = time_zone_eu(120);
+    view_model_local_time_text(text, sizeof(text), now, now, &vilnius);
+    HAC_CHECK(strcmp(text, "14:07") == 0);
+    view_model_local_time_text(text, 4u, now, now, &vilnius);  // cut short, terminated
+    HAC_CHECK(strcmp(text, "14:") == 0);
+}
+
 int main(void)
 {
     HAC_RUN(a_normal_reading_becomes_numbers_and_units);
@@ -683,6 +739,8 @@ int main(void)
     HAC_RUN(a_number_not_yet_calibrated_gets_the_question_mark);
     HAC_RUN(a_calibrated_or_unrated_number_has_no_mark);
     HAC_RUN(worse_news_comes_before_calibration);
+    HAC_RUN(the_link_has_a_word_for_each_held_state);
+    HAC_RUN(the_local_time_text_is_the_minute_and_a_date_from_another_day);
     HAC_RUN(several_numbers_not_calibrated_are_counted);
     return hac_test_summary();
 }

@@ -65,6 +65,18 @@ static int8_t sim_rssi(const port_net_t *port)
     return (sim_state(port) == NET_UP) ? n->rssi_dbm : (int8_t)PORT_NET_RSSI_NONE;
 }
 
+static void sim_info(const port_net_t *port, net_info_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    (void)snprintf(out->ssid, sizeof(out->ssid), "%s", ADP_NET_SIM_DEFAULT_SSID);
+    if (sim_state(port) == NET_UP) {
+        out->ipv4[0] = (uint8_t)ADP_NET_SIM_ADDRESS_0;
+        out->ipv4[1] = (uint8_t)ADP_NET_SIM_ADDRESS_1;
+        out->ipv4[2] = (uint8_t)ADP_NET_SIM_ADDRESS_2;
+        out->ipv4[3] = (uint8_t)ADP_NET_SIM_ADDRESS_3;
+    }
+}
+
 static hal_status_t sim_up(port_net_t *port)
 {
     adp_net_sim_t *n = (adp_net_sim_t *)port->impl;
@@ -103,6 +115,7 @@ void adp_net_sim_init(adp_net_sim_t *n, const port_clock_t *clock)
     n->port.down = sim_down;
     n->port.state = sim_state;
     n->port.rssi_dbm = sim_rssi;
+    n->port.info = sim_info;
     n->port.impl = n;
 }
 
@@ -167,7 +180,10 @@ static bool parse_item(const char *p, const char *end, adp_net_sim_event_t *out,
 
 hal_status_t adp_net_sim_add_script(adp_net_sim_t *n, const char *text, char *err, size_t err_cap)
 {
-    adp_net_sim_event_t items[ADP_NET_SIM_MAX_EVENTS];
+    // Parsed straight into the free tail of the table, and counted in only
+    // once the whole text is good: a malformed script adds nothing.
+    adp_net_sim_event_t *items = &n->events[n->count];
+    const size_t room = ADP_NET_SIM_MAX_EVENTS - n->count;
     size_t count = 0u;
     uint64_t last = (n->count > 0u) ? n->events[n->count - 1u].at_ms : 0u;
 
@@ -177,7 +193,7 @@ hal_status_t adp_net_sim_add_script(adp_net_sim_t *n, const char *text, char *er
         if (end == NULL) {
             end = p + strlen(p);
         }
-        if (n->count + count >= ADP_NET_SIM_MAX_EVENTS) {
+        if (count >= room) {
             snprintf(err, err_cap, "at most %u changes", (unsigned)ADP_NET_SIM_MAX_EVENTS);
             return HAL_ERR_INVALID_ARG;
         }
@@ -196,7 +212,6 @@ hal_status_t adp_net_sim_add_script(adp_net_sim_t *n, const char *text, char *er
         snprintf(err, err_cap, "no changes in \"%s\"", text);
         return HAL_ERR_INVALID_ARG;
     }
-    memcpy(&n->events[n->count], items, count * sizeof(items[0]));
     n->count += count;
     return HAL_OK;
 }

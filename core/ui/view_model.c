@@ -267,6 +267,31 @@ const char *view_model_iaq_level_text(iaq_level_t level)
     return "";
 }
 
+// --- the link -----------------------------------------------------------------
+
+const char *view_model_link_text(link_status_t link)
+{
+    switch (link) {
+        case LINK_ONLINE:
+            return "online";
+        case LINK_NO_BROKER:
+            return "no broker";
+        case LINK_NO_WIFI:
+            return "no Wi-Fi";
+        case LINK_OFF:
+        case LINK_UNKNOWN:
+            break;
+    }
+    return "";
+}
+
+// Online is the claim the bar makes in black; the two ways of being offline
+// are a weaker one.
+static uint8_t link_ink(link_status_t link)
+{
+    return (link == LINK_ONLINE) ? VM_INK_PRIMARY : VM_INK_STALE;
+}
+
 // --- the time of the last update --------------------------------------------
 
 #define VM_NO_TIME_TEXT "--:--"
@@ -300,6 +325,14 @@ static void format_updated(char *dst, size_t cap, const civil_time_t *measured,
     len = str_append_2d(dst, cap, len, measured->hour);
     len = str_append(dst, cap, len, ":");
     (void)str_append_2d(dst, cap, len, measured->minute);
+}
+
+void view_model_local_time_text(char *dst, size_t cap, uint64_t at_wall_ms, uint64_t now_wall_ms,
+                                const time_zone_t *zone)
+{
+    const civil_time_t at = civil_time_local(at_wall_ms, zone);
+    const civil_time_t now = civil_time_local(now_wall_ms, zone);
+    format_updated(dst, cap, &at, &now);
 }
 
 // --- assembly --------------------------------------------------------------
@@ -405,8 +438,10 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
     vm->co2_level_text = view_model_level_text(vm->co2_level);
     vm->co2_warning = (vm->co2_level == VM_LEVEL_POOR || vm->co2_level == VM_LEVEL_VERY_POOR);
 
-    vm->net_connected = reading->net_connected;
-    vm->net_text = reading->net_connected ? "Wi-Fi" : "offline";
+    vm->link = reading->link;
+    vm->link_text = view_model_link_text(reading->link);
+    vm->link_ink = link_ink(reading->link);
+    vm->link_slot = reading->link != LINK_OFF;
 
     // The "updated" line: when the freshest value carrying a number was
     // measured, on the wall clock the reading carries.
@@ -423,10 +458,9 @@ void view_model_build(view_model_t *vm, const air_reading_t *reading, uint64_t n
 
     const uint64_t wall_ms = reading->wall_time_ms;
     if (wall_ms != 0u && youngest_ms != MEASUREMENT_AGE_UNKNOWN && youngest_ms <= wall_ms) {
-        const civil_time_t measured = civil_time_local(wall_ms - youngest_ms, zone);
-        const civil_time_t today = civil_time_local(wall_ms, zone);
         vm->has_updated = true;
-        format_updated(vm->updated_text, sizeof(vm->updated_text), &measured, &today);
+        view_model_local_time_text(vm->updated_text, sizeof(vm->updated_text),
+                                   wall_ms - youngest_ms, wall_ms, zone);
     } else {
         vm->has_updated = false;
         (void)str_append(vm->updated_text, sizeof(vm->updated_text), 0u, VM_NO_TIME_TEXT);

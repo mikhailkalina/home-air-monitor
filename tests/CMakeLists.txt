@@ -22,6 +22,7 @@ set(HAC_UNIT_TESTS
     test_framebuffer
     test_gfx
     test_update_policy
+    test_link_hold
     test_tap
     test_screen_controller
     test_sensor_manager
@@ -230,14 +231,24 @@ add_test(NAME simulator_iaq_flapping
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_iaq_flapping.cmake)
 
 # The reporter through the simulator's command line: a day's state messages,
-# a network outage that changes nothing on the panel or the card, the next
-# session announcing itself again (tests/cli/simulator_telemetry.cmake,
-# docs/adr/0030-telemetry-ports-and-the-reporter.md).
+# a network outage that changes nothing on the card and reaches the panel only
+# as the status bar's link, a minute late, the next session announcing itself
+# again (tests/cli/simulator_telemetry.cmake,
+# docs/adr/0030-telemetry-ports-and-the-reporter.md,
+# docs/adr/0031-the-network-on-the-screen.md).
 add_test(NAME simulator_telemetry
     COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
             -DSCENARIOS=${HAC_ROOT}/scenarios
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/simulator_telemetry
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_telemetry.cmake)
+
+# A link that flaps every few seconds redraws nothing, one slower than the
+# hold a change a minute at most (tests/cli/simulator_link_flapping.cmake,
+# docs/adr/0031-the-network-on-the-screen.md).
+add_test(NAME simulator_link_flapping
+    COMMAND ${CMAKE_COMMAND} -DSIMULATOR=$<TARGET_FILE:simulator>
+            -DSCENARIOS=${HAC_ROOT}/scenarios
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_link_flapping.cmake)
 
 # The simulator's two sensor modes on one scenario: replay sources, and both
 # drivers over the fake bus measuring platform/host/scenario_world.c -- each

@@ -681,6 +681,68 @@ static void without_a_network_port_the_link_is_assumed_and_rssi_is_null(void)
     HAC_CHECK(strstr(g.last_state, "\"rssi\":null,") != NULL);
 }
 
+// The link as it is now, for the screen's hold, and what the diagnostics
+// screen shows of the reporter and its network
+// (docs/adr/0031-the-network-on-the-screen.md).
+static void the_link_and_the_status_follow_the_network_and_the_session(void)
+{
+    reporter_status_t st;
+    reporter_status(NULL, &st);
+    HAC_CHECK_EQ_INT(st.link, LINK_OFF);  // no telemetry
+    HAC_CHECK_EQ_INT(reporter_link(NULL), LINK_OFF);
+
+    rig_up(true);
+    const air_reading_t r = reading(800.0f);
+    reporter_status(&g.rep, &st);
+    HAC_CHECK_EQ_INT(st.link, LINK_NO_WIFI);  // not asked up yet
+    HAC_CHECK(st.has_net && st.net == NET_DOWN && st.rssi_dbm == PORT_NET_RSSI_NONE);
+    HAC_CHECK(strcmp(st.net_info.ssid, ADP_NET_SIM_DEFAULT_SSID) == 0);
+    HAC_CHECK(!port_net_ipv4_set(st.net_info.ipv4));
+    HAC_CHECK(!st.published && st.state_messages == 0u);
+
+    // Up, a refused attempt: the network is there, the broker is not.
+    loopback_broker_refuse(&g.broker, LOOPBACK_REFUSE, 1u);
+    port_net_t *net = adp_net_sim_port(&g.net);
+    (void)net->up(net);
+    fake_clock_advance(&g.clock, ADP_NET_SIM_CONNECT_MS);
+    (void)step(&r, NULL);
+    reporter_status(&g.rep, &st);
+    HAC_CHECK_EQ_INT(st.link, LINK_NO_BROKER);
+    HAC_CHECK(st.net == NET_UP && st.rssi_dbm == ADP_NET_SIM_DEFAULT_RSSI_DBM);
+    HAC_CHECK(port_net_ipv4_set(st.net_info.ipv4));
+    HAC_CHECK_EQ_INT(st.state, REPORTER_OFFLINE);
+
+    // The next attempt connects: online, and the state message counted with
+    // its time.
+    drive(now() + REPORT_BACKOFF_FIRST_MS, NULL, &r);
+    (void)step(&r, NULL);
+    reporter_status(&g.rep, &st);
+    HAC_CHECK_EQ_INT(st.link, LINK_ONLINE);
+    HAC_CHECK_EQ_INT(st.state, REPORTER_ONLINE);
+    HAC_CHECK(st.published && st.state_messages == g.rep.state_messages && st.state_messages >= 1u);
+    HAC_CHECK(st.last_published_ms <= now() && st.last_published_ms >= now() - CYCLE_MS);
+    const uint64_t first_ms = st.last_published_ms;
+    drive(now() + REPORT_HEARTBEAT_MS, NULL, &r);
+    reporter_status(&g.rep, &st);
+    HAC_CHECK(st.last_published_ms > first_ms);
+
+    // The network gone: no Wi-Fi, whatever the session thought.
+    adp_net_sim_set_link(&g.net, false);
+    HAC_CHECK_EQ_INT(reporter_link(&g.rep), LINK_NO_WIFI);
+    (void)step(&r, NULL);
+    reporter_status(&g.rep, &st);
+    HAC_CHECK_EQ_INT(st.link, LINK_NO_WIFI);
+    HAC_CHECK(st.net == NET_CONNECTING && !port_net_ipv4_set(st.net_info.ipv4));
+    HAC_CHECK(st.published);  // the last message is still the last
+
+    // Without a network port the link is taken as up.
+    rig_up(false);
+    (void)step(&r, NULL);
+    reporter_status(&g.rep, &st);
+    HAC_CHECK_EQ_INT(st.link, LINK_ONLINE);
+    HAC_CHECK(!st.has_net);
+}
+
 static void init_refuses_what_could_never_be_published(void)
 {
     rig_up(true);
@@ -738,6 +800,7 @@ int main(void)
     HAC_RUN(an_attempt_never_answered_is_given_up);
     HAC_RUN(a_days_state_messages_stay_within_bounds);
     HAC_RUN(without_a_network_port_the_link_is_assumed_and_rssi_is_null);
+    HAC_RUN(the_link_and_the_status_follow_the_network_and_the_session);
     HAC_RUN(init_refuses_what_could_never_be_published);
     HAC_RUN(states_have_names);
     return hac_test_summary();

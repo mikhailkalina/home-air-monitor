@@ -17,6 +17,7 @@ set(HAC_CORE_SOURCES
     ${HAC_ROOT}/core/domain/air_quality.c
     ${HAC_ROOT}/core/domain/civil_time.c
     ${HAC_ROOT}/core/domain/measurement.c
+    ${HAC_ROOT}/core/app/link_hold.c
     ${HAC_ROOT}/core/app/screen_controller.c
     ${HAC_ROOT}/core/app/sensor_manager.c
     ${HAC_ROOT}/core/app/tap.c

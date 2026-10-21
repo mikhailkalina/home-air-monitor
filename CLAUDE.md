@@ -110,7 +110,8 @@ HAC_MQTT_PASSWORD=... ./build/host-debug/apps/simulator/simulator --headless --d
     --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv
 
 # The reporter over a broker model in memory (ADR 0030): stdout prints every message the
-# broker takes, loopback its sessions and wills and a summary; --net-script cuts the network
+# broker takes, loopback its sessions and wills and a summary; --net-script cuts the network,
+# and the status bar says so a minute later -- each change a [link] line (ADR 0031)
 ./build/host-debug/apps/simulator/simulator --headless --duration 1800 \
     --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv \
     --telemetry loopback --net-script "600:down;1200:up"     # or --telemetry stdout --device-id x
@@ -595,14 +596,48 @@ Ctrl-C (unavailable at once, the will), and an outage (`--net-script "120:down;3
 will 34 s after the cut, 90 s after the last packet the broker had heard -- a real broker counts
 the keepalive from there, MQTT 3.1.1 3.1.2.10, so a vanished device is offline 30 to 90 s later;
 the loopback broker model now counts the same way, with the client's pings, where it counted
-from the cut and was up to a keepalive late). Still to
-see: history and long-term statistics, a broker with a password, Home Assistant on its own
-machine (the amendment's list).
+from the cut and was up to a keepalive late). History and long-term statistics seen the same
+day, 2 h 37 min from a copy of Home Assistant's database: seven statistics, the hourly means
+within 0.04 % of the recording's; and two simulators with one `--device-id` take each other's
+session over for as long as both run, so each needs its own (its help says so). Still to see:
+a broker with a password, Home Assistant on its own machine (the amendment's list).
+
+Phase 4d on branch `phase-4d-network-on-screen` (ADR 0031): the network on the screen. The
+status bar says `online` (an MQTT session -- Home Assistant's word), `no broker` (the Wi-Fi up,
+no session) or `no Wi-Fi` in the stale grey, and nothing without telemetry -- in a place as wide
+as the widest word, so a change of word moves nothing else. A change shows only once the link
+has held it for a minute (`core/app/link_hold.c`, `LINK_HOLD_DEFAULT_MS`, an estimate), both
+ways and the first state too (`LINK_UNKNOWN`: the place, no word); no telemetry at once. So a
+link costs at most one redraw a minute, and one flapping faster none. `air_reading_t.link` is
+the held state, which both loops feed after the reporter's step from `reporter_link()` and wake
+for; `telemetry_connected` is gone, `net_connected` and the signal stay the state message's, and
+`update_policy`'s status trigger fires on `link` -- drawn -- not on those (the open item now
+holds `charging` alone). Not in `update_policy`: a hold there would draw the raw link whenever
+anything else redrew. The diagnostics screen has two network lines -- `Wi-Fi` state (`up`,
+`joining`, `failed`, `off`), SSID, signal, address; `MQTT` `online`/`offline`, `sent N` (in
+thousands past 9,999), `refused N`, `last HH:MM` -- drawn as they are when the screen is drawn
+and redrawn only for the held link, drawn as the bar's word in its title line, and the SSID; its
+title is 32px to make room for thirteen lines. (The first version compared the held link without
+drawing it: an empty diff, retried every second while the screen was up -- found by the owner in
+the window, fixed, and held by a test that every change of the link changes the picture.) `port_net` gains `info()`: the SSID as configured, also while down, and the IPv4 address
+while up; the contract checks it, nine broken wrappers caught; the simulator's network is
+`sim-ap` at `192.0.2.10` and its `--net-script` holds 1,024 changes. The simulator prints each
+change as `[link]`. CLI tests: the outage's link on the screen a minute late each way and the
+same redraws until then (ADR 0030's "the same redraws throughout" replaced); a link cut 3 s in
+every 10 s for half an hour -- 169 sessions -- redraws exactly as a steady one (172), one cut
+90 s in 180 s shows each change a minute late and never two within a minute (20, 177 redraws).
+Golden frames: `online` in the normal ones, nothing in the warm-up one, a new `no_broker`, the
+diagnostics screen with the network and a new `no_telemetry`. Verified on the host (ASan, BSEC,
+a real mosquitto); the firmware, its BSEC variant and the test app build. On the board, with no
+reporter yet: no word where "offline" was, `Wi-Fi off` / `MQTT off` on the diagnostics screen
+(`board_notes.md`, open item "The network on the screen (phase 4d)", for what the adapters are
+to show).
 
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
 recordable unattended -- and this unit's own figures for the remaining estimates; the rest of
 the simulator's checks in Home Assistant (ADR 0030's amendment); then the board's Wi-Fi and esp-mqtt
-adapters behind these ports, with its device id from `mqtt_device_id_from_mac()`.
+adapters behind these ports -- `info()` included -- with its device id from
+`mqtt_device_id_from_mac()`.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

@@ -60,8 +60,13 @@
 // (platform/host/adp_net_sim.h) that --net-script cuts and restores, as the
 // board's will over Wi-Fi to a real broker. `stdout` prints every message the
 // broker takes; `loopback` only the sessions and the wills, and a summary.
-// The screen's reading is never told about the network, so an outage redraws
-// nothing.
+//
+// The network on the screen (docs/adr/0031-the-network-on-the-screen.md):
+// the status bar says "online", "no broker" or "no Wi-Fi" once the link has
+// held that state for a minute (core/app/link_hold.h), and nothing without
+// telemetry; the loop prints each change as a [link] line. The diagnostics
+// screen shows the network's name, the signal, the address, and the
+// session's state, messages, refusals and last message.
 //
 // A real broker (ADR 0030, amendment "The simulator on a real broker"): with
 // --broker the same reporter publishes over libmosquitto
@@ -96,6 +101,7 @@
 #include "adp_log_console.h"
 #include "adp_net_sim.h"
 #include "adp_telemetry_loopback.h"
+#include "app/link_hold.h"
 #include "app/screen_controller.h"
 #include "app/sensor_manager.h"
 #include "app/update_policy.h"
@@ -281,7 +287,9 @@ static void usage(const char *argv0)
         "                         simulated network: stdout prints every message the\n"
         "                         broker takes, loopback its sessions and wills and a summary\n"
         "  --device-id <id>       the device id in the topics, [A-Za-z0-9_-], at most 32\n"
-        "                         (default " SIM_DEFAULT_DEVICE_ID ")\n"
+        "                         (default " SIM_DEFAULT_DEVICE_ID "); two simulators on one\n"
+        "                         broker need two: with one id they take each other's\n"
+        "                         session over\n"
         "  --net-script <list>    the network cut and restored, \"<seconds>:down;<seconds>:up\"\n"
         "  --broker <url>         publish to a real MQTT broker, mqtt://<host>[:<port>] -- a\n"
         "                         Home Assistant's -- in real time: --time-scale 1 to 60%s\n"
@@ -1050,6 +1058,8 @@ typedef struct {
     bool deferral_logged;
     sim_recording_t *recording;  // NULL without --record
     sim_telemetry_t *telemetry;  // NULL without --telemetry
+    link_hold_t link;            // what the bar says about the link
+    reporter_status_t network;   // the reporter's, read after its step
     const char *clock_source;    // the diagnostics screen's word for the wall clock
     const epd_model_t *panel;    // how long each flush takes on the glass
 
@@ -1089,6 +1099,7 @@ static screen_inputs_t screen_inputs(const sim_t *sim, uint64_t now_ms)
         in.recorder.state = sim->recording->rec.state;
     }
     in.clock_source = sim->clock_source;
+    in.network = (sim->telemetry != NULL) ? &sim->network : NULL;
     return in;
 }
 
@@ -1191,6 +1202,16 @@ static uint64_t step(sim_t *sim)
                                     ? report(sim->telemetry, &sim->reading, now_ms)
                                     : REPORTER_NO_DEADLINE;
 
+    // The link as it is now, held before the screen shows it.
+    reporter_status((sim->telemetry != NULL) ? &sim->telemetry->reporter : NULL, &sim->network);
+    bool link_changed = false;
+    const uint64_t link_due = link_hold_step(&sim->link, sim->network.link, now_ms, &link_changed);
+    sim->reading.link = link_hold_shown(&sim->link);
+    if (link_changed) {
+        printf("[link] %s now_ms=%llu\n", link_status_name(sim->reading.link),
+               (unsigned long long)now_ms);
+    }
+
     const uint64_t screens_due = screen_controller_tick(&sim->screens, &sim->policy, now_ms);
     const screen_inputs_t in = screen_inputs(sim, now_ms);
 
@@ -1221,6 +1242,9 @@ static uint64_t step(sim_t *sim)
     }
     if (report_due < next) {
         next = report_due;
+    }
+    if (link_due < next) {
+        next = link_due;
     }
     if (next <= now_ms) {
         next = now_ms + SIM_REDRAW_RETRY_MS;  // a redraw that did not reach the panel
@@ -1364,6 +1388,8 @@ int main(int argc, char **argv)
     sim.panel = panel_model;
     const screen_controller_config_t screens_cfg = screen_controller_config_default();
     screen_controller_init(&sim.screens, &screens_cfg);
+    const link_hold_config_t link_cfg = link_hold_config_default();
+    link_hold_init(&sim.link, &link_cfg);
     framebuffer_init(&sim.previous_fb, previous_fb_pixels, previous_fb_size, display->width,
                      display->height, display->format);
 
@@ -1551,6 +1577,8 @@ int main(int argc, char **argv)
     }
     if (sim.telemetry != NULL) {
         telemetry_summary(&telemetry);
+        printf("[sim] link on the screen: %u changes, last %s\n", sim.link.changes,
+               link_status_name(link_hold_shown(&sim.link)));
     }
 #ifdef HAC_SIM_MQTT
     if (telemetry.mqtt != NULL) {

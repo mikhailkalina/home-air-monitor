@@ -50,6 +50,19 @@ typedef enum {
     ACC_HIGH,              // calibrated
 } value_accuracy_t;
 
+// The link to the smart home, as the screen shows it
+// (docs/adr/0031-the-network-on-the-screen.md): not the link as it is this
+// instant, which may flap, but a state it has held for a while
+// (core/app/link_hold.h). LINK_OFF is the zero value, so a reading built
+// without one shows nothing.
+typedef enum {
+    LINK_OFF = 0,    // no telemetry configured: the screen says nothing about a link
+    LINK_UNKNOWN,    // configured, and no state has held long enough since start
+    LINK_NO_WIFI,    // the network asked for and not up
+    LINK_NO_BROKER,  // the network up, no MQTT session
+    LINK_ONLINE,     // an MQTT session: the readings are being published
+} link_status_t;
+
 typedef struct {
     float value;
     value_status_t status;
@@ -71,9 +84,15 @@ typedef struct {
     measurement_f32_t battery_mv;
     bool charging;
 
+    // The link. `link` is the screen's, held so that a flapping link redraws
+    // nothing; the composition sets it (core/app/link_hold.h).
+    // `net_connected` and `wifi_rssi_dbm` are the state message's -- the
+    // Wi-Fi link as it is now -- and the reporter sets them in its own copy
+    // (core/reporting/reporter.h); nothing draws them, and the screen's
+    // reading leaves them unset.
+    link_status_t link;
     int8_t wifi_rssi_dbm;
     bool net_connected;
-    bool telemetry_connected;
 
     uint32_t uptime_s;
     uint32_t boot_count;
@@ -113,6 +132,9 @@ bool measurement_low_accuracy(const measurement_f32_t *m);
 
 // "-", "unreliable", "low", "medium", "high"; never NULL.
 const char *measurement_accuracy_name(value_accuracy_t accuracy);
+
+// "off", "unknown", "no-wifi", "no-broker", "online", for logs; never NULL.
+const char *link_status_name(link_status_t link);
 
 // Time elapsed since acquisition, or MEASUREMENT_AGE_UNKNOWN.
 uint64_t measurement_age_ms(const measurement_f32_t *m, uint64_t now_ms);

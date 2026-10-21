@@ -34,6 +34,12 @@ One decision here goes beyond the brief and is the owner's to confirm or
 undo: the bound on partial refreshes past the budget ("A person's redraw",
 below).
 
+**Amended 2026-10-21 by ADR 0031** (phase 4d): the diagnostics screen has
+two lines on the network -- the Wi-Fi link's state, name, signal and address;
+the MQTT session's state, messages sent and refused, and the local time of
+the last -- drawn as they are when the screen is drawn, redrawn only when the
+link the status bar shows changes; its title is 32px to make room.
+
 ## Context
 
 The board has a touch panel nothing read. `ports/port_input.h` has existed

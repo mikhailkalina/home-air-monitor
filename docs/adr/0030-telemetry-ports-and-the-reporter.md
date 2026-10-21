@@ -13,6 +13,13 @@ event loop and no adapters to give it: nothing is sent from the board until
 phase 4c brings Wi-Fi and esp-mqtt behind these ports. Nothing has been seen
 in a real broker or a real Home Assistant.
 
+**Amended 2026-10-21 by ADR 0031** (phase 4d, the network on the screen): the
+status bar says `online`, `no broker` or `no Wi-Fi` once the link has held
+that state for a minute, so the network now reaches the screen's reading --
+held, as `air_reading_t.link` -- and an outage longer than a minute redraws
+twice. `telemetry_connected` is gone; `net_connected` and the signal stay the
+state message's. "Not decided here: the status bar", below, is decided there.
+
 **Amended 2026-10-20, phase 4c** (branch `phase-4c-simulator-mqtt`; "Amendment
 (phase 4c): the simulator on a real broker", at the end): the simulator
 reaches a real broker over libmosquitto, verified against mosquitto on the
@@ -285,7 +292,9 @@ next sub-phase's since the amendment below):
   while MQTT works. Feeding it the link costs two status redraws per outage,
   and Wi-Fi that flaps would flap the panel; it wants a rule of its own --
   a hysteresis, or the session rather than the link -- when phase 4c shows how
-  the link behaves.
+  the link behaves. **Decided by ADR 0031**: a hold of a minute on the link
+  and the session together, before the board has shown how its link behaves
+  -- the minute an estimate the board's days replace.
 - *A real broker from the simulator* (architecture section 10: "the simulator
   appears in Home Assistant"). A host adapter over libmosquitto is a new
   dependency -- dual-licensed EPL-2.0 and EDL-1.0, as far as known here, not
@@ -548,7 +557,39 @@ message before its outage (585 s) and expects the will 90 s later (675 s, where 
 contract, which waits one and a half keepalives after its cut, passes either way. Nothing the
 reporter decides depended on the difference.
 
-**Still to see**: the history graphs and the long-term statistics (Developer tools,
-Statistics, after the first full hour); a broker with a password, `--mqtt-user`
-and `HAC_MQTT_PASSWORD` (seen only in `tests/cli/simulator_broker.py`); and Home
-Assistant on its own machine with the Mosquitto add-on, the way the board will meet it.
+**History and long-term statistics**, the same set-up, one run of 2 h 37 min (08:12:10 to
+10:49:54 UTC) at x1 from the recordings' first rows. Read from a copy of Home Assistant's
+`home-assistant_v2.db` and its WAL (`statistics_meta`, `statistics`,
+`statistics_short_term`, `states`), not from screenshots:
+
+- Seven statistics with a mean: temperature, humidity, pressure, CO2, IAQ, gas resistance
+  and Wi-Fi signal -- the entities discovery gives `state_class: measurement` (ADR 0029).
+  Uptime and IAQ accuracy, which it gives none, have none.
+- Hourly rows for 07:00, 08:00 and 09:00 UTC, five-minute rows from 07:45 to 10:45.
+- The hour of 09:00 UTC against the recordings' rows for the same span (offsets 2,870 to
+  6,470 s): the mean CO2 804.50 ppm against 804.25, IAQ 58.011 against 58.018, temperature
+  73.307 F against 73.310 F. The minimum and maximum a little inside the recording's (CO2
+  795-819 against 794-820, IAQ 54.48-61.46 against 53.04-62.19): Home Assistant sees the
+  messages -- the heartbeat and what passes a delta -- not every row.
+- Kept in F and inHg, that Home Assistant's unit system; a change of system is Home
+  Assistant's to convert.
+
+**Two simulators with one device id fight.** At 10:48:31 the owner started a second
+simulator with the default id, `simulator`, beside the first. Each CONNECT of the second
+took the first's session over (MQTT 3.1.1, 3.1.4), the broker published the first's will,
+and Home Assistant showed the device unavailable; the first, whose session had worked,
+connected again within about 30 ms and took the second's over before the second had
+published anything -- every state in those 83 s came from one uptime clock. The second's
+sessions never got past connecting, so each time it waited out the reporter's connect
+timeout and its backoff: the device flapped 1.5, 2.0, 3.0, 5.0, 9.0, 13.0, 13.0, 13.0 and
+13.1 s apart, which is 1 s plus 0.5, 1, 2, 4, 8 and 12 -- 10 s and 5 s doubling to 120 s
+of virtual time at x10, the scale inferred from the intervals, not confirmed. Neither
+stops while both run. So every simulator on a broker needs a `--device-id` of its own; its
+help says so. Nothing else changed: a board's id is its MAC, so two boards cannot fight
+this way, and a reporter that counted a session ending within seconds, with the network
+up, as a failed attempt would only slow the fight, not end it. The second's 1 s a cycle is
+again the connect timeout on an attempt the adapter already knew was over.
+
+**Still to see**: a broker with a password, `--mqtt-user` and `HAC_MQTT_PASSWORD` (seen
+only in `tests/cli/simulator_broker.py`); and Home Assistant on its own machine with the
+Mosquitto add-on, the way the board will meet it.

@@ -30,6 +30,50 @@ static bool rssi_is_signal(int8_t rssi)
     return rssi >= -127 && rssi <= -1;
 }
 
+// info() into `out`, over a buffer that is not zero first, so that a field
+// left unwritten shows.
+static void info_of(const port_net_t *net, net_info_t *out)
+{
+    for (size_t i = 0u; i < sizeof(out->ssid); ++i) {
+        out->ssid[i] = 'X';
+    }
+    for (size_t i = 0u; i < PORT_NET_IPV4_LEN; ++i) {
+        out->ipv4[i] = 0xA5u;
+    }
+    net->info(net, out);
+}
+
+static bool ssid_terminated(const net_info_t *info)
+{
+    for (size_t i = 0u; i < sizeof(info->ssid); ++i) {
+        if (info->ssid[i] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool same_ssid(const net_info_t *a, const net_info_t *b)
+{
+    for (size_t i = 0u; i < sizeof(a->ssid); ++i) {
+        if (a->ssid[i] != b->ssid[i]) {
+            return false;
+        }
+        if (a->ssid[i] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The address info() gives while not up.
+static bool no_address(const port_net_t *net)
+{
+    net_info_t info;
+    info_of(net, &info);
+    return !port_net_ipv4_set(info.ipv4);
+}
+
 // Lets time pass until state() is `want`, at most `within_ms`; true when it
 // got there. `others_ok` is cleared if a state outside `allowed` (a bit per
 // net_state_t) is seen on the way.
@@ -57,6 +101,7 @@ static void not_exercised(contract_report_fn report, void *ctx, unsigned *failur
         "a lost link: no longer NET_UP: not exercised by this runner",
         "a lost link: not NET_DOWN while up() is in force: not exercised by this runner",
         "a lost link: rssi_dbm() is PORT_NET_RSSI_NONE: not exercised by this runner",
+        "a lost link: info() gives no address: not exercised by this runner",
         "the link back: up again without being asked: not exercised by this runner",
     };
     for (size_t i = 0u; i < sizeof(checks) / sizeof(checks[0]); ++i) {
@@ -74,13 +119,21 @@ unsigned port_net_contract_run(port_net_t *net, const port_net_contract_env_t *e
     check(report, report_ctx, &failures, "before up(): NET_DOWN", net->state(net) == NET_DOWN);
     check(report, report_ctx, &failures, "not up: rssi_dbm() is PORT_NET_RSSI_NONE",
           net->rssi_dbm(net) == PORT_NET_RSSI_NONE);
+    net_info_t down_info;
+    info_of(net, &down_info);
+    check(report, report_ctx, &failures, "info()'s name is terminated within PORT_NET_SSID_MAX",
+          ssid_terminated(&down_info));
+    check(report, report_ctx, &failures, "not up: info() gives no address, 0.0.0.0",
+          !port_net_ipv4_set(down_info.ipv4));
 
     uint64_t before = now(env);
     for (unsigned i = 0u; i < TIMED_CALLS; ++i) {
+        net_info_t info;
         (void)net->state(net);
         (void)net->rssi_dbm(net);
+        net->info(net, &info);
     }
-    check(report, report_ctx, &failures, "state() and rssi_dbm() never wait",
+    check(report, report_ctx, &failures, "state(), rssi_dbm() and info() never wait",
           now(env) - before <= (uint64_t)PORT_NET_CONTRACT_MAX_CALL_MS);
 
     env->advance(env->ctx, PORT_NET_CONTRACT_UP_MS);
@@ -103,6 +156,13 @@ unsigned port_net_contract_run(port_net_t *net, const port_net_contract_env_t *e
           came_up);
     check(report, report_ctx, &failures, "up: rssi_dbm() is a signal, -127..-1 dBm",
           came_up && rssi_is_signal(net->rssi_dbm(net)));
+    net_info_t up_info;
+    info_of(net, &up_info);
+    check(report, report_ctx, &failures, "up: info() gives an address",
+          came_up && port_net_ipv4_set(up_info.ipv4));
+    check(report, report_ctx, &failures, "up: info()'s name is the one it gave while down",
+          ssid_terminated(&up_info) && ssid_terminated(&down_info) &&
+              same_ssid(&up_info, &down_info));
 
     check(report, report_ctx, &failures, "up() again while up: HAL_OK", net->up(net) == HAL_OK);
     env->advance(env->ctx, PORT_NET_CONTRACT_NOTICE_MS);
@@ -124,6 +184,8 @@ unsigned port_net_contract_run(port_net_t *net, const port_net_contract_env_t *e
               not_down && s != NET_DOWN);
         check(report, report_ctx, &failures, "a lost link: rssi_dbm() is PORT_NET_RSSI_NONE",
               s == NET_UP || net->rssi_dbm(net) == PORT_NET_RSSI_NONE);
+        check(report, report_ctx, &failures, "a lost link: info() gives no address",
+              s == NET_UP || no_address(net));
 
         env->advance(env->ctx, PORT_NET_CONTRACT_NOTICE_MS);
         env->restore(env->ctx);
@@ -141,6 +203,7 @@ unsigned port_net_contract_run(port_net_t *net, const port_net_contract_env_t *e
           net->state(net) == NET_DOWN);
     check(report, report_ctx, &failures, "down: rssi_dbm() is PORT_NET_RSSI_NONE",
           net->rssi_dbm(net) == PORT_NET_RSSI_NONE);
+    check(report, report_ctx, &failures, "down: info() gives no address", no_address(net));
     check(report, report_ctx, &failures, "down() again: HAL_OK", net->down(net) == HAL_OK);
     env->advance(env->ctx, PORT_NET_CONTRACT_UP_MS);
     check(report, report_ctx, &failures, "down, the link there: still NET_DOWN a while later",

@@ -78,6 +78,9 @@ static diag_facts_t facts_of(const screen_inputs_t *in)
     f.sensors = in->sensors;
     f.recorder = in->recorder;
     f.clock_source = in->clock_source;
+    f.network = in->network;
+    f.now_ms = in->now_ms;
+    f.zone = in->zone;
     return f;
 }
 
