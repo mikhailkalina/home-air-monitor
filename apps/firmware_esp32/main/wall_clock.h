@@ -12,6 +12,11 @@
 // caller passes (ADP_CLOCK_WALL_EARLIEST_MS on the board): a chip that says
 // 2000 was never set by this firmware
 // (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md).
+//
+// Since phase 4f (the same ADR, "Amendment (phase 4f): time from the
+// network") the system time comes from SNTP too; rtc_sync.h measures the RTC
+// against it by the RTC's own tick and sets it to a second's start, with
+// wall_clock_chip_time() and wall_clock_believable_ms() from here.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_WALL_CLOCK_H
 #define HAC_APPS_FIRMWARE_ESP32_WALL_CLOCK_H
@@ -33,7 +38,11 @@ typedef enum {
     WALL_CLOCK_SOURCE_RTC,       // the PCF8563, read at boot
     WALL_CLOCK_SOURCE_CONSOLE,   // time_set
     WALL_CLOCK_SOURCE_KEPT,      // what a software reset kept, the RTC giving none
+    WALL_CLOCK_SOURCE_SNTP,      // the network: SNTP's last answer (phase 4f)
 } wall_clock_source_t;
+
+// The first instant the PCF8563 cannot hold, 2100-01-01T00:00:00Z.
+#define WALL_CLOCK_LATEST_MS 4102444800000ull
 
 typedef struct {
     pcf8563_reading_t chip;  // what the RTC said, and the driver's verdict on it
@@ -57,8 +66,18 @@ const char *wall_clock_rtc_reason(const wall_clock_rtc_t *rtc);
 // nothing written, outside the chip's 2000-2099; else pcf8563_set()'s status.
 hal_status_t wall_clock_write_rtc(port_i2c_t *bus, uint8_t address, uint64_t unix_ms);
 
-// "none", "rtc", "console", "kept across a software reset"; never NULL.
+// "none", "rtc", "console", "kept across a software reset", "sntp"; never
+// NULL.
 const char *wall_clock_source_name(wall_clock_source_t source);
+
+// Whether `unix_ms` is a time the system clock and the RTC may take: no
+// earlier than `earliest_ms`, and before WALL_CLOCK_LATEST_MS. What SNTP's
+// answer is held to before it sets anything (net_time.c).
+bool wall_clock_believable_ms(uint64_t unix_ms, uint64_t earliest_ms);
+
+// `unix_ms`, UTC, as the chip holds it, to the second (rounded down); false
+// outside its 2000-2099, `out` then untouched.
+bool wall_clock_chip_time(uint64_t unix_ms, pcf8563_time_t *out);
 
 #ifdef __cplusplus
 }

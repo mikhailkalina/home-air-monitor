@@ -25,6 +25,11 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/adp_net.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_net_pure.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_power.c
+        # The RTC's INT on IO9, its falling edges stamped in an interrupt
+        # (phase 4f, docs/adr/0023's amendment), and the GPIO ISR service it
+        # shares with the touch adapter, installed once.
+        ${HAC_ROOT}/platform/esp32_t5s3/board_rtc_int.c
+        ${HAC_ROOT}/platform/esp32_t5s3/board_gpio_isr.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
     REQUIRES

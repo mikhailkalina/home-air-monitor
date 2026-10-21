@@ -684,8 +684,56 @@ a day's BSEC and heating.
 The test app passed on the board (`11 Tests 0 Failures`, the `port_net` contract against the
 station) once its runner called at the event loop's priority.
 
-Next: Wi-Fi's board run; then the board's esp-mqtt adapter behind `port_telemetry` and the
-reporter composed, with its device id from `mqtt_device_id_from_mac()`; the board run of
+Phase 4f on branch `phase-4f-sntp` (ADR 0023, amendment "Time from the network"): SNTP.
+`apps/firmware_esp32/main/net_time.c` starts ESP-IDF's `esp_netif_sntp` at Wi-Fi's first
+address, one server, `CONFIG_HAC_SNTP_SERVER` in `main/Kconfig.projbuild` (`pool.ntp.org`),
+an answer an hour (`NET_TIME_SYNC_INTERVAL_MS`); lwIP retries by itself, 15 s doubling to
+150 s. lwIP's answer arrives on lwIP's task in `sntp_sync_time()`, ESP-IDF's weak function,
+which `net_time.c` replaces: the server's time held to 2026-2099 (`wall_clock_believable_ms()`;
+lwIP as built checks little, `SNTP_CHECK_RESPONSE` 0), set with `settimeofday()` or refused,
+left in a mailbox and the event loop woken -- nothing else runs there. The rest is the event
+loop's, through a new step hook with a deadline (`event_loop_deps_t.step`): the `synced` line,
+the source to `sntp`, and `rtc_sync.c`'s steps. The RTC is measured by its own tick: its alarm
+sets AF and pulls the open-drain INT low at the tick into the armed minute (datasheet Rev. 11.1,
+8.6.5), and `platform/esp32_t5s3/board_rtc_int.c` stamps each falling edge on IO9 with
+`esp_timer` in an interrupt -- the measurement, independent of any task's load. Per answer:
+arm for the next minute, the edge's offset and the drift since the last write logged (`rtc
+against sntp`) before the write; the write -- stopped, the second written, started so that the
+first tick falls on that second's end, the loop woken 30 ms early and spinning, a missed moment
+re-planned up to 3 times, stamped either side (`rtc written`); arm again, and the next edge
+says where it landed (`rtc landed`), the mark for the next drift -- measured, never predicted.
+The delay from a start to the first tick is learned: the datasheet's 508 ms until measured.
+Driver: `pcf8563_stop()`, `_write_time()`, `_start()`, `_alarm_at_minute()`, `_alarm_off()`.
+Numbers in `wall_clock_limits.h`. `time` shows `TIME_SNTP` lines (sync phase, INT's edges and
+level, the learned delay, offset, drift, landing); `time_set` and the new `rtc_stop` (STOP
+set: a boot finds no time) stop a sync and forget the mark. No port, no core change, no task.
+Host: `platform/host/i2c_models/pcf8563_model.c`, a PCF8563 that keeps time and raises its
+alarm on INT, from the datasheet; `tests/unit/test_rtc_sync.c` steps the sync against it as the
+event loop would -- offsets to 2 ms, landings on the second, the board's late first tick learned,
+drift over an hour and a day within 1.5 ppm, a held loop re-planned, a loop always late measured,
+no INT edge, no valid RTC, no wall time, a hung bus; four mutations caught. A first version
+with a task of its own that polled the RTC ran on the board on 2026-10-21 (ELF `9fb8fd2b5...`):
+the RTC 12.9 s behind since the `time_set` of 10-16, **-29 ppm**; the write landed **481 ms
+behind** -- this chip's first tick came about 0.989 s after a start, not 0.508 (its marking is
+to be read: a look-alike?); the task cost 8.4 KB of internal RAM. Hence the design above.
+Measured in the build against `main` with the same network: static internal RAM +1,736 bytes
+(1,251 lwIP's DNS client, linked for the server's name), image +20,864; without a network no
+SNTP and no lwIP, 336 bytes of `net_time`'s state. Verified on the host (unit, ASan); the
+firmware, its BSEC variant and the test app in both variants build, and a no-network image.
+On the board, 2026-10-22 (ELF `59c002862...`, one sync): INT on IO9 works, both edges
+stamped; the offset -554 ms ±2; the write on time (`stopped_ms=21 rearms=0`); the landing
+`residual_ms=-492 first_tick_ms=1000 learned=true` -- this chip first ticks a whole second
+after a start (the 989 of the polling version was its own error); -21 ppm over the hour since
+the first version's write; 72,503 bytes free with the link up. One `E gpio: ... GPIO isr
+service already installed` line at every boot, the touch adapter's second install: since then
+the shared GPIO ISR service is installed once (`platform/esp32_t5s3/board_gpio_isr.c`, on
+app_main before either asks), not yet seen on the board. Still owed (`board_notes.md`, open
+item "Time from the network on the board (phase 4f)"): the next sync landing on the second,
+a day's drift, a cold boot after `rtc_stop`, the chip's marking, the autumn change.
+
+Next: Wi-Fi's and SNTP's board runs; then the board's esp-mqtt adapter behind
+`port_telemetry` and the reporter composed, with its device id from
+`mqtt_device_id_from_mac()`; the board run of
 phases 3d to 3f, the rest of phase 3c's measurements -- now recordable unattended -- and this
 unit's own figures for the remaining estimates; the rest of the simulator's checks in Home
 Assistant (ADR 0030's amendment).

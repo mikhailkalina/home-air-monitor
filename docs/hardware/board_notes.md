@@ -334,8 +334,12 @@ measured:
   kept VL clear through more than a minute with no power at all; longer
   outages are untested ("The RTC on the board" in the open items).
 - **INT** goes to IO9 with a 10 kOhm pull-up to `VDD3V3`
-  (`BOARD_RTC_INT_GPIO`): the open-drain alarm and timer interrupt, unused --
-  a wake-source candidate for phase 5's deep sleep.
+  (`BOARD_RTC_INT_GPIO`): the open-drain alarm and timer interrupt. Since
+  phase 4f the alarm marks the RTC's tick on it, each falling edge stamped in
+  an interrupt (`platform/esp32_t5s3/board_rtc_int.c`) -- read from the
+  schematic, **seen working 2026-10-22**: the pin high at boot, both of a
+  sync's edges stamped (open item "Time from the network on the board"). IO9
+  is an RTC GPIO: a wake source for phase 5's deep sleep.
 - **CLKOUT** is pulled up and goes nowhere the firmware uses.
 - The bus: the shared I2C at `0x51` (`BOARD_RTC_I2C_ADDRESS`), found by
   every boot scan since phase 2d.
@@ -344,7 +348,17 @@ The firmware keeps **UTC** in it, never local time, reads it once at boot
 after the bus is up, and sets the system time from it when it is valid --
 answering, VL clear, running, decodable, and no earlier than 2026
 (`apps/firmware_esp32/main/wall_clock.c`, ADR 0023). The console's `time`
-says what it holds; `time_set` writes it.
+says what it holds; `time_set` writes it. Since phase 4f an image with a
+network writes it from each SNTP answer, an hour apart, to the start of a
+second: stopped, the second written, started so that its first tick falls on
+that second's end -- a write without STOP leaves the prescaler's phase, up to
+a second off (datasheet Rev. 11.1, 8.10). Before each write, and after it, it
+finds the chip's own tick by its alarm on INT, stamped on IO9 in an
+interrupt: how far it had drifted, and where the write landed. The delay from
+a start to the first tick is measured and learned, since this chip's is not
+the datasheet's 0.508 s but a whole second: 1,000 ms by its INT on
+2026-10-22, about 989 by polling the day before (ADR 0023, "Amendment (phase
+4f)"; open item "Time from the network on the board").
 
 ### The microSD slot
 
@@ -1335,6 +1349,11 @@ layout settles, not before.
       - *Drift*: an ESTIMATE of about a minute a month (a 32.768 kHz
         crystal's ±20 ppm) until phase 4's SNTP corrects it. `time` against a
         reference a week or two after `time_set` gives this unit's figure.
+        **Since phase 4f** the network measures it every hour, with nobody
+        watching: open item "Time from the network on the board". Its first
+        answer, 2026-10-21, found the RTC 12.9 s behind: **-29 ppm** since the
+        `time_set` of 2026-10-16 (±3, the hand-typed second), if nothing wrote
+        it in between -- a first figure, outside the ESTIMATE.
       - *The autumn change*: 2026-10-25 at 01:00 UTC; if the device runs
         through it, its next redraw shows the hour step, 03:59 -> 03:00 in
         Vilnius.
@@ -2301,3 +2320,168 @@ layout settles, not before.
       brownout, no watchdog in the three boots (five with Wi-Fi so far). EPDiy's
       draw times as before (322-323, 699-700, 910 ms); `vbat` 32 of 32 again,
       4,222-4,224 mV.
+- [ ] **Time from the network on the board (phase 4f).** Built 2026-10-21
+      (`docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`,
+      "Amendment (phase 4f): time from the network"): SNTP from Wi-Fi's first
+      address, `CONFIG_HAC_SNTP_SERVER` (`pool.ntp.org`), an answer an hour;
+      each answer sets the system time, and the event loop then measures the
+      RTC by its alarm's tick on INT -- IO9, stamped in an interrupt
+      (`platform/esp32_t5s3/board_rtc_int.c`) -- logs its offset and drift,
+      writes it to a second's start and measures where it landed
+      (`apps/firmware_esp32/main/net_time.c`, `rtc_sync.c`). Needs an image with
+      a network (`sdkconfig.credentials`); without one the boot has no
+      `net_time` line and `time` says `TIME_SNTP off: no network in this
+      image`. What each check is to show, and the lines that show it:
+      - ~~*INT on IO9 at all*~~ -- **seen 2026-10-22**, below. The wiring is
+        the schematic's, read, never measured: at boot `board_rtc_int: the RTC's INT interrupting on its
+        falling edge gpio=9 level=high esp_err=0` (high: pulled up, no alarm
+        due); within a minute of the first answer `rtc against sntp
+        rtc_minus_sntp_ms=...`, not `rtc against sntp: nothing to compare
+        why=no INT edge`. `time`'s first `TIME_SNTP` line counts the edges --
+        two a sync. No edges at all says INT does not reach IO9: the RTC is
+        still written, unmeasured, and the drift is not.
+      - *A boot*: `net_time: waiting for the network's first address
+        server=pool.ntp.org interval_s=3600 rtc_alarm_off=0` before the first
+        frame; after `adp_net: up address=...`, `net_time: sntp started ...
+        esp_err=0`; within lwIP's random start delay (5 s at most,
+        `CONFIG_LWIP_SNTP_MAXIMUM_STARTUP_DELAY`) and a DNS lookup, `synced
+        utc=...Z system_minus_sntp_ms=... source_was=rtc syncs=1`; at the next
+        minute boundary `rtc against sntp ... since_write_s=- drift_ppm=-`; a
+        second or so later `rtc written utc=...Z first_tick_ms=508
+        start_late_ms=0 stopped_ms=... rearms=0 start_window_ms=...`; at the
+        minute boundary after, `rtc landed residual_ms=... uncertainty_ms=2
+        first_tick_ms=... learned=true`. `time`: `source="sntp"`, the
+        `TIME_SNTP` lines.
+      - *The first landing, and the delay learned*: with the datasheet's 508
+        ms the first write after a boot lands `residual_ms` off by the
+        difference between this chip's delay and the datasheet's -- -481 on
+        2026-10-21, below -- and `first_tick_ms` says this chip's. The second
+        sync's `rtc written` carries that `first_tick_ms`, and its `rtc landed`
+        a residual within a millisecond or two. A delay that changes from hour
+        to hour, or no learning (`learned=false`), is the thing to report.
+      - *The RTC chip itself*: its marking, read off the board (the chip
+        beside the backup cell). A PCF8563 first ticks 0.508 s after a start
+        by its datasheet; this one takes a whole second (1,000 ms by its INT,
+        2026-10-22) -- a look-alike (BM8563, HYM8563 and their kin) would
+        explain it. If the second holds, it can be the default instead of the
+        datasheet's, so that a boot's first write lands too (ADR 0023's
+        amendment, "Not decided here").
+      - *A cold boot with nothing in the RTC*: `rtc_stop` (`TIME_RTC_STOP
+        ok`), then all power removed -- USB and battery -- and restored, with no
+        `time_set` after. The boot: `main: wall clock source=none rtc=rtc:
+        stopped`, the footer `updated --:--`; at the first answer `synced ...
+        system_minus_sntp_ms=none source_was=none`, `rtc against sntp: nothing
+        to compare why=rtc: stopped`, `rtc written ...`, `rtc landed ...`; the
+        footer shows the right local time at the next poll, a `reason=status`
+        redraw within a sensor cycle (ADR 0023, "One new trigger"). Then
+        `restart`: `wall clock source=rtc rtc=rtc: valid`. The power-on boot
+        itself is not in the terminal's log -- the terminal reopening the port
+        resets the chip again (`reason=usb`), as in phase 3e -- and the logged
+        boot after it shows the above only if that reset came before the first
+        answer, some 15 to 25 s in; later, and the unlogged boot has already
+        written the RTC, and the logged one says `source=rtc`. The card's
+        `log/` has the unlogged boot's lines either way, with the card in.
+      - *A cold boot with the RTC set*: all power off for a while and back,
+        nothing typed. The boot takes the RTC's time (`source=rtc`), and the
+        first answer's `rtc_minus_sntp_ms` says whether the RTC counted through
+        the cut: its drift since the last write if it did, the outage's length
+        behind if its oscillator stopped. The cell's capacity for hours of it
+        is the item "The RTC on the board"'s.
+      - *Every hour*: `synced` 3600 s apart, each followed a minute or so later
+        by `rtc against sntp ... since_write_s=36xx drift_ppm=...
+        drift_uncertainty_ppm=1.1`, then `rtc written` and `rtc landed`. From a
+        day of the card's `log/` (`grep "rtc against sntp"`): the drift per
+        hour, its mean and spread -- this unit's figure, replacing ADR 0023's
+        ESTIMATE of ±20 ppm and closing the item "The RTC on the board"'s
+        *Drift*. The spread beyond the ticks' 1 ppm is the network's: lwIP takes
+        the server's time without a round-trip correction. `system_minus_sntp_ms`
+        hour by hour is the ESP32's own clock's drift over an hour, a figure for
+        phase 5. `rearms=0` and `start_late_ms` 0 or 1; a re-arm says the event
+        loop was held -- a full refresh -- at the start's moment.
+      - *An outage*: the access point off for over an hour. No `synced` lines
+        meanwhile; once the link is back the next answer comes within lwIP's
+        retry ceiling, 150 s, with `since_write_s` the whole outage and the
+        drift over it.
+      - *The cost*: `adp_net: memory with the link up free_internal=` against
+        74,419 with the same network and no SNTP (ADR 0032) -- an ESTIMATE of
+        about 2 KB less (lwIP's DNS client, `net_time`'s state); the event
+        loop's `stack low-water mark` against 3,368 bytes free, now with the
+        sync's steps and log lines on it.
+      - *The bus and BSEC*: no new `i2c.master` lines and no `source failed`
+        around a sync, and no `BSEC called late` at the write -- its spin is 30
+        ms at most.
+      - *The autumn change*, if the board runs through 2026-10-25 01:00 UTC:
+        the footer's next redraw after it shows the hour step, 03:59 -> 03:00
+        in Vilnius; the `synced` lines, in UTC, step nothing.
+      - Not provoked: `time refused` -- a server's time before 2026 or from
+        2100 on -- which only a broken or unsynchronised server sends.
+      **The first version on the board, 2026-10-21** (ELF `9fb8fd2b5...`, the
+      BSEC image, the owner's YAT log of 23:41 local, 14 minutes; the version
+      with a task of its own that polled the RTC for its tick, replaced the
+      same night -- ADR 0023's amendment, "The first version"):
+      - *The boot*: one brownout first, after the USB reset that started the
+        log, at the old place (`epdiy-i80: i80 row output ready`, then `BOD:
+        Brownout detector was triggered`; open item "A reboot loop when the
+        switched 3V3 comes up"); the next boot ran. Wi-Fi up at 20.2 s, at the
+        third attempt (`failed_attempts=2 took_ms=15243`).
+      - *The answer*: `sntp started` at 20.2 s, `synced
+        utc=2026-10-21T20:41:53.885Z` 4.4 s later, `system_minus_sntp_ms=-13148
+        source_was=rtc`: the boot's time, from the RTC, was 13.1 s behind.
+      - *The RTC's drift since 2026-10-16*: `rtc_minus_sntp_ms=-12918
+        uncertainty_ms=1` -- 12.9 s behind, the 0.23 s from the system time's
+        figure the boot's truncation. Since `time_set 2026-10-16T17:35:40Z`
+        (above, "The RTC on the board"), if nothing wrote it in between,
+        443,175 s: **-29 ppm**, ±3 for the hand-typed second -- outside the ±20
+        ppm ESTIMATE, some 105 ms an hour.
+      - *The landing*: `rtc written utc=2026-10-21T20:41:56.000Z
+        residual_ms=-481 uncertainty_ms=2 stopped_ms=45 start_late_ms=0
+        rearms=0` -- started on time, the first tick came about 0.989 s after
+        the start, not the datasheet's 0.508. One sample; what made the design
+        measure the landing and learn the delay.
+      - *The cost of the task*: `memory with the link up free_internal=66015
+        min_free_internal=58711`, 8.4 KB under phase 4e's last image; its stack
+        3,156 bytes used of 6,144. The task is gone.
+      - *Unchanged*: EPDiy's draw times; BSEC late 530 ms at a status redraw and
+        200 ms at a change of screen, as before.
+      **The final version on the board, 2026-10-22** (ELF `59c002862...`, the
+      BSEC image, the owner's YAT log of 00:38 local, 2.5 minutes -- one sync):
+      - *The boot*: one brownout first, at the old place, as the evening
+        before; the next boot ran. `board_rtc_int: the RTC's INT interrupting
+        on its falling edge gpio=9 level=high esp_err=0` -- the pin pulled up,
+        no alarm left armed (`rtc_alarm_off=0`).
+      - *INT on IO9 works*: `rtc against sntp rtc_minus_sntp_ms=-554
+        uncertainty_ms=2` at the minute boundary after the answer, and `rtc
+        landed` at the one after -- both edges stamped, so the wiring is as the
+        schematic says.
+      - *The write*: `rtc written utc=2026-10-21T21:40:02.000Z first_tick_ms=508
+        start_late_ms=0 stopped_ms=21 rearms=0 start_window_ms=0` -- on time,
+        the clock stopped 21 ms.
+      - *The landing*: `rtc landed residual_ms=-492 uncertainty_ms=2
+        first_tick_ms=1000 learned=true` -- this chip's first tick comes a whole
+        second after a start, to the 2 ms the edges are read to; the 989 ms of
+        the evening before was the polling version's, its start's stamp taken
+        before the transfer's wait. Learned: the next sync's write is planned
+        with 1,000 ms. Not yet seen: that sync, an hour later.
+      - *The drift over the hour between the two images*: the first version
+        left the RTC 481 ms behind at 20:41:57.5Z; at 21:40:00.6Z it was 554
+        behind -- 73 ms in 3,483 s, **-21 ppm** (±1.2), against the -29 ppm
+        over the five days before. The temperature, or that estimate's
+        assumptions (nothing writing the RTC, the hand-typed second); a day's
+        hourly samples will tell.
+      - *The answer*: `synced ... system_minus_sntp_ms=-837 source_was=rtc` --
+        the boot's time, from the RTC, 0.84 s behind: the RTC's 0.55 s and the
+        boot's truncation.
+      - *Memory*: `memory with the link up free_internal=72503
+        min_free_internal=63811`, 6.5 KB above the first version with its task,
+        1.9 KB under phase 4e's last image -- as estimated.
+      - *One error line at every boot*, from the touch adapter: `E gpio:
+        gpio_install_isr_service(526): GPIO isr service already installed` --
+        the RTC's INT had installed the shared service first. Harmless, and
+        removed after this log: the service is installed once, on app_main
+        before either asks (`platform/esp32_t5s3/board_gpio_isr.c`); not yet seen
+        on the board.
+      - *Unchanged*: EPDiy's draw times; BSEC late 449 ms at the boot's full
+        refresh and 530 at a status redraw, none at the write.
+      Still to see: the second sync landing on the second with the learned
+      delay and its `drift_ppm`; a day of hourly samples; the cold boot after
+      `rtc_stop`; the chip's marking; the autumn change.

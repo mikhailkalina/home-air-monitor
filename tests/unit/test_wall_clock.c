@@ -3,7 +3,9 @@
 // apps/firmware_esp32/main/wall_clock.c against the host's fake bus,
 // compiled from where the firmware compiles it (see tests/CMakeLists.txt):
 // which RTC readings set the system time at boot, the reason the console
-// gives for each that does not, and time_set's write.
+// gives for each that does not, and time_set's write; since phase 4f the
+// years an SNTP answer is believed in and the conversion to the chip's time
+// (the RTC against the network is tests/unit/test_rtc_sync.c's).
 
 #include "wall_clock.h"
 
@@ -142,6 +144,36 @@ static void sources_have_names(void)
     HAC_CHECK(strcmp(wall_clock_source_name(WALL_CLOCK_SOURCE_CONSOLE), "console") == 0);
     HAC_CHECK(strcmp(wall_clock_source_name(WALL_CLOCK_SOURCE_KEPT),
                      "kept across a software reset") == 0);
+    HAC_CHECK(strcmp(wall_clock_source_name(WALL_CLOCK_SOURCE_SNTP), "sntp") == 0);
+}
+
+// --- Phase 4f ------------------------------------------------------------------
+
+// The chip's time of an instant: to the second, and nothing outside its
+// century.
+static void a_time_becomes_the_chips(void)
+{
+    pcf8563_time_t t;
+    memset(&t, 0xAA, sizeof(t));
+    HAC_CHECK(wall_clock_chip_time(SOME_TIME_MS + 999u, &t));
+    HAC_CHECK(t.year == 2026u && t.month == 10u && t.day == 25u && t.hour == 1u && t.minute == 0u &&
+              t.second == 0u);
+    HAC_CHECK_EQ_INT(t.weekday, 0);  // a Sunday
+    pcf8563_time_t untouched;
+    memset(&untouched, 0x55, sizeof(untouched));
+    HAC_CHECK(!wall_clock_chip_time(WALL_CLOCK_LATEST_MS, &untouched));
+    HAC_CHECK_EQ_INT(untouched.year, 0x5555);
+    HAC_CHECK(!wall_clock_chip_time(0u, &untouched));
+}
+
+static void believable_times_are_the_firmwares_years(void)
+{
+    HAC_CHECK(wall_clock_believable_ms(EARLIEST_MS, EARLIEST_MS));
+    HAC_CHECK(!wall_clock_believable_ms(EARLIEST_MS - 1u, EARLIEST_MS));
+    HAC_CHECK(wall_clock_believable_ms(WALL_CLOCK_LATEST_MS - 1u, EARLIEST_MS));
+    HAC_CHECK(!wall_clock_believable_ms(WALL_CLOCK_LATEST_MS, EARLIEST_MS));
+    HAC_CHECK(!wall_clock_believable_ms(0u, EARLIEST_MS));
+    HAC_CHECK(wall_clock_believable_ms(SOME_TIME_MS, EARLIEST_MS));
 }
 
 int main(void)
@@ -152,5 +184,7 @@ int main(void)
     HAC_RUN(a_time_written_reads_back);
     HAC_RUN(a_time_outside_the_chips_century_is_not_written);
     HAC_RUN(sources_have_names);
+    HAC_RUN(a_time_becomes_the_chips);
+    HAC_RUN(believable_times_are_the_firmwares_years);
     return hac_test_summary();
 }

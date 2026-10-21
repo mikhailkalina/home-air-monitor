@@ -7,7 +7,17 @@
 
 // Register addresses (pcf8563.h).
 #define REG_CONTROL_STATUS_1 0x00u
+#define REG_CONTROL_STATUS_2 0x01u
 #define REG_VL_SECONDS 0x02u
+#define REG_MINUTE_ALARM 0x09u
+
+// Control_status_2: AIE alone -- AF and TF written 0, which clears them.
+#define CONTROL_STATUS_2_AIE 0x02u
+#define CONTROL_STATUS_2_OFF 0x00u
+
+// AE_x, bit 7 of each alarm register: set, that alarm is off.
+#define ALARM_OFF 0x80u
+#define ALARMS 4u  // minute, hour, day, weekday
 
 // Control_status_1's normal value: running, no test mode.
 #define CONTROL_STATUS_1_RUN 0x00u
@@ -158,24 +168,75 @@ bool pcf8563_encode(const pcf8563_time_t *utc, uint8_t out[PCF8563_TIME_LEN])
     return true;
 }
 
-hal_status_t pcf8563_set(port_i2c_t *bus, uint8_t address, const pcf8563_time_t *utc)
+static hal_status_t write_control_1(port_i2c_t *bus, uint8_t address, uint8_t value)
+{
+    const uint8_t control_write[2] = {REG_CONTROL_STATUS_1, value};
+    return bus->write(bus, address, control_write, sizeof(control_write),
+                      PCF8563_TRANSFER_TIMEOUT_MS);
+}
+
+hal_status_t pcf8563_stop(port_i2c_t *bus, uint8_t address)
+{
+    return write_control_1(bus, address, CONTROL_STATUS_1_STOP);
+}
+
+hal_status_t pcf8563_start(port_i2c_t *bus, uint8_t address)
+{
+    return write_control_1(bus, address, CONTROL_STATUS_1_RUN);
+}
+
+hal_status_t pcf8563_write_time(port_i2c_t *bus, uint8_t address, const pcf8563_time_t *utc)
 {
     uint8_t time_write[1u + PCF8563_TIME_LEN];
     time_write[0] = REG_VL_SECONDS;
     if (!pcf8563_encode(utc, &time_write[1])) {
         return HAL_ERR_INVALID_ARG;
     }
+    return bus->write(bus, address, time_write, sizeof(time_write), PCF8563_TRANSFER_TIMEOUT_MS);
+}
 
-    // Running first, so a clock some earlier firmware stopped starts from the
-    // time written next rather than staying frozen at it.
-    const uint8_t control_write[2] = {REG_CONTROL_STATUS_1, CONTROL_STATUS_1_RUN};
-    hal_status_t status =
-        bus->write(bus, address, control_write, sizeof(control_write), PCF8563_TRANSFER_TIMEOUT_MS);
+hal_status_t pcf8563_alarm_at_minute(port_i2c_t *bus, uint8_t address, uint8_t minute)
+{
+    if (minute > LAST_MINUTE) {
+        return HAL_ERR_INVALID_ARG;
+    }
+    const uint8_t alarms[1u + ALARMS] = {REG_MINUTE_ALARM, to_bcd(minute), ALARM_OFF, ALARM_OFF,
+                                         ALARM_OFF};
+    const hal_status_t status =
+        bus->write(bus, address, alarms, sizeof(alarms), PCF8563_TRANSFER_TIMEOUT_MS);
     if (status != HAL_OK) {
         return status;
     }
-    status = bus->write(bus, address, time_write, sizeof(time_write), PCF8563_TRANSFER_TIMEOUT_MS);
-    return status;
+    const uint8_t control[2] = {REG_CONTROL_STATUS_2, CONTROL_STATUS_2_AIE};
+    return bus->write(bus, address, control, sizeof(control), PCF8563_TRANSFER_TIMEOUT_MS);
+}
+
+hal_status_t pcf8563_alarm_off(port_i2c_t *bus, uint8_t address)
+{
+    const uint8_t control[2] = {REG_CONTROL_STATUS_2, CONTROL_STATUS_2_OFF};
+    const hal_status_t status =
+        bus->write(bus, address, control, sizeof(control), PCF8563_TRANSFER_TIMEOUT_MS);
+    if (status != HAL_OK) {
+        return status;
+    }
+    const uint8_t alarm[2] = {REG_MINUTE_ALARM, ALARM_OFF};
+    return bus->write(bus, address, alarm, sizeof(alarm), PCF8563_TRANSFER_TIMEOUT_MS);
+}
+
+hal_status_t pcf8563_set(port_i2c_t *bus, uint8_t address, const pcf8563_time_t *utc)
+{
+    uint8_t unused[PCF8563_TIME_LEN];
+    if (!pcf8563_encode(utc, unused)) {
+        return HAL_ERR_INVALID_ARG;
+    }
+
+    // Running first, so a clock some earlier firmware stopped starts from the
+    // time written next rather than staying frozen at it.
+    const hal_status_t status = pcf8563_start(bus, address);
+    if (status != HAL_OK) {
+        return status;
+    }
+    return pcf8563_write_time(bus, address, utc);
 }
 
 const char *pcf8563_verdict_name(pcf8563_verdict_t verdict)

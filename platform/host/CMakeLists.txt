@@ -27,6 +27,7 @@ add_library(hac_platform_host STATIC
     host_time.c
     i2c_models/bme680_model.c
     i2c_models/gt911_model.c
+    i2c_models/pcf8563_model.c
     i2c_models/regfile_model.c
     i2c_models/scd41_model.c
     png_write.c

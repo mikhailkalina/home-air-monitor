@@ -12,15 +12,22 @@
 // Every line either command prints starts with "I2C_", so a pasted log can
 // be grepped for the result whatever else the board was logging around it.
 //
-// Phase 3e's (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md),
-// every line starting "TIME":
+// Phase 3e's and 4f's (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md
+// and its amendment), every line starting "TIME":
 //
 //   time         the system time in UTC and local time and where it came
-//                from -- or, without one, why not -- and what the RTC holds
+//                from -- or, without one, why not -- and what the RTC holds;
+//                since phase 4f also what SNTP has said (TIME_SNTP lines):
+//                its server, its answers, how far the system time and the
+//                RTC were from the last one, the RTC's drift, the writes
 //   time_set <YYYY-MM-DDTHH:MM:SSZ>
 //                UTC, so summer time leaves nothing ambiguous: writes the RTC
-//                (which clears its VL bit) and sets the system time. Until
-//                phase 4's SNTP, this is how the clock gets set.
+//                (which clears its VL bit) and sets the system time. In an
+//                image with a network, until SNTP's next answer sets both.
+//   rtc_stop     (phase 4f) the RTC's STOP bit set: it stands still, and a
+//                boot finds no time in it -- for checking that the network
+//                alone gives the time. time_set or SNTP's next answer starts
+//                it again.
 //
 // Phase 3f's (docs/adr/0024-sd-card-recordings-and-debug-log.md), every line
 // starting "SD" or "REC", each answered by the card's own task
@@ -88,9 +95,9 @@ typedef struct {
     adp_clock_t *clock;       // the system time time_set sets
     const time_zone_t *zone;  // the local time `time` prints
     const char *zone_name;    // what `time` calls it: "Vilnius"
-    // Where the system time came from: main.c's at boot, time_set's after.
-    // Only the console's task writes it once the console has started; the
-    // event loop reads it, a word, for the diagnostics screen.
+    // Where the system time came from: main.c's at boot, time_set's and the
+    // time task's after (net_time.h). The event loop reads it, a word, for
+    // the diagnostics screen.
     wall_clock_source_t *wall_source;
     adp_input_t *touch;     // the console's touch, touch_sleep and touch_wake
     adp_net_t *net;         // the console's wifi; NULL without a network in this image

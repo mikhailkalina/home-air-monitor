@@ -208,7 +208,9 @@ home-air-monitor/
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
 │   │   ├── adp_log.c               # ESP_LOG
 │   │   ├── adp_sd.c                # the microSD card: SD over SPI + FATFS behind port_files (ADR 0024)
-│   │   └── board_power.c           # PWR_EN without EPDiy: the sensors' rail (null display, test app)
+│   │   ├── board_power.c           # PWR_EN without EPDiy: the sensors' rail (null display, test app)
+│   │   ├── board_rtc_int.c         # the RTC's INT on IO9: each falling edge stamped in an interrupt
+│   │   └── board_gpio_isr.c        # ESP-IDF's shared GPIO ISR service, installed once
 │   │                               # (no adp_sensors.c: the wrappers are in drivers/, ADR 0014)
 │   │
 │   ├── host/
@@ -216,7 +218,8 @@ home-air-monitor/
 │   │   ├── adp_i2c_fake.c          # a bus of I²C device models (for drivers)
 │   │   ├── i2c_models/             # register file; SCD41 command-level model (ADR 0015);
 │   │   │                           #   BME680 register-level model (ADR 0016);
-│   │   │                           #   GT911, 16-bit registers and INT (ADR 0025)
+│   │   │                           #   GT911, 16-bit registers and INT (ADR 0025);
+│   │   │                           #   a PCF8563 that keeps time (ADR 0023, amended)
 │   │   ├── scenario_world.c        # the room the models measure, from the scenario CSVs (ADR 0017)
 │   │   ├── adp_display_sdl.c       # 960×540 window at 1:1 + e-paper emulation
 │   │   ├── adp_display_png.c       # headless: dump frames to PNG (for CI)
@@ -251,6 +254,10 @@ home-air-monitor/
 │   │   │   ├── main.c              # composition: adapters → app_core
 │   │   │   ├── event_loop.c        # the FreeRTOS pump
 │   │   │   ├── card_writer.c       # the task that owns the card: recordings, log, mount (ADR 0024)
+│   │   │   ├── wall_clock.c        # the RTC at boot and time_set: read, judged, written (ADR 0023)
+│   │   │   ├── rtc_sync.c          # the RTC against SNTP by its alarm's tick, set to a second's
+│   │   │   │                       #   start, its drift: the event loop's steps (ADR 0023, amended)
+│   │   │   ├── net_time.c          # SNTP: the answer on lwIP's task, the rest on the event loop
 │   │   │   ├── log_tee.c           # everything ESP_LOG prints, also into a ring for the card
 │   │   │   └── console.c           # the serial console's commands
 │   │   ├── components/             # thin wrappers over core/ drivers/ platform/
@@ -431,8 +438,10 @@ The core **never** calls `esp_timer_get_time()`, `xTaskGetTickCount()` or `time(
 - no flaky tests caused by wall-clock timing.
 
 `wall_ms()` is UTC. On the board it is ESP-IDF's system time, set at boot from the PCF8563 when
-the chip says its time is valid, at the console by `time_set`, and in phase 4 by SNTP; until then
-it is 0. The core turns it into local time itself (`core/domain/civil_time.h`), with a zone rule
+the chip says its time is valid, at the console by `time_set`, and since phase 4f by SNTP once
+Wi-Fi is up -- each answer, an hour apart, also measuring the RTC by its alarm's tick on INT,
+stamped in an interrupt, and writing it to the start of a second, in steps the event loop takes
+(`apps/firmware_esp32/main/net_time.c`, `rtc_sync.c`, ADR 0023's amendment); until then it is 0. The core turns it into local time itself (`core/domain/civil_time.h`), with a zone rule
 the composition passes in -- the footer's "updated HH:MM" (ADR 0023).
 
 ### 5.3 The sensor abstraction (the seam that files plug into)

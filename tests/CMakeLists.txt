@@ -123,6 +123,19 @@ target_link_libraries(test_wall_clock PRIVATE hac_drivers hac_platform_host hac_
 hac_apply_warnings(test_wall_clock)
 add_test(NAME test_wall_clock COMMAND test_wall_clock)
 
+# Phase 4f's RTC against the network's time: the measurement by the RTC's
+# alarm, the aligned write and the drift, in the steps the event loop takes,
+# against the PCF8563 model and its INT, from where the firmware compiles it.
+add_executable(test_rtc_sync
+    unit/test_rtc_sync.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/rtc_sync.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/wall_clock.c
+)
+target_include_directories(test_rtc_sync PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_rtc_sync PRIVATE hac_drivers hac_platform_host hac_test_support)
+hac_apply_warnings(test_rtc_sync)
+add_test(NAME test_rtc_sync COMMAND test_rtc_sync)
+
 # The SCD41 command-level model against the datasheet, and the SCD4x driver --
 # Sensirion's code behind sensor_source_t -- against the model, over the fake
 # bus (docs/adr/0015-scd4x-driver.md).
@@ -167,7 +180,14 @@ foreach(test IN ITEMS test_gt911 test_gt911_touch test_gt911_input)
 endforeach()
 
 # The PCF8563 real-time clock driver against the fake bus's register file,
-# which is the chip as it is (drivers/pcf8563/pcf8563.h).
+# which is the chip as it is (drivers/pcf8563/pcf8563.h); and the model of
+# the chip that keeps time and raises its alarm on INT (phase 4f), against the
+# datasheet, which test_rtc_sync measures and sets to the millisecond.
+add_executable(test_pcf8563_model unit/test_pcf8563_model.c)
+target_link_libraries(test_pcf8563_model PRIVATE hac_platform_host hac_test_support)
+hac_apply_warnings(test_pcf8563_model)
+add_test(NAME test_pcf8563_model COMMAND test_pcf8563_model)
+
 add_executable(test_pcf8563 unit/test_pcf8563.c)
 target_link_libraries(test_pcf8563 PRIVATE hac_drivers hac_platform_host hac_test_support)
 hac_apply_warnings(test_pcf8563)

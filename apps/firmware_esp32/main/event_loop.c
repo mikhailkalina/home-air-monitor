@@ -50,6 +50,7 @@ typedef struct {
 
 #define PUMP_EVENT_INPUT 1u
 #define PUMP_EVENT_NETWORK 2u
+#define PUMP_EVENT_TIME 3u
 
 typedef struct {
     event_loop_deps_t deps;
@@ -383,6 +384,8 @@ static void pump_task(void *arg)
             log_report(s, &note, now_ms);
         }
         const uint64_t link_due = hold_link(s, now_ms);
+        const uint64_t step_due =
+            (s->deps.step != NULL) ? s->deps.step(s->deps.step_ctx, now_ms) : UINT64_MAX;
 
         const uint64_t screens_due =
             screen_controller_tick(s->deps.screens, s->deps.policy, now_ms);
@@ -446,6 +449,9 @@ static void pump_task(void *arg)
         }
         if (link_due < wake_at) {
             wake_at = link_due;
+        }
+        if (step_due < wake_at) {
+            wake_at = step_due;
         }
         const uint32_t wait_ms = wait_ms_until(wake_at, clock->now_ms(clock));
 
@@ -538,4 +544,9 @@ void event_loop_post_input(void)
 void event_loop_post_network(void)
 {
     post(PUMP_EVENT_NETWORK);
+}
+
+void event_loop_post_time(void)
+{
+    post(PUMP_EVENT_TIME);
 }
