@@ -222,7 +222,8 @@ home-air-monitor/
 │   │   ├── adp_net_sim.c           # a link --net-script cuts and restores (ADR 0030)
 │   │   ├── adp_telemetry_loopback.c  # an MQTT broker in memory and port_telemetry as its
 │   │   │                           #   client: retained, wildcards, wills (ADR 0030)
-│   │   ├── adp_telemetry_mqtt.c    # libmosquitto → a real broker (not yet)
+│   │   ├── adp_telemetry_mqtt.c    # libmosquitto → a real broker: --broker, a client per
+│   │   │                           #   session, built only when found (ADR 0030, amended)
 │   │   ├── adp_storage_fs.c        # KV in a JSON file, log in CSV
 │   │   ├── adp_power_sim.c         # deep sleep emulated as a core restart
 │   │   ├── adp_sensors_replay.c    # ★ sensor data replayed from files
@@ -839,6 +840,10 @@ This catches, on a PC, the most expensive class of battery-mode bugs: garbage on
 
 `--headless --frames out/` writes frames to PNG instead of opening an SDL window. The same binary serves scenario tests and golden comparisons. SDL becomes an optional dependency (`-DSIM_GUI=OFF`), so CI does not need graphics.
 
+### 7.5 A real broker, and Home Assistant
+
+`--broker mqtt://<host>[:<port>]` (phase 4c, ADR 0030's amendment) puts the reporter in front of a real MQTT broker through `platform/host/adp_telemetry_mqtt.c`, over libmosquitto -- an optional dependency like SDL, built only when it is found -- and the simulator appears in that broker's Home Assistant as a device of its own: its id is `simulator` unless `--device-id` says otherwise, and never the board's form (`hac-<MAC>`, `core/reporting/topics.h`). `--mqtt-user` names the user; the password comes from `HAC_MQTT_PASSWORD`, never from the command line. A real broker, its keepalive and Home Assistant live in real time, so the loop then follows real time headless too, at a `--time-scale` of 1 to 60. The simulated network stays under the client, and `--net-script` silences its session as Wi-Fi going would. The run ends without a DISCONNECT, so the broker publishes the will and Home Assistant shows the device unavailable, as when the board loses its power.
+
 ---
 
 ## 8. Build system
@@ -958,7 +963,7 @@ The same file runs:
 
 This is what makes "it works in the simulator" mean "it will work on hardware". Without contract tests, abstractions inevitably diverge at the edges — NVS key length limits, behaviour on a full partition, I²C error codes.
 
-The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, the board's adapters to follow in phase 4c (ADR 0030). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
+The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, and `port_telemetry` against libmosquitto and a private mosquitto broker on the host and in CI (ADR 0030 and its amendment), the board's adapters to follow. Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
 
 ### 9.3 Scenario tests
 
@@ -985,6 +990,8 @@ A test like this verifies in one second what would otherwise take a day of obser
 ```yaml
 jobs:
   host:      cmake --preset ci-headless && ctest --output-on-failure
+                                          # libmosquitto and mosquitto installed: the
+                                          # contract and the simulator on a real broker
   asan:      cmake --preset host-asan   && ctest
   firmware:  idf.py build                 # confirms the core still compiles for the S3
   format:    clang-format --dry-run --Werror; clang-tidy; cppcheck

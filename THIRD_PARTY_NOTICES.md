@@ -17,7 +17,8 @@ whenever a dependency is added or removed.
 | Bosch BME68x Sensor API (tag `v4.4.8`, commit `80ea120a8b8ac987d7d79eb68a9ed796736be845`) | 4.4.8 | BSD-3-Clause | `drivers/bme68x/bme68x_source.c` (through `drivers/bme68x/bme68x_hal.c`) | Yes — vendored unmodified in `drivers/bme68x/vendor/`; see below |
 | Bosch BSEC2 library (`libalgobsec.a`), its headers and the `bme680_iaq_33v_3s_4d` configuration | 2.6.1.0 | **Proprietary — Bosch Sensortec license agreement; headers and configuration marked "Confidential"** | `drivers/bme68x/bme68x_bsec_source.c`, only in a build with `CONFIG_HAC_BSEC` / `HAC_BSEC` (off by default) | **No — nothing of it, not even the headers; see below** |
 | SDL2 | 2.x | Zlib | `platform/host/adp_display_sdl.c`, `platform/host/adp_input_sdl.c`, later `platform/host/sim_gui` | No (system package; optional, see below) |
-| Eclipse Mosquitto client (`libmosquitto`) | 2.x | EPL-2.0 / EDL-1.0 | `platform/host/adp_telemetry_mqtt.c` | No (system package) |
+| Eclipse Mosquitto client (`libmosquitto`) | 2.0.x, 2.0 or later (the build checks); run with 2.0.22 (Ubuntu 26.04) and CI's | EPL-2.0 or EDL-1.0 -- **used under EDL-1.0** (BSD-3-Clause) | `platform/host/adp_telemetry_mqtt.c`: the simulator's `--broker`, and two host tests | No -- system package, linked dynamically, host only, optional; never in a firmware image (see below) |
+| Eclipse Mosquitto broker (`mosquitto`, `mosquitto_passwd`) | the same source package as the client | EPL-2.0 or EDL-1.0 | `tests/`: a private broker the `port_telemetry` contract and `tests/cli/simulator_broker.py` start | No -- run as a separate process by tests, never linked (see below) |
 | Unity | 2.x | MIT | `tests/` | Vendored |
 | DejaVu Sans | 2.35 | Bitstream Vera (permissive; see below) | `core/ui/fonts/font_dejavu_sans_*.generated.c` | Vendored (source TTF under `third_party/fonts/dejavu-sans/`) |
 | Pillow | any recent | MIT-CMU (HPND) | `apps/tools/image_gen/image_gen.py prepare`, `apps/tools/font_gen/generate_fonts.py` — developer tools run by hand | No — not linked into anything; see below |
@@ -305,6 +306,50 @@ code, so it adds no obligation to anything this repository ships.
 
 The synthetic pictures in `apps/slideshow/images/` are drawn by
 `image_gen.py demo` itself and are this project's own, under Apache-2.0.
+
+## Notes on libmosquitto and the mosquitto broker
+
+Phase 4c (`docs/adr/0030-telemetry-ports-and-the-reporter.md`, amendment "The
+simulator on a real broker") links Eclipse Mosquitto's client library,
+**libmosquitto**, into the simulator, so that it can publish to a real MQTT
+broker -- a Home Assistant's -- and into the `port_telemetry` contract's host
+runner. The tests also run the **mosquitto** broker itself.
+
+**The licence, checked** in the Ubuntu 26.04 package `libmosquitto1`
+2.0.22-5build1 (its `copyright` file: "Files: * ... License: EPL-2.0 or
+EDL-1.0", Copyright 2009-2025 Roger A. Light) and in the upstream sources of
+2.0.11, 2.0.18 and 2.0.22 (`mosquitto.org/files/source/`), whose files carry
+the same dual licence (`SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause`). It is a choice: Eclipse Public License 2.0 **or**
+Eclipse Distribution License 1.0. **This project uses libmosquitto under
+EDL-1.0**, which is the BSD-3-Clause text with the Eclipse Foundation named
+in its third clause. The EPL-2.0 alternative, a weak copyleft, is not taken,
+so no copyleft term reaches anything here. Bundled in the library and named
+in the same file: `uthash.h`/`utlist.h` (BSD-1-Clause) -- permissive too.
+
+**Where it is used, and where not.** Host only. It is a system package
+(`libmosquitto-dev` to build), found at configure time
+(`platform/host/CMakeLists.txt`, `SIM_MQTT`, 2.0 or later) and linked
+dynamically into the simulator and `test_port_telemetry_contract`. Without it
+both build and run as before, with no `--broker`. Nothing of it is vendored,
+and it is never part of a firmware image: the board's MQTT client is
+ESP-IDF's esp-mqtt (Apache-2.0, the first row) when its adapter lands, and `platform/esp32_t5s3/`
+never includes it.
+
+**What EDL-1.0 obliges.** Source redistribution keeps the notices -- nothing
+of its source is in this repository. Binary redistribution reproduces the
+copyright notice, the conditions and the disclaimer in its documentation; it
+arises only if a simulator binary is ever handed to someone, and then carries
+these notices, as the console's linenoise and argtable3 do for a firmware
+image (above). The third clause forbids using the Eclipse Foundation's name
+to promote this project.
+
+**The broker** (`mosquitto`, and `mosquitto_passwd` for a test with a
+password file) comes from the same source package under the same dual
+licence. The tests run it as a separate process on a free port of 127.0.0.1
+(`tests/support/mqtt_test_broker.c`, `tests/cli/simulator_broker.py`); it is
+never linked, and no obligation of it reaches anything this repository
+builds. CI installs both packages (`libmosquitto-dev`, `mosquitto`) in its
+host and ASan jobs; a machine without them skips those cases and says so.
 
 ## Notes on SDL2
 

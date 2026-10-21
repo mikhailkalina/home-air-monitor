@@ -20,6 +20,7 @@
 //   simulator --headless --taps "30:480,270;45:480,270" ...
 //   simulator --telemetry loopback --net-script "600:down;1200:up" ...
 //   simulator --telemetry stdout --device-id kitchen ...
+//   HAC_MQTT_PASSWORD=... simulator --broker mqtt://192.168.1.10:1883 --mqtt-user hac ...
 //
 // Two ways to the same sensor_source_t (architecture 5.4): replay sources
 // that play the scenario files straight into the core, or the real drivers
@@ -62,11 +63,27 @@
 // The screen's reading is never told about the network, so an outage redraws
 // nothing.
 //
-// Not yet wired, and deliberately: the control panel, deep-sleep emulation
-// and a real broker. There is no app_core yet either: the loop below runs the
-// sensor manager, the screen controller, the update policy and the reporter
-// itself, and sleeps until the earliest of their deadlines.
+// A real broker (ADR 0030, amendment "The simulator on a real broker"): with
+// --broker the same reporter publishes over libmosquitto
+// (platform/host/adp_telemetry_mqtt.h) to a broker on the network -- a Home
+// Assistant's -- and the simulator appears there as a device of its own. The
+// broker, Home Assistant and libmosquitto's keepalive live in real time, so
+// the loop then follows real time, headless too, at a --time-scale of 1 to
+// 60, and a board's id (hac-<MAC>, core/reporting/topics.h) is refused: the
+// simulator never takes a board's place. The password comes from
+// HAC_MQTT_PASSWORD, never from the command line. The simulated network stays
+// under it, and --net-script silences the session as Wi-Fi going would. The
+// run ends -- --duration, Ctrl-C, the window closed, or the process killed --
+// without a DISCONNECT, so the broker publishes the last will: Home Assistant
+// shows the device unavailable, as when the board loses its power.
+//
+// Not yet wired, and deliberately: the control panel and deep-sleep
+// emulation. There is no app_core yet either: the loop below runs the sensor
+// manager, the screen controller, the update policy and the reporter itself,
+// and sleeps until the earliest of their deadlines.
 
+#include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,6 +126,10 @@
 #ifdef HAC_SIM_GUI
 #include "adp_display_sdl.h"
 #include "adp_input_sdl.h"
+#endif
+
+#ifdef HAC_SIM_MQTT
+#include "adp_telemetry_mqtt.h"
 #endif
 
 // The panel this build targets (docs/hardware/board_notes.md). It reaches the
@@ -159,10 +180,26 @@
 #define SIM_MAX_INPUTS 2u
 
 // The MQTT topics' prefix -- requirements 10.1's example -- and the device id
-// a simulator announces itself with unless --device-id says otherwise; on the
-// board the id comes from the Wi-Fi MAC (phase 4c).
+// a simulator announces itself with unless --device-id says otherwise; a
+// board's comes from its Wi-Fi MAC (mqtt_device_id_from_mac()), a form the
+// simulator refuses in front of a real broker.
 #define SIM_MQTT_PREFIX "homeair"
 #define SIM_DEFAULT_DEVICE_ID "simulator"
+
+// Where --broker's password comes from: the environment, never the command
+// line, where every process listing shows it.
+#define SIM_MQTT_PASSWORD_ENV "HAC_MQTT_PASSWORD"
+
+// CHOICES: the time scales a real broker allows. Below 1, the heartbeat is
+// further apart in real time than Home Assistant's expire_after, three of
+// them, wants (ADR 0029); above 60, the reporter's 10 s for a connection
+// (REPORT_CONNECT_TIMEOUT_MS) is under 167 ms of real time, little enough to
+// give up on a broker that answers.
+#define SIM_BROKER_TIME_SCALE_MIN 1.0
+#define SIM_BROKER_TIME_SCALE_MAX 60.0
+
+// Room for what --broker and the MQTT client can say is wrong.
+#define SIM_MQTT_ERROR_MAX 200u
 
 // Room for what --net-script can say is wrong.
 #define SIM_NET_SCRIPT_ERROR_MAX 160u
@@ -182,6 +219,7 @@ typedef enum {
     SIM_TELEMETRY_OFF = 0,
     SIM_TELEMETRY_STDOUT,    // the broker model, every message it takes printed
     SIM_TELEMETRY_LOOPBACK,  // the broker model, its sessions and wills printed
+    SIM_TELEMETRY_BROKER,    // a real broker, over libmosquitto
 } sim_telemetry_mode_t;
 
 typedef struct {
@@ -204,6 +242,11 @@ typedef struct {
     sim_telemetry_mode_t telemetry;
     const char *device_id;   // --device-id, or SIM_DEFAULT_DEVICE_ID
     const char *net_script;  // --net-script, unparsed
+    const char *broker;      // --broker, as given
+    const char *mqtt_user;   // --mqtt-user
+#ifdef HAC_SIM_MQTT
+    adp_telemetry_mqtt_url_t broker_url;  // --broker, parsed
+#endif
 } sim_args_t;
 
 static void usage(const char *argv0)
@@ -240,12 +283,22 @@ static void usage(const char *argv0)
         "  --device-id <id>       the device id in the topics, [A-Za-z0-9_-], at most 32\n"
         "                         (default " SIM_DEFAULT_DEVICE_ID ")\n"
         "  --net-script <list>    the network cut and restored, \"<seconds>:down;<seconds>:up\"\n"
+        "  --broker <url>         publish to a real MQTT broker, mqtt://<host>[:<port>] -- a\n"
+        "                         Home Assistant's -- in real time: --time-scale 1 to 60%s\n"
+        "  --mqtt-user <name>     the user to log in to --broker as; the password comes from\n"
+        "                         the environment, " SIM_MQTT_PASSWORD_ENV ", never from here\n"
         "  --help\n"
         "\n"
         "Panel: %ux%u, 16 grey levels. E-paper timings and ghosting are measured on the\n"
         "panel (platform/host/epd_emulation.h, docs/adr/0008-panel-timing.md). The window\n"
         "waits out each refresh divided by --time-scale: use 1 to see the real latency.\n",
-        argv0, SIM_PANEL_WIDTH, SIM_PANEL_HEIGHT);
+        argv0,
+#ifdef HAC_SIM_MQTT
+        "",
+#else
+        "\n                         (not in this build: libmosquitto was not found)",
+#endif
+        SIM_PANEL_WIDTH, SIM_PANEL_HEIGHT);
 }
 
 // Returns false on a malformed command line, having said what was wrong.
@@ -349,6 +402,12 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
         } else if (strcmp(arg, "--net-script") == 0) {
             TAKE_VALUE("--net-script");
             out->net_script = argv[++i];
+        } else if (strcmp(arg, "--broker") == 0) {
+            TAKE_VALUE("--broker");
+            out->broker = argv[++i];
+        } else if (strcmp(arg, "--mqtt-user") == 0) {
+            TAKE_VALUE("--mqtt-user");
+            out->mqtt_user = argv[++i];
         } else if (strcmp(arg, "--headless") == 0) {
             out->headless = true;
         } else {
@@ -371,13 +430,55 @@ static bool parse_args(int argc, char **argv, sim_args_t *out)
         fprintf(stderr, "--wall-time and --no-wall-time contradict each other\n");
         return false;
     }
+    if (out->broker != NULL) {
+        if (out->telemetry != SIM_TELEMETRY_OFF) {
+            fprintf(stderr, "--broker and --telemetry each choose a broker: give one of them\n");
+            return false;
+        }
+#ifdef HAC_SIM_MQTT
+        char err[SIM_MQTT_ERROR_MAX];
+        if (adp_telemetry_mqtt_parse_url(out->broker, &out->broker_url, err, sizeof(err)) !=
+            HAL_OK) {
+            // Not the URL itself: one with a password in it is refused, and
+            // must not be printed either.
+            fprintf(stderr, "--broker: %s\n", err);
+            return false;
+        }
+#else
+        fprintf(stderr, "--broker: this build has no MQTT client -- libmosquitto 2.x was not "
+                        "found when it was configured (install libmosquitto-dev, configure "
+                        "again)\n");
+        return false;
+#endif
+        out->telemetry = SIM_TELEMETRY_BROKER;
+        if (out->time_scale < SIM_BROKER_TIME_SCALE_MIN ||
+            out->time_scale > SIM_BROKER_TIME_SCALE_MAX) {
+            fprintf(stderr,
+                    "--broker runs in real time, at a --time-scale from %.0f to %.0f: a real "
+                    "broker's keepalive and Home Assistant's expire_after are real seconds\n",
+                    SIM_BROKER_TIME_SCALE_MIN, SIM_BROKER_TIME_SCALE_MAX);
+            return false;
+        }
+    }
+    if (out->mqtt_user != NULL && out->broker == NULL) {
+        fprintf(stderr, "--mqtt-user needs --broker\n");
+        return false;
+    }
     if (out->telemetry == SIM_TELEMETRY_OFF &&
         (out->device_id != NULL || out->net_script != NULL)) {
-        fprintf(stderr, "--device-id and --net-script need --telemetry\n");
+        fprintf(stderr, "--device-id and --net-script need --telemetry or --broker\n");
         return false;
     }
     if (out->device_id == NULL) {
         out->device_id = SIM_DEFAULT_DEVICE_ID;
+    }
+    if (out->broker != NULL && mqtt_device_id_is_from_mac(out->device_id)) {
+        fprintf(stderr,
+                "--device-id %s: that is a board's id (" MQTT_DEVICE_ID_MAC_PREFIX
+                " and a MAC), and on a real broker the simulator would take that board's place "
+                "in Home Assistant; choose another\n",
+                out->device_id);
+        return false;
     }
     if (out->recording_count > 0u && out->sensors == SIM_SENSORS_FAKE_I2C) {
         fprintf(stderr, "a recording replays into the core directly: --recording needs "
@@ -640,8 +741,8 @@ static bool start_recording(sim_recording_t *rec, const char *dir, const sim_sen
 // --- telemetry ---------------------------------------------------------------
 
 // The device's MQTT side, as the board will have it: the network, a client of
-// a broker, the topics and the reporter -- here the network simulated and the
-// broker a model in memory.
+// a broker, the topics and the reporter -- here the network simulated, and the
+// broker a model in memory or, with --broker, a real one.
 typedef struct {
     char topic[PORT_TELEMETRY_TOPIC_MAX];
     unsigned messages;
@@ -651,11 +752,16 @@ typedef struct {
     sim_telemetry_mode_t mode;
     loopback_broker_t broker;
     adp_telemetry_loopback_t client;
+#ifdef HAC_SIM_MQTT
+    adp_telemetry_mqtt_t *mqtt;  // SIM_TELEMETRY_BROKER's client
+#endif
     adp_net_sim_t net;
     mqtt_topics_t topics;
     reporter_t reporter;
     net_state_t net_shown;  // the state last printed
-    bool woken;             // the client has news: the loop steps now
+    // The client has news: the loop steps now. Atomic: libmosquitto's client
+    // sets it on its network thread.
+    atomic_bool woken;
     sim_topic_count_t counts[SIM_BROKER_TOPICS];
     size_t topics_counted;
     unsigned uncounted;  // messages on topics past SIM_BROKER_TOPICS
@@ -728,7 +834,7 @@ static void broker_tap(void *ctx, loopback_event_t event, const char *client,
 
 static void telemetry_woken(void *ctx)
 {
-    ((sim_telemetry_t *)ctx)->woken = true;
+    atomic_store(&((sim_telemetry_t *)ctx)->woken, true);
 }
 
 // The board's names, the simulator's model.
@@ -750,11 +856,50 @@ static ha_discovery_t sim_discovery(const sim_sensors_rig_t *rig)
     return d;
 }
 
+#ifdef HAC_SIM_MQTT
+// --broker's client: the URL's broker, the user --mqtt-user names, the
+// password from the environment.
+static bool start_mqtt(sim_telemetry_t *t, const sim_args_t *args, const port_log_t *log)
+{
+    char err[SIM_MQTT_ERROR_MAX];
+    const adp_telemetry_mqtt_url_t url = args->broker_url;
+    const char *password = getenv(SIM_MQTT_PASSWORD_ENV);
+    if (password != NULL && args->mqtt_user == NULL) {
+        printf("[sim] %s is set, but --mqtt-user is not: no password is sent -- MQTT sends "
+               "none without a user name\n",
+               SIM_MQTT_PASSWORD_ENV);
+        password = NULL;
+    }
+    const adp_telemetry_mqtt_config_t cfg = {
+        .host = url.host,
+        .port = url.port,
+        .username = args->mqtt_user,
+        .password = password,
+        .log = log,
+    };
+    t->mqtt = adp_telemetry_mqtt_create(&cfg, err, sizeof(err));
+    if (t->mqtt == NULL) {
+        fprintf(stderr, "--broker: %s\n", err);
+        return false;
+    }
+    adp_telemetry_mqtt_set_waker(t->mqtt, telemetry_woken, t);
+    adp_net_sim_set_listener(&t->net, adp_telemetry_mqtt_net_listener, t->mqtt);
+    printf("[sim] broker %s:%u over libmosquitto %s, %s%s%s\n", url.host, (unsigned)url.port,
+           adp_telemetry_mqtt_library_version(), (args->mqtt_user != NULL) ? "user " : "no user",
+           (args->mqtt_user != NULL) ? args->mqtt_user : "",
+           (args->mqtt_user == NULL) ? ""
+           : (password != NULL)      ? " (the password from " SIM_MQTT_PASSWORD_ENV ")"
+                                     : " (no password: " SIM_MQTT_PASSWORD_ENV " is not set)");
+    return true;
+}
+#endif
+
 static bool start_telemetry(sim_telemetry_t *t, const sim_args_t *args,
                             const sim_sensors_rig_t *rig, const port_clock_t *clock,
                             const port_log_t *log)
 {
     memset(t, 0, sizeof(*t));
+    atomic_init(&t->woken, false);
     t->mode = args->telemetry;
     if (mqtt_topics_init(&t->topics, SIM_MQTT_PREFIX, args->device_id,
                          MQTT_DISCOVERY_PREFIX_DEFAULT) != HAL_OK) {
@@ -762,12 +907,25 @@ static bool start_telemetry(sim_telemetry_t *t, const sim_args_t *args,
                 args->device_id, (unsigned)MQTT_DEVICE_ID_MAX);
         return false;
     }
-    loopback_broker_init(&t->broker, clock);
-    loopback_broker_set_tap(&t->broker, broker_tap, t);
-    (void)adp_telemetry_loopback_init(&t->client, &t->broker);
-    adp_telemetry_loopback_set_waker(&t->client, telemetry_woken, t);
     adp_net_sim_init(&t->net, clock);
-    adp_net_sim_set_listener(&t->net, adp_telemetry_loopback_net_listener, &t->client);
+    port_telemetry_t *telemetry = NULL;
+    if (t->mode == SIM_TELEMETRY_BROKER) {
+#ifdef HAC_SIM_MQTT
+        if (!start_mqtt(t, args, log)) {
+            return false;
+        }
+        telemetry = adp_telemetry_mqtt_port(t->mqtt);
+#else
+        return false;  // parse_args() refused --broker already
+#endif
+    } else {
+        loopback_broker_init(&t->broker, clock);
+        loopback_broker_set_tap(&t->broker, broker_tap, t);
+        (void)adp_telemetry_loopback_init(&t->client, &t->broker);
+        adp_telemetry_loopback_set_waker(&t->client, telemetry_woken, t);
+        adp_net_sim_set_listener(&t->net, adp_telemetry_loopback_net_listener, &t->client);
+        telemetry = adp_telemetry_loopback_port(&t->client);
+    }
     if (args->net_script != NULL) {
         char err[SIM_NET_SCRIPT_ERROR_MAX];
         if (adp_net_sim_add_script(&t->net, args->net_script, err, sizeof(err)) != HAL_OK) {
@@ -776,7 +934,7 @@ static bool start_telemetry(sim_telemetry_t *t, const sim_args_t *args,
         }
     }
     const reporter_deps_t deps = {
-        .telemetry = adp_telemetry_loopback_port(&t->client),
+        .telemetry = telemetry,
         .net = adp_net_sim_port(&t->net),
         .log = log,
         .topics = &t->topics,
@@ -808,7 +966,7 @@ static void show_net(sim_telemetry_t *t, uint64_t now_ms)
 static uint64_t report(sim_telemetry_t *t, const air_reading_t *reading, uint64_t now_ms)
 {
     show_net(t, now_ms);
-    t->woken = false;
+    atomic_store(&t->woken, false);
     reporter_note_t note;
     const uint64_t due = reporter_step(&t->reporter, reading, now_ms, &note);
     if (note.online_published || note.discovery_published > 0u) {
@@ -839,6 +997,17 @@ static void telemetry_summary(const sim_telemetry_t *t)
     }
     printf("), %u discovery configs, %u births, %u refused\n", r->discovery_messages, r->births,
            r->refusals);
+#ifdef HAC_SIM_MQTT
+    if (t->mqtt != NULL) {
+        const adp_telemetry_mqtt_stats_t m = adp_telemetry_mqtt_stats(t->mqtt);
+        printf("[mqtt] %u attempts: %u sessions, %u refused, %u without a connection; %u lost, "
+               "%u silenced by the network; %u messages published, %u acknowledged; %u received, "
+               "%u dropped\n",
+               m.attempts, m.sessions, m.refused, m.no_connection, m.lost, m.severed, m.published,
+               m.acknowledged, m.received, m.inbox_dropped);
+        return;
+    }
+#endif
     for (size_t i = 0u; i < t->topics_counted; ++i) {
         const sim_topic_count_t *c = &t->counts[i];
         printf("[broker] %s: %u messages", c->topic, c->messages);
@@ -856,6 +1025,17 @@ static void telemetry_summary(const sim_telemetry_t *t)
 }
 
 // --- the loop --------------------------------------------------------------
+
+// Ctrl-C or SIGTERM ends the run as --duration would: the summary is printed,
+// and a real broker's session ends without a DISCONNECT, so the broker
+// publishes its will. A second one kills at once.
+static volatile sig_atomic_t g_stop_requested = 0;
+
+static void on_stop_signal(int sig)
+{
+    g_stop_requested = 1;
+    (void)signal(sig, SIG_DFL);
+}
 
 // What one step of the loop needs, and nothing else: the loop keeps its own
 // local state, so this does not become a second, shadow composition root.
@@ -1055,6 +1235,15 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    // Windowed, or in front of a real broker, the run follows real time
+    // (the wait loop below), and is watched as it happens or logged into a
+    // file beside a Home Assistant: each line goes out as it is printed, not
+    // when a buffer fills. Set before anything is printed, as setvbuf() must be.
+    const bool realtime = !args.headless || args.telemetry == SIM_TELEMETRY_BROKER;
+    if (realtime) {
+        (void)setvbuf(stdout, NULL, _IOLBF, 0);
+    }
+
     if (args.scenario_co2 == NULL && args.scenario_env == NULL && args.recording_count == 0u) {
         fprintf(stderr,
                 "nothing to replay: pass --scenario-co2, --scenario-env or --recording\n\n");
@@ -1229,10 +1418,20 @@ int main(int argc, char **argv)
             return 2;
         }
         sim.telemetry = &telemetry;
-        printf("[sim] telemetry: %s, a broker model in memory, device id %s, topics %s/...\n",
-               (args.telemetry == SIM_TELEMETRY_STDOUT) ? "stdout" : "loopback",
-               telemetry.topics.device_id, telemetry.topics.base);
+        if (args.telemetry == SIM_TELEMETRY_BROKER) {
+            printf("[sim] telemetry: a real broker, device id %s, topics %s/..., in real time "
+                   "x%.4g: Home Assistant stamps each state with its arrival\n",
+                   telemetry.topics.device_id, telemetry.topics.base, args.time_scale);
+        } else {
+            printf("[sim] telemetry: %s, a broker model in memory, device id %s, topics %s/...\n",
+                   (args.telemetry == SIM_TELEMETRY_STDOUT) ? "stdout" : "loopback",
+                   telemetry.topics.device_id, telemetry.topics.base);
+        }
     }
+    const bool loopback = sim.telemetry != NULL && args.telemetry != SIM_TELEMETRY_BROKER;
+
+    (void)signal(SIGINT, on_stop_signal);
+    (void)signal(SIGTERM, on_stop_signal);
 
     air_reading_init(&sim.reading);
 
@@ -1240,7 +1439,9 @@ int main(int argc, char **argv)
     //
     // Windowed, virtual time follows real time through the configured scale
     // and the loop looks every SIM_TICK_MS; headless, there is nothing to
-    // watch, so the clock jumps straight to the next deadline.
+    // watch, so the clock jumps straight to the next deadline -- unless a real
+    // broker is there, which lives in real time: then headless follows real
+    // time as the window does (`realtime`, above).
     uint64_t last_real_ms = host_monotonic_ms();
     uint64_t next_wake_ms = 0u;
     bool running = true;
@@ -1250,10 +1451,9 @@ int main(int argc, char **argv)
         // the board their adapters wake the loop; here it looks then.
         const uint64_t net_at =
             (sim.telemetry != NULL) ? adp_net_sim_next_ms(&telemetry.net) : ADP_NET_SIM_NO_EVENT;
-        const uint64_t broker_at = (sim.telemetry != NULL)
-                                       ? loopback_broker_next_ms(&telemetry.broker)
-                                       : LOOPBACK_BROKER_NO_DEADLINE;
-        if (args.headless) {
+        const uint64_t broker_at =
+            loopback ? loopback_broker_next_ms(&telemetry.broker) : LOOPBACK_BROKER_NO_DEADLINE;
+        if (!realtime) {
             const uint64_t now = clock->now_ms(clock);
             uint64_t target = next_wake_ms;
             const uint64_t tap_at = adp_input_script_next_ms(&script);
@@ -1287,10 +1487,10 @@ int main(int argc, char **argv)
         // The network changed, or the client has news: the reporter steps
         // now. A will falling due is the broker's business alone.
         if (sim.telemetry != NULL) {
-            if (now_ms >= broker_at) {
+            if (loopback && now_ms >= broker_at) {
                 loopback_broker_service(&telemetry.broker);
             }
-            if (now_ms >= net_at || telemetry.woken) {
+            if (now_ms >= net_at || atomic_load(&telemetry.woken)) {
                 next_wake_ms = now_ms;
             }
         }
@@ -1328,8 +1528,12 @@ int main(int argc, char **argv)
         if (stop_at_ms != 0u && now_ms >= stop_at_ms) {
             running = false;
         }
+        if (g_stop_requested) {
+            printf("[sim] stopped by a signal at now_ms=%llu\n", (unsigned long long)now_ms);
+            running = false;
+        }
 
-        if (!args.headless) {
+        if (realtime && running) {
             host_sleep_ms(SIM_TICK_MS);
         }
     }
@@ -1348,6 +1552,15 @@ int main(int argc, char **argv)
     if (sim.telemetry != NULL) {
         telemetry_summary(&telemetry);
     }
+#ifdef HAC_SIM_MQTT
+    if (telemetry.mqtt != NULL) {
+        printf("[sim] the session ends without a DISCONNECT: the broker publishes the last will, "
+               "\"%s\" on %s, as when the board loses its power\n",
+               MQTT_STATUS_OFFLINE, telemetry.topics.status);
+        adp_telemetry_mqtt_destroy(telemetry.mqtt);
+        telemetry.mqtt = NULL;
+    }
+#endif
 
 #ifdef HAC_SIM_GUI
     if (sdl_display != NULL) {

@@ -311,15 +311,26 @@ static void an_outage_publishes_nothing_and_the_next_session_everything(void)
     size_t dropped = LOG_MAX;
     size_t will = LOG_MAX;
     size_t second = LOG_MAX;
+    uint64_t heard_ms = 0u;  // the last packet the broker had from the device before the drop
     for (size_t i = 0u; i < g.n_seen; ++i) {
         const seen_t *s = &g.seen[i];
+        if (dropped == LOG_MAX &&
+            (s->event == LOOPBACK_EVENT_CONNECTED || s->event == LOOPBACK_EVENT_MESSAGE)) {
+            heard_ms = s->at_ms;
+        }
         if (s->event == LOOPBACK_EVENT_DROPPED && dropped == LOG_MAX) {
             dropped = i;
             HAC_CHECK_EQ_U64(s->at_ms, 100000u);
         } else if (s->event == LOOPBACK_EVENT_WILL) {
             will = i;
-            // One and a half keepalives after the network went.
-            HAC_CHECK_EQ_U64(s->at_ms, 100000u + REPORT_KEEPALIVE_S * 1500u);
+            // One and a half keepalives after the last packet the broker
+            // heard -- a state message: the heartbeat sends one at least
+            // every keepalive, so no ping came between -- not after the
+            // network went: 30 to 90 s after it (ADR 0030's amendment).
+            HAC_CHECK(100000u - heard_ms <= REPORT_KEEPALIVE_S * 1000u);
+            HAC_CHECK_EQ_U64(s->at_ms, heard_ms + REPORT_KEEPALIVE_S * 1500u);
+            HAC_CHECK(s->at_ms > 100000u + REPORT_KEEPALIVE_S * 500u &&
+                      s->at_ms <= 100000u + REPORT_KEEPALIVE_S * 1500u);
             HAC_CHECK(strcmp(s->payload, "offline") == 0 && s->retain);
         } else if (s->event == LOOPBACK_EVENT_CONNECTED && i > 0u) {
             second = i;

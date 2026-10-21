@@ -366,6 +366,36 @@ else()
                     "parse check are not built.")
 endif()
 
+# The mosquitto broker, for the tests that need a real one: the port_telemetry
+# contract against libmosquitto (tests/contract/) and the simulator in front of
+# a broker that restarts (tests/cli/simulator_broker.py). Each starts a private
+# one on a free port of 127.0.0.1. Without it, both say they were not exercised.
+find_program(HAC_MOSQUITTO_BROKER mosquitto PATHS /usr/sbin /usr/local/sbin)
+find_program(HAC_MOSQUITTO_PASSWD mosquitto_passwd)
+
+# The simulator in front of that broker: it appears, Home Assistant's birth
+# brings the configs again, a broker restart and the run's end recover and
+# leave the will, a broker with a password logs in and the password is printed
+# nowhere (tests/cli/simulator_broker.py). Skipped -- "not exercised" -- without
+# a broker or without libmosquitto.
+if(Python3_Interpreter_FOUND)
+    set(broker_args "")
+    if(TARGET hac_platform_host_mqtt)
+        list(APPEND broker_args --with-mqtt)
+    endif()
+    if(HAC_MOSQUITTO_BROKER)
+        list(APPEND broker_args --mosquitto ${HAC_MOSQUITTO_BROKER})
+    endif()
+    if(HAC_MOSQUITTO_PASSWD)
+        list(APPEND broker_args --mosquitto-passwd ${HAC_MOSQUITTO_PASSWD})
+    endif()
+    add_test(NAME simulator_broker
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli/simulator_broker.py
+                --simulator $<TARGET_FILE:simulator> --scenarios ${HAC_ROOT}/scenarios
+                --work ${CMAKE_CURRENT_BINARY_DIR}/simulator_broker ${broker_args})
+    set_tests_properties(simulator_broker PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+endif()
+
 add_subdirectory(golden)
 add_subdirectory(contract)
 add_subdirectory(fuzz)

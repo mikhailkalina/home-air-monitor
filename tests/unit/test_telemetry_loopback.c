@@ -107,21 +107,55 @@ static void a_second_connection_with_the_id_takes_the_session_over(void)
     HAC_CHECK(will != NULL && will->len == 4u);
 }
 
-static void a_will_falls_due_one_and_a_half_keepalives_after_the_drop(void)
+// The client connects at 0 with a keepalive of 20 s, and its network goes at
+// `drop_ms`, after `publish_at_ms` (0: nothing) -- the stall around the
+// message when `stalled`. When the will falls due.
+static uint64_t will_due(uint64_t publish_at_ms, bool stalled, uint64_t drop_ms)
 {
     fresh();
     HAC_CHECK_EQ_INT(connect_as(&g_a, "a", 20u), HAL_OK);
-    adp_clock_virtual_advance(&g_clock, 1000u);
+    loopback_broker_stall(&g_broker, stalled);
+    if (publish_at_ms > 0u) {
+        adp_clock_virtual_advance(&g_clock, publish_at_ms);
+        const uint8_t x = 'x';
+        HAC_CHECK_EQ_INT(g_a.port.publish(&g_a.port, "t/x", &x, 1u, 1u, false), HAL_OK);
+    }
+    adp_clock_virtual_advance(&g_clock, drop_ms - g_clock.now_ms);
     adp_telemetry_loopback_set_link(&g_a, false, g_clock.now_ms);
-    HAC_CHECK_EQ_U64(loopback_broker_next_ms(&g_broker), 1000u + 30000u);
-    adp_clock_virtual_advance(&g_clock, 29999u);
+    return loopback_broker_next_ms(&g_broker);
+}
+
+// MQTT 3.1.1, 3.1.2.10: the broker counts one and a half keepalives from the
+// last packet it heard -- it cannot see the network go -- and a client pings
+// whenever a keepalive passes without another packet. So the will comes half
+// a keepalive to one and a half after the drop, as a real broker's did (ADR
+// 0030's amendment: 34 s after the cut, with a minute's keepalive).
+static void a_will_falls_due_one_and_a_half_keepalives_after_the_last_packet(void)
+{
+    // Nothing since the CONNECT at 0: 30 s after it, 29 s after the drop.
+    HAC_CHECK_EQ_U64(will_due(0u, false, 1000u), 30000u);
+    adp_clock_virtual_advance(&g_clock, 28999u);
     loopback_broker_service(&g_broker);
     HAC_CHECK_EQ_INT((int)g_events[LOOPBACK_EVENT_WILL], 0);
     adp_clock_virtual_advance(&g_clock, 1u);
     loopback_broker_service(&g_broker);
     HAC_CHECK_EQ_INT((int)g_events[LOOPBACK_EVENT_WILL], 1);
-    HAC_CHECK_EQ_U64(g_will_at, 31000u);
+    HAC_CHECK_EQ_U64(g_will_at, 30000u);
     HAC_CHECK_EQ_U64(loopback_broker_next_ms(&g_broker), LOOPBACK_BROKER_NO_DEADLINE);
+
+    // A message the broker took at 5 s.
+    HAC_CHECK_EQ_U64(will_due(5000u, false, 6000u), 35000u);
+    // One it did not take, the broker stalled, is not heard.
+    HAC_CHECK_EQ_U64(will_due(5000u, true, 6000u), 30000u);
+    // Idle, the client pings at 20 s and 40 s: dropped at 50 s, heard at 40.
+    HAC_CHECK_EQ_U64(will_due(0u, false, 50000u), 70000u);
+    // Dropped just before the second ping: heard at 20 s, the will half a
+    // keepalive after the drop.
+    HAC_CHECK_EQ_U64(will_due(0u, false, 39999u), 50000u);
+    // Dropped at the moment a ping goes: heard then, the most that can pass.
+    HAC_CHECK_EQ_U64(will_due(0u, false, 40000u), 70000u);
+    // Pinging goes on through a stall: messages wait, the session does not.
+    HAC_CHECK_EQ_U64(will_due(0u, true, 50000u), 70000u);
 }
 
 static void without_a_keepalive_the_will_waits_for_a_takeover(void)
@@ -226,7 +260,7 @@ int main(void)
 {
     HAC_RUN(matching_follows_mqtt);
     HAC_RUN(a_second_connection_with_the_id_takes_the_session_over);
-    HAC_RUN(a_will_falls_due_one_and_a_half_keepalives_after_the_drop);
+    HAC_RUN(a_will_falls_due_one_and_a_half_keepalives_after_the_last_packet);
     HAC_RUN(without_a_keepalive_the_will_waits_for_a_takeover);
     HAC_RUN(without_a_network_there_is_no_attempt);
     HAC_RUN(refusals_are_counted_down);

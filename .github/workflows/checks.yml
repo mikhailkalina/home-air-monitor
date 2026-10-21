@@ -37,7 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      # libmosquitto and the mosquitto broker: the simulator's --broker, the
+      # port_telemetry contract against libmosquitto and a real broker, and
+      # tests/cli/simulator_broker.py -- each test starts a private broker on
+      # a free port, whatever the package's own service does (ADR 0030,
+      # amendment "The simulator on a real broker").
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libmosquitto-dev mosquitto
       - run: cmake --preset ci-headless
       - run: cmake --build build/host-debug
       - run: ctest --test-dir build/host-debug --output-on-failure
@@ -47,7 +52,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      # The same, so that the MQTT client's threads and copies run under the
+      # sanitizers too.
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libmosquitto-dev mosquitto
       - run: cmake --preset host-asan
       - run: cmake --build build/host-asan
       - run: ctest --test-dir build/host-asan --output-on-failure

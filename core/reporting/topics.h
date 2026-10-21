@@ -97,6 +97,34 @@ hal_status_t mqtt_topics_init(mqtt_topics_t *out, const char *prefix, const char
 size_t mqtt_topics_discovery(const mqtt_topics_t *t, const char *component, const char *object_id,
                              char *dst, size_t cap);
 
+// --- the board's device id ----------------------------------------------------
+//
+// A board names itself after its Wi-Fi MAC: MQTT_DEVICE_ID_MAC_PREFIX and the
+// six bytes as twelve lowercase hex digits, "hac-a1b2c3d4e5f6". The board's
+// composition is to build it with mqtt_device_id_from_mac() when its Wi-Fi
+// adapter lands; it is fixed here, ahead of that, so that the simulator can
+// refuse to take an id of this form to a real broker, where it would take a
+// board's place in Home Assistant -- its topics, its client id, its entities'
+// unique ids (docs/adr/0030-telemetry-ports-and-the-reporter.md, amendment
+// "The simulator on a real broker"). Changing the form later orphans every
+// entity Home Assistant has recorded for a board.
+
+#define MQTT_DEVICE_ID_MAC_PREFIX "hac-"
+#define MQTT_DEVICE_ID_MAC_BYTES 6u
+// "hac-" and twelve digits.
+#define MQTT_DEVICE_ID_MAC_LEN \
+    (sizeof(MQTT_DEVICE_ID_MAC_PREFIX) - 1u + 2u * MQTT_DEVICE_ID_MAC_BYTES)
+
+// The board's id for `mac` into `dst`, its length (text_append.h's
+// conventions): `cap` when it does not fit, which takes
+// MQTT_DEVICE_ID_MAC_LEN + 1.
+size_t mqtt_device_id_from_mac(const uint8_t mac[MQTT_DEVICE_ID_MAC_BYTES], char *dst, size_t cap);
+
+// True for an id of that form -- the prefix and twelve hex digits, either
+// case, since an id only a letter's case away from a board's is a mistake
+// waiting to happen. False for NULL.
+bool mqtt_device_id_is_from_mac(const char *id);
+
 #ifdef __cplusplus
 }
 #endif

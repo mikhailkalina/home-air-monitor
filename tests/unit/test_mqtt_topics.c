@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "hac_test.h"
+#include "text/text_append.h"
 
 // 48, 32 and 32 characters: the longest accepted.
 #define PREFIX_48 "abcdefghij/abcdefghij/abcdefghij/abcdefghij/abcd"
@@ -133,6 +134,33 @@ static void a_discovery_topic_refuses_a_bad_level_or_a_short_buffer(void)
     HAC_CHECK_EQ_U64(mqtt_topics_discovery(&empty, "sensor", "co2", topic, sizeof(topic)), 0u);
 }
 
+static void the_boards_id_is_its_mac_and_is_recognised(void)
+{
+    static const uint8_t mac[MQTT_DEVICE_ID_MAC_BYTES] = {0xA1, 0xB2, 0xC3, 0x04, 0xE5, 0xF0};
+    char id[MQTT_DEVICE_ID_MAC_LEN + 1u];
+    HAC_CHECK_EQ_U64(mqtt_device_id_from_mac(mac, id, sizeof(id)), MQTT_DEVICE_ID_MAC_LEN);
+    HAC_CHECK(strcmp(id, "hac-a1b2c304e5f0") == 0);
+    HAC_CHECK_EQ_U64(MQTT_DEVICE_ID_MAC_LEN, 16u);
+    // A valid level, so it makes topics, and a byte short does not fit.
+    mqtt_topics_t t;
+    HAC_CHECK_EQ_INT(mqtt_topics_init(&t, "homeair", id, "homeassistant"), HAL_OK);
+    HAC_CHECK(text_overflowed(mqtt_device_id_from_mac(mac, id, MQTT_DEVICE_ID_MAC_LEN),
+                              MQTT_DEVICE_ID_MAC_LEN));
+
+    HAC_CHECK(mqtt_device_id_is_from_mac("hac-a1b2c304e5f0"));
+    HAC_CHECK(mqtt_device_id_is_from_mac("HAC-A1B2C304E5F0"));  // a case away is refused too
+    HAC_CHECK(mqtt_device_id_is_from_mac("hac-000000000000"));
+    const char *others[] = {
+        "simulator",        "hac-a1b2c304e5f",  "hac-a1b2c304e5f00", "hac_a1b2c304e5f0",
+        "hacka1b2c304e5f0", "hac-a1b2c304e5g0", "xac-a1b2c304e5f0",  "",
+        "kitchen",
+    };
+    for (size_t i = 0u; i < sizeof(others) / sizeof(others[0]); ++i) {
+        HAC_CHECK(!mqtt_device_id_is_from_mac(others[i]));
+    }
+    HAC_CHECK(!mqtt_device_id_is_from_mac(NULL));
+}
+
 int main(void)
 {
     HAC_RUN(the_topics_follow_the_prefix_and_the_device_id);
@@ -142,5 +170,6 @@ int main(void)
     HAC_RUN(an_illegal_or_over_long_part_is_refused_and_leaves_nothing);
     HAC_RUN(the_longest_parts_fit_every_topic);
     HAC_RUN(a_discovery_topic_refuses_a_bad_level_or_a_short_buffer);
+    HAC_RUN(the_boards_id_is_its_mac_and_is_recognised);
     return hac_test_summary();
 }

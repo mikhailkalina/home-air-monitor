@@ -102,6 +102,13 @@ HAC_TEST_VERBOSE=1 ./build/host-bsec/tests/test_bme68x_bsec_source   # what BSEC
 # Every MQTT message, as Home Assistant would receive it (ADR 0029)
 ./build/host-debug/tests/mqtt_messages_dump
 
+# The simulator in a Home Assistant, over its real broker (ADR 0030, amended): needs
+# libmosquitto-dev when configuring; real time, --time-scale 1 to 60; the password from
+# the environment, never the command line; Ctrl-C ends it and the will marks it unavailable
+HAC_MQTT_PASSWORD=... ./build/host-debug/apps/simulator/simulator --headless --duration 0 \
+    --broker mqtt://<broker>:1883 --mqtt-user <user> \
+    --scenario-co2 scenarios/co2_spike_meeting.csv --scenario-env scenarios/normal_day.csv
+
 # The reporter over a broker model in memory (ADR 0030): stdout prints every message the
 # broker takes, loopback its sessions and wills and a summary; --net-script cuts the network
 ./build/host-debug/apps/simulator/simulator --headless --duration 1800 \
@@ -549,9 +556,53 @@ sensor manager's, update_policy's and the reporter's deadlines; `app_core` not y
 fake clock, a CLI test whose outage leaves the redraw log and the recordings byte-identical.
 The firmware and the test app build with `.reporter = NULL`: nothing is sent from the board.
 
+Phase 4c on branch `phase-4c-simulator-mqtt` (ADR 0030, amendment "The simulator on a real
+broker"): the simulator in front of a real MQTT broker -- a Home Assistant's.
+`platform/host/adp_telemetry_mqtt.c` is port_telemetry over libmosquitto, built only when
+libmosquitto 2.x is found (`SIM_MQTT`, `hac_platform_host_mqtt`, `HAC_SIM_MQTT`), as the SDL
+window is: one libmosquitto client per session, each on a thread of its own running
+`mosquitto_loop_forever()` -- not `mosquitto_loop_start()`, whose async connect resolves the
+name in the caller and whose thread cannot be joined once it ends by itself -- so connect()
+never waits, a drop stops the loop instead of reconnecting (`mosquitto_disconnect()` in
+`on_disconnect`), and nothing is resent into a later session. The callbacks queue under a lock
+and call a waker; the next session's CONNECT waits for the last one's DISCONNECT (at most 1 s);
+the network going silences the session -- its thread cancelled, the socket left open -- so the
+broker publishes the will one and a half keepalives after the last packet it heard; the end of a run closes every socket
+without a DISCONNECT, so the will goes out. Simulator: `--broker mqtt://<host>[:<port>]` (no
+TLS, no user or password in the URL), `--mqtt-user`, the password from `HAC_MQTT_PASSWORD`,
+printed nowhere; the loop follows real time with `--broker`, headless too, at `--time-scale` 1
+to 60; Ctrl-C and SIGTERM now end any run with its summary; stdout line-buffered in real time.
+A board's device id is `hac-` and its MAC's twelve hex digits, fixed now in
+`core/reporting/topics.h` (`mqtt_device_id_from_mac()`, `_is_from_mac()`) for the board's
+composition to use, and the simulator refuses that form in front of a real broker: it never
+takes a board's place in Home Assistant. libmosquitto is used under EDL-1.0 (BSD-3-Clause), one
+side of its EPL-2.0/EDL-1.0 dual licence, host only, a system package, never in an image
+(THIRD_PARTY_NOTICES.md). Tests: the port_telemetry contract against libmosquitto and a private
+mosquitto on a free port (`tests/support/mqtt_test_broker.c`, or `HAC_TEST_MQTT_BROKER`), cut
+and restore exercised, the full queue not; `tests/cli/simulator_broker.py`, with an MQTT client
+of its own: the device appears (online, seven configs, two empty, the state, retained), Home
+Assistant's birth brings the nine configs again, a broker restart is recovered, SIGKILL and
+`--duration` leave the will, a password file refuses the wrong password ("not authorised") and
+takes the right one; both say "not exercised" without a broker or libmosquitto. CI's host and
+ASan jobs install `libmosquitto-dev` and `mosquitto`. Verified locally with 2.0.22 unpacked
+from Ubuntu's packages (nothing could be installed): debug, ASan/UBSan and ThreadSanitizer
+clean, the default build without it green. Seen in Home Assistant 2026.10.2, 2026-10-21 (a
+container in WSL, Ubuntu's mosquitto 2.0.22, the board's recordings of 2026-10-18 at x1): the
+device and its nine entities, Home Assistant's restart (discovery again), the broker's restart
+(session 2 after 15 s -- 10 of them the reporter's connect timeout on an attempt the adapter
+knew was refused: the port cannot say so, a port change to weigh with the board's adapter),
+Ctrl-C (unavailable at once, the will), and an outage (`--net-script "120:down;300:up"`: the
+will 34 s after the cut, 90 s after the last packet the broker had heard -- a real broker counts
+the keepalive from there, MQTT 3.1.1 3.1.2.10, so a vanished device is offline 30 to 90 s later;
+the loopback broker model now counts the same way, with the client's pings, where it counted
+from the cut and was up to a keepalive late). Still to
+see: history and long-term statistics, a broker with a password, Home Assistant on its own
+machine (the amendment's list).
+
 Next: the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now
-recordable unattended -- and this unit's own figures for the remaining estimates; phase 4c,
-the board's Wi-Fi and esp-mqtt adapters behind these ports.
+recordable unattended -- and this unit's own figures for the remaining estimates; the rest of
+the simulator's checks in Home Assistant (ADR 0030's amendment); then the board's Wi-Fi and esp-mqtt
+adapters behind these ports, with its device id from `mqtt_device_id_from_mac()`.
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

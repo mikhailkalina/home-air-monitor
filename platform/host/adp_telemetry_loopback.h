@@ -16,8 +16,16 @@
 //     id already connected ends the old one, as if its network had failed
 //     (3.1.4).
 //   * the last will, published when a session ends any way but disconnect():
-//     one and a half keepalives after its network went (3.1.2.10), or at
-//     once when another connection takes its id.
+//     one and a half keepalives after the last packet the broker heard from
+//     it (3.1.2.10) -- its CONNECT, a SUBSCRIBE, a message the broker took, or
+//     a PINGREQ, which a client sends whenever a keepalive has passed since
+//     its last packet (also 3.1.2.10) -- once its network
+//     has gone; or at once when another connection takes its id. So the will
+//     comes half a keepalive to one and a half after the network went, as a
+//     real broker's does: 34 s after, with a minute's keepalive and a
+//     heartbeat 57 s before the cut, seen on mosquitto (ADR 0030's
+//     amendment; until then the model counted from the cut). A stall stops
+//     messages being taken, not the pings.
 //   * a scriptable refusal: the next attempts refused at once (a CONNACK
 //     with an error: connect() says HAL_ERR_IO) or never answered (connect()
 //     starts, no session ever comes); and a stall, in which the broker takes
@@ -134,6 +142,10 @@ struct adp_telemetry_loopback_s {
 
     bool link;  // the network under it
     bool connected;
+    // When the broker last heard a packet from it: its CONNECT, a SUBSCRIBE or
+    // a message taken. The pings in between are worked out, not stored
+    // (loopback_last_heard_ms()).
+    uint64_t last_out_ms;
     bool attempting;  // an attempt the broker leaves unanswered
     char client_id[PORT_TELEMETRY_CLIENT_ID_MAX + 1u];
     uint16_t keepalive_s;
@@ -185,6 +197,10 @@ uint64_t loopback_broker_next_ms(const loopback_broker_t *b);
 
 // What the broker keeps for `topic`, or NULL.
 const loopback_message_t *loopback_broker_retained(const loopback_broker_t *b, const char *topic);
+
+// When the broker last heard from `c` by `at_ms`: its last packet, or the
+// last ping after it -- one every keepalive while nothing else goes.
+uint64_t loopback_last_heard_ms(const adp_telemetry_loopback_t *c, uint64_t at_ms);
 
 // MQTT 3.1.1's matching of a topic against a filter (4.7), with '$' topics
 // out of reach of a leading wildcard (4.7.2).

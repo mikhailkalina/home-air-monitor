@@ -105,3 +105,44 @@ size_t mqtt_topics_discovery(const mqtt_topics_t *t, const char *component, cons
     len = text_append_str(dst, cap, len, "/config");
     return text_overflowed(len, cap) ? 0u : len;
 }
+
+size_t mqtt_device_id_from_mac(const uint8_t mac[MQTT_DEVICE_ID_MAC_BYTES], char *dst, size_t cap)
+{
+    static const char digits[] = "0123456789abcdef";
+    size_t len = text_append_str(dst, cap, 0u, MQTT_DEVICE_ID_MAC_PREFIX);
+    for (size_t i = 0u; i < MQTT_DEVICE_ID_MAC_BYTES; ++i) {
+        len = text_append_char(dst, cap, len, digits[mac[i] >> 4u]);
+        len = text_append_char(dst, cap, len, digits[mac[i] & 0x0Fu]);
+    }
+    return len;
+}
+
+static char lower(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+static bool hex_digit(char c)
+{
+    const char l = lower(c);
+    return (l >= '0' && l <= '9') || (l >= 'a' && l <= 'f');
+}
+
+bool mqtt_device_id_is_from_mac(const char *id)
+{
+    if (id == NULL || strlen(id) != MQTT_DEVICE_ID_MAC_LEN) {
+        return false;
+    }
+    const size_t prefix_len = sizeof(MQTT_DEVICE_ID_MAC_PREFIX) - 1u;
+    for (size_t i = 0u; i < prefix_len; ++i) {
+        if (lower(id[i]) != MQTT_DEVICE_ID_MAC_PREFIX[i]) {
+            return false;
+        }
+    }
+    for (size_t i = prefix_len; i < MQTT_DEVICE_ID_MAC_LEN; ++i) {
+        if (!hex_digit(id[i])) {
+            return false;
+        }
+    }
+    return true;
+}
