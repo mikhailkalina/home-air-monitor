@@ -248,6 +248,11 @@
 // active -- open item for phase 3/4 in docs/hardware/board_notes.md.
 #define BOARD_BUTTON_GPIO 21
 #define BOARD_BATTERY_ADC_GPIO 14
+// The divider's ratio: R29/R32, 100 kOhm 1 % each, from the battery to ground
+// with the tap on GPIO14 (v2.4 schematic, read, not measured --
+// docs/hardware/board_notes.md "Pin assignments"). The battery is twice what
+// the pin sees. The console's vbat reads it (phase 4e).
+#define BOARD_BATTERY_DIVIDER_RATIO 2u
 
 // --- microSD card slot (phase 3f) ------------------------------------------
 // Pins: src/utilities.h:34-37 (CONFIG_IDF_TARGET_ESP32S3 block). The slot's

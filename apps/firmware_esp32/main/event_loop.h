@@ -34,6 +34,12 @@
 // into the screen's reading, so the status bar says "online", "no broker" or
 // "no Wi-Fi" once the link has held it for a minute -- and nothing without a
 // reporter; the hold's end is a fourth deadline.
+//
+// Since phase 4e (docs/adr/0032-wifi-on-the-board.md) it calls the
+// composition once the first redraw is over -- on the glass or not -- which
+// is when the board starts Wi-Fi: the radio's calibration current is to come
+// neither in the switched rail's inrush nor during a panel drive, and the
+// first frame, a full refresh, follows the rail by a fraction of a second.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 #define HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
@@ -68,6 +74,10 @@ typedef void (*event_loop_reading_fn)(void *ctx, const sensor_manager_t *sensors
 typedef void (*event_loop_facts_fn)(void *ctx, diag_recorder_t *recorder,
                                     const char **clock_source);
 
+// Called once, on the pump's task, when the first redraw is over and the
+// panel is no longer being driven. Must not wait.
+typedef void (*event_loop_first_frame_fn)(void *ctx);
+
 typedef struct {
     const port_clock_t *clock;
     port_display_t *display;
@@ -86,6 +96,9 @@ typedef struct {
 
     reporter_t *reporter;  // may be NULL: no telemetry; already reporter_init()-ed
     link_hold_t *link;     // may be NULL: no link on the screen; already link_hold_init()-ed
+
+    event_loop_first_frame_fn after_first_frame;  // may be NULL
+    void *after_first_frame_ctx;
 } event_loop_deps_t;
 
 // Starts the FreeRTOS task that runs the pump: forever, it polls the sensor

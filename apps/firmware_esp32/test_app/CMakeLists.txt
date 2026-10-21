@@ -38,9 +38,19 @@ if(HAC_BSEC)
     list(APPEND SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.bsec")
 endif()
 
+# The firmware's Wi-Fi credentials overlay, when there is one (phase 4e,
+# docs/adr/0032-wifi-on-the-board.md): the port_net contract joins the same
+# network the firmware does, and is IGNORED without one.
+get_filename_component(HAC_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../.. ABSOLUTE)
+include(${HAC_ROOT}/cmake/credentials_idf.cmake)
+set(HAC_CREDENTIALS_OVERLAY "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.credentials")
+hac_credentials_layer("${HAC_CREDENTIALS_OVERLAY}")
+
 # The firmware's components, not copies of them: hac_core, hac_contract,
 # hac_drivers, hac_platform and, through hac_platform's manifest, EPDiy.
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(hac_test_app)
+
+hac_credentials_check("${HAC_CREDENTIALS_OVERLAY}")

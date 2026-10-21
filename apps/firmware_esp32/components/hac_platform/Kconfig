@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# In the platform's component rather than main/Kconfig.projbuild, so that the
+# firmware and the on-target test app (apps/firmware_esp32/test_app/), which
+# link this component but not main/, see the same symbols -- as
+# components/hac_drivers/Kconfig does for HAC_BSEC.
+
+menu "Home Air Monitor: Wi-Fi"
+
+    config HAC_WIFI_SSID
+        string "Wi-Fi network name (SSID)"
+        default ""
+        help
+            Phase 4e (docs/adr/0032-wifi-on-the-board.md). The network the
+            board's station joins (platform/esp32_t5s3/adp_net.c), 1 to 32
+            octets. Empty -- the default -- means no network: the firmware
+            never starts Wi-Fi and runs as before, and the test app reports
+            the port_net contract as IGNORED.
+
+            Never set it here or in sdkconfig.defaults. It belongs in the
+            gitignored overlay apps/firmware_esp32/sdkconfig.credentials
+            (copied from sdkconfig.credentials.example), which every build of
+            the firmware and the test app layers last over its defaults, and
+            which survives a deleted sdkconfig. An overlay reaches only a
+            fresh sdkconfig: after changing it, delete the build's sdkconfig
+            and run idf.py reconfigure -- the build refuses to go on while
+            the two disagree (cmake/credentials_idf.cmake).
+
+            An image built with it holds it in plain text: never attach one
+            to an issue or a pull request.
+
+    config HAC_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            The network's WPA2/WPA3 password, 8 to 64 characters, or empty
+            for an open network. Set beside HAC_WIFI_SSID in
+            sdkconfig.credentials, never anywhere committed. Handed to
+            ESP-IDF's driver in RAM only and never logged; the boot log gives
+            its length.
+
+endmenu

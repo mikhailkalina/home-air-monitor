@@ -51,3 +51,24 @@ CONFIG_EPD_ESP32S3_I80_ROW_OUTPUT=y
 # build without them -- a default added here does not reach an sdkconfig
 # that already exists (CLAUDE.md).
 CONFIG_FATFS_LFN_HEAP=y
+
+# Wi-Fi (phase 4e, docs/adr/0032-wifi-on-the-board.md). lwIP's task on the
+# protocol core, beside ESP-IDF's Wi-Fi task (core 0 by default): core 1 runs
+# the event loop and EPDiy's row output, and keeps them to itself.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+# The Wi-Fi driver's and lwIP's buffers stay in internal RAM, as ESP-IDF's
+# default has them: the octal PSRAM is the part that did not ride out dips on
+# VDD3V3 (phase 3f), and a transmit burst is where the radio draws most. The
+# ADR has the reasoning and the budget it leaves.
+# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP is not set
+# A station only: no access point of its own, which saves its code and its
+# buffers. Phase 6's provisioning, if it chooses SoftAP, turns this back on.
+# CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
+# The Wi-Fi driver's code in flash, not IRAM: 17,564 bytes of static internal
+# RAM back, by idf.py size (2026-10-21) -- with them on the board had 56.7 KB
+# free with the link up, 42.7 KB at the least -- at a throughput a message a
+# minute does not need.
+# platform/esp32_t5s3/adp_net.c refuses to build with an sdkconfig that has
+# either on.
+# CONFIG_ESP_WIFI_IRAM_OPT is not set
+# CONFIG_ESP_WIFI_RX_IRAM_OPT is not set

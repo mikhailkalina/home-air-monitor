@@ -20,6 +20,10 @@ idf_component_register(
         # driver and the port_input over it are hac_drivers' (ADR 0025).
         ${HAC_ROOT}/platform/esp32_t5s3/adp_input.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_sd.c
+        # The Wi-Fi station behind port_net, and its decisions, which the
+        # host tests from this location (phase 4e, docs/adr/0032).
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_net.c
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_net_pure.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_power.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
@@ -37,6 +41,12 @@ idf_component_register(
         esp_driver_sdspi
         esp_driver_spi
         vfs
+        # The Wi-Fi station (adp_net.c): the driver, lwIP behind esp_netif,
+        # the default event loop, and NVS for the radio's calibration data.
+        esp_wifi
+        esp_netif
+        esp_event
+        nvs_flash
         esp_psram
         esp_hw_support
         esp_rom

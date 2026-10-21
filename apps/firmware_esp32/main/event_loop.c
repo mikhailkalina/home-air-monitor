@@ -67,6 +67,9 @@ typedef struct {
     // The least free stack this task has had, in bytes, as last logged.
     uint32_t stack_free_min_bytes;
 
+    // The first redraw is over, and the composition has been told.
+    bool first_frame_done;
+
     // What the reporter and its network said at the last step: the
     // diagnostics screen's, and the link the hold is fed.
     reporter_status_t network;
@@ -283,6 +286,23 @@ static bool redraw(event_loop_state_t *s, const update_decision_t *d, uint64_t n
     return true;
 }
 
+// The first redraw is over -- a full refresh, unless the flush failed -- and
+// the panel idle: the composition's hook, once (event_loop.h). Logged with
+// the time, which the board's "radio started" line is read against.
+static void after_first_frame(event_loop_state_t *s)
+{
+    if (s->first_frame_done) {
+        return;
+    }
+    s->first_frame_done = true;
+    if (s->deps.after_first_frame == NULL) {
+        return;
+    }
+    const log_field_t fields[] = {log_u64("now_ms", s->deps.clock->now_ms(s->deps.clock))};
+    port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "first frame over", fields, 1u);
+    s->deps.after_first_frame(s->deps.after_first_frame_ctx);
+}
+
 // The backoff floor after `failures` consecutive iterations that achieved no
 // redraw: 0 while things are working, then 1 s doubling to
 // EVENT_LOOP_MAX_WAIT_MS.
@@ -384,6 +404,7 @@ static void pump_task(void *arg)
                     s->redraw_not_before_ms =
                         clock->now_ms(clock) + backoff_floor_ms(s->consecutive_no_progress);
                 }
+                after_first_frame(s);
                 // What is due now that the redraw is done -- or still due,
                 // if it was not.
                 screen_controller_evaluate(s->deps.screens, s->deps.policy, &in, &decision);
