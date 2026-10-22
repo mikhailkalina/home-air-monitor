@@ -88,11 +88,9 @@ static int32_t displayed_level(const adp_display_sdl_t *d, size_t i)
 }
 
 // Paints the glass, with `solid` (if given) overridden by one flat 8-bit grey
-// -- what the clear's black and white pushes show over the refreshed region --
-// and, inside `ink_black` (if given), every pixel the framebuffer does not
-// hold white shown black: GL16's dark passes after the clear.
+// -- what the clear's black and white pushes show over the refreshed region.
 static void render(adp_display_sdl_t *d, const rect_t *solid, uint8_t solid_level,
-                   const rect_t *highlight, const rect_t *ink_black)
+                   const rect_t *highlight)
 {
     for (uint16_t y = 0; y < d->height; ++y) {
         for (uint16_t x = 0; x < d->width; ++x) {
@@ -101,10 +99,6 @@ static void render(adp_display_sdl_t *d, const rect_t *solid, uint8_t solid_leve
             int32_t level = displayed_level(d, i);
             if (solid != NULL && rect_contains(solid, x, y)) {
                 level = (int32_t)solid_level;
-            }
-            if (ink_black != NULL && rect_contains(ink_black, x, y) &&
-                framebuffer_get_pixel(&d->fb, (int32_t)x, (int32_t)y) != EPD_MODEL_GRAY4_WHITE) {
-                level = 0;
             }
 
             const uint32_t g = (uint32_t)level;
@@ -136,7 +130,7 @@ static void render(adp_display_sdl_t *d, const rect_t *solid, uint8_t solid_leve
 
 void adp_display_sdl_present(adp_display_sdl_t *d)
 {
-    render(d, NULL, 0u, NULL, NULL);
+    render(d, NULL, 0u, NULL);
 }
 
 // Waits out an emulated panel duration in real time, compressed by the
@@ -165,9 +159,9 @@ static void flash_clear(adp_display_sdl_t *d, const rect_t *area)
     const uint32_t white_ms = EPD_SIM_CLEAR_REFRESH_MS * EPD_SIM_CLEAR_WHITE_PUSHES / pushes;
 
     for (uint32_t c = 0u; c < EPD_SIM_CLEAR_CYCLES; ++c) {
-        render(d, area, 0u, NULL, NULL);
+        render(d, area, 0u, NULL);
         wait_panel(d, dark_ms);
-        render(d, area, 255u, NULL, NULL);
+        render(d, area, 255u, NULL);
         wait_panel(d, white_ms);
     }
 }
@@ -233,17 +227,14 @@ static hal_status_t sdl_flush(port_display_t *port, const rect_t *area, refresh_
     }
 
     if (f.performed == REFRESH_FULL) {
-        // Then GL16, as the glass shows it: white while EPDiy works out the
-        // difference, black wherever the picture is not to be white during
-        // its dark passes, and only then the picture (epd_emulation.h,
-        // EPD_SIM_GL16_DARK_PASSES).
+        // Then the draw from white, as the glass shows it: white while EPDiy
+        // works out the difference, then the picture darkening in
+        // (epd_emulation.h, EPD_SIM_FULL_DRAW_*).
         for (uint32_t y = f.area.y; y < (uint32_t)f.area.y + f.area.h; ++y) {
             memset(d->glass + (size_t)y * d->width + f.area.x, EPD_MODEL_GRAY4_WHITE, f.area.w);
         }
-        render(d, NULL, 0u, &f.area, NULL);
+        render(d, NULL, 0u, &f.area);
         wait_panel(d, phases.diff_ms);
-        render(d, NULL, 0u, &f.area, &f.area);
-        wait_panel(d, phases.dark_ms);
     }
 
     transfer(d, &f.area, f.performed);
@@ -252,10 +243,10 @@ static hal_status_t sdl_flush(port_display_t *port, const rect_t *area, refresh_
     if (highlight_ms < EPD_SIM_HIGHLIGHT_MIN_MS) {
         highlight_ms = EPD_SIM_HIGHLIGHT_MIN_MS;
     }
-    render(d, NULL, 0u, &f.area, NULL);
+    render(d, NULL, 0u, &f.area);
     wait_panel(d, highlight_ms);
 
-    render(d, NULL, 0u, NULL, NULL);
+    render(d, NULL, 0u, NULL);
     framebuffer_reset_dirty(&d->fb);
     return HAL_OK;
 }
@@ -268,7 +259,7 @@ static hal_status_t sdl_power(port_display_t *port, bool on)
     if (!on) {
         // A powered-down panel keeps its last image: e-paper is bistable.
         // Nothing to do but say so.
-        render(d, NULL, 0u, NULL, NULL);
+        render(d, NULL, 0u, NULL);
     }
     return HAL_OK;
 }
@@ -364,7 +355,7 @@ adp_display_sdl_t *adp_display_sdl_create(uint16_t width, uint16_t height, float
     d->port.power = sdl_power;
     d->port.impl = d;
 
-    render(d, NULL, 0u, NULL, NULL);
+    render(d, NULL, 0u, NULL);
     return d;
 }
 

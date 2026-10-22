@@ -309,6 +309,18 @@ target_link_libraries(test_adp_net_pure PRIVATE hac_test_support)
 hac_apply_warnings(test_adp_net_pure)
 add_test(NAME test_adp_net_pure COMMAND test_adp_net_pure)
 
+# The partial refresh's mode "through white", built at boot from EPDiy's GL16
+# and WHITE_TO_GL16 -- compiled from where the firmware compiles it
+# (docs/adr/0035-the-vendors-full-refresh.md, second amendment).
+add_executable(test_epd_white_path
+    unit/test_epd_white_path.c
+    ${HAC_ROOT}/platform/esp32_t5s3/epd_white_path.c
+)
+target_include_directories(test_epd_white_path PRIVATE ${HAC_ROOT}/platform/esp32_t5s3)
+target_link_libraries(test_epd_white_path PRIVATE hac_test_support)
+hac_apply_warnings(test_epd_white_path)
+add_test(NAME test_epd_white_path COMMAND test_epd_white_path)
+
 # The MQTT client's decisions -- the broker's URI, the queues' indices, a
 # message put together from pieces, which session an esp-mqtt event belongs
 # to and what the adapter's task does next -- compiled from where the firmware

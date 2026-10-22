@@ -165,8 +165,8 @@ static void a_partial_refresh_counts_only_the_rows_that_changed(void)
     HAC_CHECK(f.duration_ms < 25u);  // the difference pass over 100 rows only
 }
 
-// A full refresh is the clear plus GL16 over the rows that are not white; a
-// white frame needs no GL16 pass at all.
+// A full refresh is the clear plus the draw from white over the rows that are
+// not white; a white frame needs no draw at all.
 static void a_full_refresh_costs_the_clear_plus_its_non_white_rows(void)
 {
     framebuffer_t fb = white_frame();
@@ -258,26 +258,29 @@ static const row_range_t k_measured_screen_home_rows[] = {
 };
 
 // Full refreshes depend on content, so they are checked against content: a
-// solid frame (every row non-white, as the measured black fill was) and the
-// frame screen_home's full refresh was measured on. Since ADR 0035 a full
-// refresh is the vendor's clear, measured on the board, and GL16 over the
-// non-white rows. ADR 0008 measured the whole refresh with EPDiy's clear,
-// 2,455,869 us, and GC16, which costs what GL16 does over the same rows: so
-// what came after that clear -- 1,204,700 us for the solid fill, 868,994 for
-// screen_home -- is GL16's draw, measured, and the model must put the vendor's
-// clear in front of it to within 1 %.
-static void a_full_refresh_is_the_vendors_clear_and_gl16(void)
+// solid frame (every row non-white) and the frame screen_home's old full
+// refresh was measured on. Since ADR 0035 (epd_emulation.h): the vendor's
+// clear, measured, and the fifteen-pass draw from white at half of GL16's
+// measured base and rate, which the board confirmed within 4 %. What the panel
+// measured with EPDiy's clear and GC16 -- 3,660,569 us solid, 3,324,863 us for
+// this screen_home -- is what they replaced; the model must come out well under
+// both, near the 2 s the owner saw on the vendor's firmware.
+static void a_full_refresh_is_the_vendors_clear_and_a_draw_from_white(void)
 {
-    const uint32_t old_clear_us = 2455869u;
-    const uint32_t solid_fill_us = 3660569u - old_clear_us + EPD_SIM_CLEAR_REFRESH_MS * 1000u;
-    const uint32_t screen_home_us = 3324863u - old_clear_us + EPD_SIM_CLEAR_REFRESH_MS * 1000u;
+    const uint32_t old_solid_fill_us = 3660569u;
+    const uint32_t old_screen_home_us = 3324863u;
 
     epd_model_t m;
     epd_flush_t f;
     epd_model_init(&m, PANEL_W, PANEL_H, TEST_BUDGET);
 
     epd_model_flush(&m, NULL, REFRESH_FULL, NULL, NULL, &f);
-    HAC_CHECK(within_percent(f.duration_ms, solid_fill_us, MODEL_TOLERANCE_PERCENT));
+    const uint64_t draw_us = (uint64_t)PANEL_H * EPD_SIM_DIFF_PER_ROW_US +
+                             EPD_SIM_FULL_DRAW_BASE_US +
+                             (uint64_t)f.written_rows * EPD_SIM_FULL_DRAW_PER_ROW_US;
+    HAC_CHECK_EQ_U64(f.duration_ms, EPD_SIM_CLEAR_REFRESH_MS + (draw_us + 500u) / 1000u);
+    HAC_CHECK(f.duration_ms >= 1800u && f.duration_ms <= 2100u);
+    HAC_CHECK((uint64_t)f.duration_ms * 1000u < old_solid_fill_us);
 
     framebuffer_t fb = white_frame();
     for (size_t i = 0u;
@@ -289,10 +292,10 @@ static void a_full_refresh_is_the_vendors_clear_and_gl16(void)
     }
 
     epd_model_flush(&m, NULL, REFRESH_FULL, &fb, s_glass, &f);
-    HAC_CHECK(within_percent(f.duration_ms, screen_home_us, MODEL_TOLERANCE_PERCENT));
-    printf("screen_home full refresh: %u non-white rows, %u written, %u ms (panel, with this "
-           "clear: %u us)\n",
-           f.changed_rows, f.written_rows, f.duration_ms, screen_home_us);
+    HAC_CHECK((uint64_t)f.duration_ms * 1000u < old_screen_home_us);
+    printf("screen_home full refresh: %u non-white rows, %u written, %u ms estimated "
+           "(EPDiy's clear and GC16 measured %u us)\n",
+           f.changed_rows, f.written_rows, f.duration_ms, old_screen_home_us);
 }
 
 static void partial_refreshes_are_counted_and_a_full_one_resets_the_count(void)
@@ -387,9 +390,9 @@ static void a_panel_with_no_partial_mode_refreshes_fully_every_time(void)
 // --- what a full refresh shows, in turn -------------------------------
 //
 // The window plays a full refresh as the panel does: the clear's flashing,
-// the difference pass, GL16's dark half, then the picture. The phases must
-// add up to the refresh's own duration, so playing them takes exactly as long
-// as the panel; and the dark half must be the waveform's share of the draw.
+// the difference pass, then the picture darkening in from white. The phases
+// must add up to the refresh's own duration, so playing them takes exactly as
+// long as the panel.
 
 static void a_full_refresh_splits_into_phases_that_add_up(void)
 {
@@ -402,12 +405,10 @@ static void a_full_refresh_splits_into_phases_that_add_up(void)
     epd_model_flush(&m, NULL, REFRESH_FULL, &fb, s_glass, &f);
     const epd_full_phases_t p = epd_model_full_phases(&f);
 
-    HAC_CHECK_EQ_U64((uint64_t)p.clear_ms + p.diff_ms + p.dark_ms + p.light_ms, f.duration_ms);
+    HAC_CHECK_EQ_U64((uint64_t)p.clear_ms + p.diff_ms + p.light_ms, f.duration_ms);
     HAC_CHECK_EQ_U64(p.clear_ms, EPD_SIM_CLEAR_REFRESH_MS);
     HAC_CHECK_EQ_U64(p.diff_ms, 106u);  // 540 rows x 196 us, as EPDiy logs it
-    const uint32_t draw = p.dark_ms + p.light_ms;
-    HAC_CHECK_EQ_U64(p.dark_ms, draw * EPD_SIM_GL16_DARK_PASSES / EPD_SIM_GL16_PASSES);
-    HAC_CHECK(p.dark_ms > 0u && p.light_ms > 0u);
+    HAC_CHECK(p.light_ms > 0u);
 }
 
 static void other_refreshes_have_no_clear_phase(void)
@@ -419,13 +420,13 @@ static void other_refreshes_have_no_clear_phase(void)
     epd_model_flush(&m, NULL, REFRESH_CLEAR, NULL, NULL, &f);
     epd_full_phases_t p = epd_model_full_phases(&f);
     HAC_CHECK_EQ_U64(p.clear_ms, f.duration_ms);
-    HAC_CHECK_EQ_U64((uint64_t)p.diff_ms + p.dark_ms + p.light_ms, 0u);
+    HAC_CHECK_EQ_U64((uint64_t)p.diff_ms + p.light_ms, 0u);
 
     const rect_t band = make_rect(0u, 0u, PANEL_W, 60u);
     epd_model_flush(&m, &band, REFRESH_PARTIAL, NULL, NULL, &f);
     p = epd_model_full_phases(&f);
     HAC_CHECK_EQ_U64(p.light_ms, f.duration_ms);
-    HAC_CHECK_EQ_U64((uint64_t)p.clear_ms + p.diff_ms + p.dark_ms, 0u);
+    HAC_CHECK_EQ_U64((uint64_t)p.clear_ms + p.diff_ms, 0u);
 }
 
 // --- how light each level looks ---------------------------------------
@@ -486,7 +487,7 @@ int main(void)
     HAC_RUN(a_partial_refresh_counts_only_the_rows_that_changed);
     HAC_RUN(a_full_refresh_costs_the_clear_plus_its_non_white_rows);
     HAC_RUN(the_model_is_within_one_percent_of_every_measured_case);
-    HAC_RUN(a_full_refresh_is_the_vendors_clear_and_gl16);
+    HAC_RUN(a_full_refresh_is_the_vendors_clear_and_a_draw_from_white);
     HAC_RUN(partial_refreshes_are_counted_and_a_full_one_resets_the_count);
     HAC_RUN(past_the_budget_the_panel_refreshes_partially_and_counts_it);
     HAC_RUN(past_what_was_tested_the_panel_forces_a_full_refresh);

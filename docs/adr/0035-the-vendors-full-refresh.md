@@ -21,9 +21,12 @@ evening (ELF `89905d8a5...`). What the glass shows -- the flashes, any trace,
 the stripes, the greys -- is the owner's eye's, not the log's (board_notes.md,
 open item "The vendor's full refresh").
 
-**Amended the same evening** (below, "Amendment: GL16 after the clear"): the
-draw is `MODE_GL16`, not the vendor's `WHITE_TO_GL16` -- its greys did not
-survive the partial refreshes after it. The clear stays.
+**Amended the same evening, twice**: first the full refresh drew with GL16
+after the clear ("Amendment: GL16 after the clear"), which helped and did not
+cure; then the partial refresh changed instead -- a mode of this project's
+that takes a changed pixel through white and leaves an unchanged one alone --
+and the full refresh went back to the vendor's draw ("Second amendment: the
+partial refresh through white"). That is the design now.
 
 ## Context
 
@@ -170,4 +173,55 @@ lightens to its level -- for black text, nothing to see. The simulator models
 it from measurements only: the measured clear, and GL16's measured formula
 over the frame's rows, held within 1 % of ADR 0008's GC16 draws put behind the
 new clear.
+
+## Second amendment: the partial refresh through white (2026-10-22, later)
+
+**What the board showed.** With GL16 after the clear: better, and still
+lighter patches in static greys after a partial refresh. The owner asked for
+the other direction -- everything from white to grey, partial refreshes
+included.
+
+**Why GL16 after the clear did not cure it.** GL16's entry for an unchanged
+grey L -> L darkens it by as much as the last L of its darkening phases (650
+for level 4) and lightens it by GL16's amount for L (36 for level 4) -- a
+pixel already at L, not at white, so it does not land where a draw from
+white to L by the same phases does. Every partial refresh does this to the
+static greys of the rows it writes and the columns of EPDiy's global mask. No
+full-refresh draw can make that a no-op; only the partial refresh's own entry
+can.
+
+**Decision.** A waveform mode of this project's, built at boot from EPDiy's
+own two (`platform/esp32_t5s3/epd_white_path.c`, pure, tested on the host;
+`adp_display.c` adds it to EPDiy's waveform under type `0x12`, which EPDiy's
+waveform for this panel does not use, and hands that to `epd_hl_init()`):
+
+- **an unchanged pixel is never driven** -- the L -> L entries empty;
+- **a changed pixel is driven to white** in GL16's fifteen lightening phases,
+  with their times -- all of them, from any level, since white saturates;
+- **then darkened to its level** in WHITE_TO_GL16's fifteen phases, as
+  WHITE_TO_GL16 darkens white to it.
+
+`REFRESH_PARTIAL` uses it; `REFRESH_FULL` is the vendor's clear and
+`MODE_EPDIY_WHITE_TO_GL16` again. A grey drawn by either refresh is then the
+same: whitened and darkened by the same phases. If the mode cannot be built
+-- another waveform, more temperature ranges -- both refreshes draw with GL16,
+which at least share a path, and the log says so.
+
+**What it costs and what it risks.**
+
+- **Speed**: 30 phases, as GL16 had, all under the data bus's row time:
+  partial refreshes as long as before (the simulator's measured GL16 formula
+  stands; to be confirmed by EPDiy's `draw:` lines). The full refresh is 1.85
+  s again, a change of screen as measured with the vendor's draw.
+- **What a partial refresh shows**: a changing pixel goes white before it
+  goes dark -- for black digits, the old strokes vanish and the new ones
+  appear; a changing grey word blinks white first. Nothing else moves.
+- **A waveform nobody characterised**: its phases and times are EPDiy's, but
+  the combination is ours. Lightening a grey with all fifteen of GL16's
+  lightening phases overdrives it towards white; e-paper saturates there, and
+  the vendor's clear does far more (1,600 us a row against GL16's 55), but
+  whether a pixel changed often by partial refreshes drifts -- greys going
+  lighter or darker over a budget's twenty -- is the board's to show, as is
+  the ghosting count ADR 0019's budget rests on: unchanged pixels are now not
+  even refreshed in place, which GL16 did for greys.
 

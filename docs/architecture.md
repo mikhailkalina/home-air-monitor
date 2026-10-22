@@ -199,6 +199,8 @@ home-air-monitor/
 │   │   ├── adp_clock.c
 │   │   ├── adp_i2c.c               # ESP-IDF i2c_master + recovery
 │   │   ├── adp_display.c           # EPDiy / LilyGo-EPD47 backend, PSRAM buffer
+│   │   ├── epd_white_path.c        # ... the partial refresh's mode through white, built from
+│   │   │                           #   EPDiy's GL16 and WHITE_TO_GL16, tested on the host (ADR 0035)
 │   │   ├── adp_input.c             # GT911's interrupt and task → event queue (ADR 0025)
 │   │   ├── adp_net.c               # the Wi-Fi station behind port_net: a task, the driver (ADR 0032)
 │   │   ├── adp_net_pure.c          # ... its decisions -- backoff, timeouts -- tested on the host

@@ -58,8 +58,9 @@ static uint32_t us_to_ms(uint64_t us)
 // How long the panel takes for `mode` over a rectangle `area_rows` tall whose
 // passes write `written` rows, `changed` of them holding a changed pixel. The
 // difference pass covers every row of the rectangle; when nothing changed,
-// EPDiy stops there and draws nothing. A full refresh is the clear plus GL16
-// over the rows that are not white. Every constant is measured
+// EPDiy stops there and draws nothing. A full refresh is the clear plus a
+// fifteen-pass draw from white over the rows that are not white. The clear
+// and that draw are estimates, every other constant is measured
 // (epd_emulation.h).
 static uint32_t duration_for(refresh_mode_t mode, uint32_t area_rows, uint32_t written,
                              uint32_t changed)
@@ -67,14 +68,19 @@ static uint32_t duration_for(refresh_mode_t mode, uint32_t area_rows, uint32_t w
     const uint64_t diff_us = (uint64_t)area_rows * EPD_SIM_DIFF_PER_ROW_US;
 
     switch (mode) {
-        case REFRESH_PARTIAL:
-        case REFRESH_FULL: {
+        case REFRESH_PARTIAL: {
             uint64_t us = diff_us;
             if (changed > 0u) {
                 us += EPD_SIM_PARTIAL_BASE_US + (uint64_t)written * EPD_SIM_PARTIAL_PER_ROW_US;
             }
-            const uint32_t ms = us_to_ms(us);
-            return (mode == REFRESH_FULL) ? EPD_SIM_CLEAR_REFRESH_MS + ms : ms;
+            return us_to_ms(us);
+        }
+        case REFRESH_FULL: {
+            uint64_t us = diff_us;
+            if (changed > 0u) {
+                us += EPD_SIM_FULL_DRAW_BASE_US + (uint64_t)written * EPD_SIM_FULL_DRAW_PER_ROW_US;
+            }
+            return EPD_SIM_CLEAR_REFRESH_MS + us_to_ms(us);
         }
         case REFRESH_FAST_MONO: {
             uint64_t us = diff_us;
@@ -214,7 +220,7 @@ void epd_model_flush(epd_model_t *m, const rect_t *area, refresh_mode_t mode,
 
 epd_full_phases_t epd_model_full_phases(const epd_flush_t *flush)
 {
-    epd_full_phases_t p = {0u, 0u, 0u, 0u};
+    epd_full_phases_t p = {0u, 0u, 0u};
 
     if (flush->performed == REFRESH_CLEAR) {
         p.clear_ms = flush->duration_ms;
@@ -231,10 +237,7 @@ epd_full_phases_t epd_model_full_phases(const epd_flush_t *flush)
 
     const uint32_t diff = us_to_ms((uint64_t)flush->area.h * EPD_SIM_DIFF_PER_ROW_US);
     p.diff_ms = (rest < diff) ? rest : diff;
-    rest -= p.diff_ms;
-
-    p.dark_ms = rest * EPD_SIM_GL16_DARK_PASSES / EPD_SIM_GL16_PASSES;
-    p.light_ms = rest - p.dark_ms;
+    p.light_ms = rest - p.diff_ms;
     return p;
 }
 

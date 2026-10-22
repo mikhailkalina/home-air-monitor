@@ -811,15 +811,16 @@ On the same branch (ADR 0035), after the owner compared LILYGO's firmware on the
 through EPDiy. Its clear (`BOARD_EPD_CLEAR_*`: 4 cycles of 4 pushes towards black and 4 towards
 white, rows driven 50 us, from LilyGo-EPD47's `epd_clear()` -- numbers only, that code is GPL-3.0)
 is a loop over EPDiy's `epd_push_pixels()` in `adp_display.c`, replacing EPDiy's 66-push
-`epd_clear()` -- 1,214 ms on the board against 2,456. The draw after it is `MODE_GL16` from the
-white model: no white-to-white flash (GC16's stripes gone) and greys by GL16's path. The vendor's
-own draw, `MODE_EPDIY_WHITE_TO_GL16`, was tried first the same evening -- 1.85 s a change of
-screen -- and replaced: its greys, darkened from white, were darker than GL16's, and since GL16
-re-drives an unchanged grey (L -> L: towards black and back) in every row and column a partial
-touches, the static greys beside a changed digit went lighter in patches (ADR 0035's amendment).
-A full refresh about 2.2 s, a change of screen about 2.3 s, against 3.4 s before; the simulator
-models it from measurements. On the next image: the patches gone (`board_notes.md`, open item
-"The vendor's full refresh").
+`epd_clear()` -- 1,214 ms on the board against 2,456 -- then `MODE_EPDIY_WHITE_TO_GL16`, the
+vendor's fifteen darkening frames: a full refresh about 1.8 s, a change of screen 1.85 s, against
+3.4 s before. Partial refreshes no longer use GL16: GL16 re-drives an unchanged grey (L -> L,
+towards black and back) in every row and column a partial touches, and the static greys beside a
+changed digit went lighter in patches -- with GL16 after the clear too, less. They use a mode of
+this project's, "through white" (`platform/esp32_t5s3/epd_white_path.c`, pure, tested on the host,
+added to EPDiy's waveform at boot under type `0x12`): a changed pixel whitened in GL16's lightening
+phases and darkened in WHITE_TO_GL16's, an unchanged one never driven -- every grey by one path
+(ADR 0035, both amendments). On the board still to see: no patches, and whether greys a partial
+redraws drift or ghosting comes sooner (`board_notes.md`, open item "The vendor's full refresh").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable

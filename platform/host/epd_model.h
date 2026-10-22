@@ -106,14 +106,12 @@ const char *epd_refresh_mode_name(refresh_mode_t mode);
 
 // A full refresh's duration split into what the glass shows in turn: the
 // clear's flashing (clear_ms), EPDiy's difference pass, during which nothing
-// changes (diff_ms), GL16's dark passes, when every pixel that is not to stay
-// white goes black (dark_ms), and its light passes, when the picture appears
-// (light_ms). The four add up to flush->duration_ms. A clear is all clear_ms;
-// any other refresh is all light_ms.
+// changes (diff_ms), and the draw from white, when the picture darkens in
+// (light_ms). The three add up to flush->duration_ms. A clear is all
+// clear_ms; any other refresh is all light_ms.
 typedef struct {
     uint32_t clear_ms;
     uint32_t diff_ms;
-    uint32_t dark_ms;
     uint32_t light_ms;
 } epd_full_phases_t;
 

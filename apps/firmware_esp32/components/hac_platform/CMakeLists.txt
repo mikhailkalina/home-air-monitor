@@ -14,6 +14,7 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/adp_log.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_display_null.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_display.c
+        ${HAC_ROOT}/platform/esp32_t5s3/epd_white_path.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_i2c_pure.c
         # The GT911 behind port_input: its interrupt and its task. The

@@ -2836,3 +2836,14 @@ layout settles, not before.
       than GL16's. Changed: GL16 after the vendor's clear (ADR 0035, amendment)
       -- the draw ~900 ms, a full refresh ~2.2 s. To see on the next image: the
       same patches gone; no stripes in white; a change of screen ~2,300 ms.
+      **Better, not cured** (the owner): still lighter patches. Changed again
+      (ADR 0035, second amendment): partial refreshes through white -- a
+      changed pixel whitened and darkened as the full refresh darkens it, an
+      unchanged one not driven at all -- and the full refresh the vendor's clear
+      and `WHITE_TO_GL16` again. To see: `adp_display: partial refreshes
+      through white, full ones darkened from white phases=30` at boot; no
+      patches in static greys after any partial refresh; a changed digit's old
+      strokes vanishing before the new ones appear; EPDiy's `draw:` for partial
+      refreshes as long as with GL16; and over a budget of twenty partials,
+      whether the greys they redrew drift, and whether close-up outlines
+      (ADR 0008's ghosting) come sooner than the 11th.
