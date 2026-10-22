@@ -91,6 +91,18 @@ def panel_lightness():
     return [value / 1000 for value in permille]
 
 
+def nominal_lightness():
+    """How light each level would be if level L looked like 8-bit sRGB grey
+    L * 17 -- except level 1, counted as black as the panel shows it
+    (docs/adr/0008-panel-timing.md), so `--levels distinct` leaves it out.
+    Since the full refresh darkens from white (docs/adr/0035), photographs
+    dithered towards this looked better on the glass than towards the
+    measured table, which was measured under the old GC16 full refresh."""
+    light = [srgb_to_light(code) for code in LEVEL_CODE]
+    light[1] = light[0]
+    return light
+
+
 def palette_levels(mode, lightness):
     """The levels a picture may be dithered to, darkest first. `distinct`
     leaves out any level that looks the same as a darker one -- level 1 on
@@ -482,8 +494,8 @@ def cmd_prepare(args):
     # The picture is dithered in light, towards how light each level really
     # is on the glass (docs/adr/0013-grey-level-lightness.md): its 8-bit greys
     # are decoded as sRGB, and the panel's black and white stand for the
-    # picture's.
-    lightness = panel_lightness()
+    # picture's. `--lightness nominal` dithers towards L * 17 instead.
+    lightness = panel_lightness() if args.lightness == "measured" else nominal_lightness()
     levels = palette_levels(args.levels, lightness)
     targets = [255 * lightness[level] for level in levels]
     to_light = [255 * srgb_to_light(code) for code in range(256)]
@@ -993,6 +1005,12 @@ def main():
     prepare.add_argument("--levels", choices=("distinct", "all"), default="distinct",
                          help="distinct: leave out any level that looks the same as a darker "
                               "one, level 1 on this panel (default: %(default)s)")
+    prepare.add_argument("--lightness", choices=("measured", "nominal"), default="measured",
+                         help="measured: how light each level was measured on the glass "
+                              "under the old GC16 full refresh (docs/adr/0013); nominal: "
+                              "level L as sRGB grey L * 17, level 1 as black -- preferred "
+                              "on the glass since the full refresh darkens from white "
+                              "(default: %(default)s)")
     prepare.add_argument("--gamma", type=float, default=1.0,
                          help="applied to the picture's greys before they become light: "
                               "above 1 lightens the midtones, below 1 darkens them; 1 keeps "

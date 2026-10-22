@@ -1982,6 +1982,16 @@ layout settles, not before.
       refresh darkens it from white (`MODE_EPDIY_WHITE_TO_GL16`), and the
       slideshow and photo frame show nothing else. `06_level_match` again
       under the new full refresh says whether the table still holds.
+      **It does not, by eye, 2026-10-22**: the photo frame's pictures,
+      dithered towards the table, came out very dark under the vendor's clear
+      and `WHITE_TO_GL16` -- the greys darkened from white are darker than
+      GC16's. Re-dithered towards the nominal greys (L x 17, level 1 as
+      black), about three levels lighter on average, they looked "much
+      better" (the owner), as did the slideshow's demo set. `prepare
+      --lightness nominal` does that; the photo frame is prepared so since.
+      The table itself -- the simulator's, and `prepare`'s default -- is not
+      changed yet: `06_level_match` under the new refresh is to be read
+      first, and the UI's grey inks chosen against it.
       Found 2026-10-14 with the
       photo frame (`docs/adr/0012-image-pipeline.md`, "The photo frame"):
       its photographs look overexposed on the panel, though their files are
