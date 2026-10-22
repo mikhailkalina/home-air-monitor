@@ -80,32 +80,37 @@
 // fits). EPDiy's own clear, which this replaced, measured 2,456 ms (ADR 0008).
 #define EPD_SIM_CLEAR_REFRESH_MS 1214u
 
-// REFRESH_FULL -> the clear, then MODE_EPDIY_WHITE_TO_GL16 over the whole
-// panel. It writes only rows that are not white once the clear has made
-// EPDiy's model white, as GL16 does. Its 15 passes drive a row for 3-30 us,
-// GL16's 30 for 1-30 us: both under the ~53 us a row the data bus takes
-// whatever the drive (GL16's 1.601 ms per row over 30 passes), so a pass of
-// one costs what a pass of the other does -- half GL16's base and half its
-// per-written-row rate. DERIVED from GL16's measurement, and CONFIRMED on the
-// board, 2026-10-22: EPDiy's own `draw:` for the full refresh came out 442-456
-// ms for the home screen and 432-433 for the diagnostics screen, against 455
-// and 448 from this (422 and 413 written rows) -- within 4 %. So a full
-// refresh is EPD_SIM_CLEAR_REFRESH_MS, the whole panel's difference pass and
-// this over the frame's written rows: about 1,870 ms for a solid fill, against
-// 3,661 measured with EPDiy's clear and GC16 (ADR 0008).
-#define EPD_SIM_FULL_DRAW_BASE_US (EPD_SIM_PARTIAL_BASE_US / 2u)
-#define EPD_SIM_FULL_DRAW_PER_ROW_US (EPD_SIM_PARTIAL_PER_ROW_US / 2u)
+// REFRESH_FULL -> the clear, then MODE_GL16 over the whole panel (ADR 0035's
+// amendment). It writes only rows that are not white once the clear has made
+// EPDiy's model white, and costs what a partial refresh over those rows does:
+// the same mode, measured (above). So a full refresh is EPD_SIM_CLEAR_REFRESH_MS
+// plus the partial formula over the whole panel's difference pass and the
+// frame's written rows: about 2,420 ms for a solid fill and 2,090-2,230 for
+// the home screen (ADR 0008's frame and today's), against 3,661 and 3,325 with
+// EPDiy's clear and GC16 (ADR 0008), whose draw cost the same as GL16's
+// (1,204.7 ms for 540 rows against 1,206.1; on the board GC16 drew the home
+// screen in 897-910 ms, 2026-10-22).
+// Tried first and replaced the same day: the vendor's own draw,
+// MODE_EPDIY_WHITE_TO_GL16, half the passes -- 432-456 ms on the board, the
+// model's estimate within 4 % -- whose greys did not match GL16's.
 
 // What the clear looks like, and so what the window shows during it: each
 // cycle pushes the panel towards black 4 times, then towards white 4 times --
 // eight flashes in all, as the owner counted on the vendor's firmware. From
 // the vendor's source; the window shares EPD_SIM_CLEAR_REFRESH_MS out over the
-// pushes, about 38 ms each. Then nothing changes while EPDiy works out the
-// difference, and the picture darkens in from white: this draw never takes a
-// pixel through black first, as GC16 did.
+// pushes, about 38 ms each.
 #define EPD_SIM_CLEAR_CYCLES 4u
 #define EPD_SIM_CLEAR_DARK_PUSHES 4u
 #define EPD_SIM_CLEAR_WHITE_PUSHES 4u
+
+// What the glass shows while GL16 draws the image after the clear: a pixel
+// that is to be grey or black goes towards black for the first 15 of its 30
+// passes and is lightened to its level in the rest; one that is to stay white
+// is not driven (epdiy_ED047TC1.h, mode 5, its 15 -> L entries). From the
+// source; only the total is timed, and the window gives the dark passes their
+// share of the draw.
+#define EPD_SIM_GL16_PASSES 30u
+#define EPD_SIM_GL16_DARK_PASSES 15u
 
 // --- panel constraints reported up to the core -----------------------------
 //

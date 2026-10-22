@@ -2828,3 +2828,11 @@ layout settles, not before.
       next redraw full as before (`forced_full=true`, 21:50). BSEC late at a
       change of screen 0.24-1.73 s. No error or warning line besides those.
       Still to report, by eye: the flashes, any trace, the stripes, the greys.
+      **By eye, the owner, the same evening**: no trace after a full refresh;
+      but after a partial one, lighter patches in static greys it had not
+      redrawn -- the rules beside a changed digit, the footer's "updated". GL16
+      re-drives an unchanged grey in every row and column it touches
+      (L -> L: towards black and back), and `WHITE_TO_GL16`'s greys were darker
+      than GL16's. Changed: GL16 after the vendor's clear (ADR 0035, amendment)
+      -- the draw ~900 ms, a full refresh ~2.2 s. To see on the next image: the
+      same patches gone; no stripes in white; a change of screen ~2,300 ms.

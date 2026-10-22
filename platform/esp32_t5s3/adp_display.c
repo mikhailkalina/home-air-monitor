@@ -187,12 +187,9 @@ static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw
 // explicitly.
 //
 //   REFRESH_FULL      -> the vendor's clear (clear_panel()), mark the model
-//                        white, then MODE_EPDIY_WHITE_TO_GL16 over the whole
-//                        panel -- what LILYGO's own examples do: epd_clear(),
-//                        then epd_draw_grayscale_image(), whose fifteen
-//                        darkening frames and their times are exactly this
-//                        mode's (docs/adr/0035-the-vendors-full-refresh.md).
-//                        port_display.h defines a full refresh as the one
+//                        white, then MODE_GL16 over the whole panel
+//                        (docs/adr/0035-the-vendors-full-refresh.md and its
+//                        amendment). port_display.h defines a full refresh as the one
 //                        that clears accumulated ghosting, and update_policy
 //                        forces one for exactly that reason once the partial
 //                        budget is spent. A bare redraw through the
@@ -207,21 +204,30 @@ static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw
 //                        on the first frame: epd_hl_init() assumes white,
 //                        which a bistable panel has no obligation to be at
 //                        boot. Until ADR 0035 this was EPDiy's epd_clear()
-//                        and MODE_GC16, which takes every pixel it draws
-//                        through black first and flashes white ones in any
-//                        column holding ink: 3.3-3.7 s, residue left in
-//                        greys (ADR 0008) and faint stripes in white. From a
-//                        clear glass WHITE_TO_GL16 only darkens, and drives
-//                        nothing that stays white. Its greys come by another
-//                        path than GL16's -- darkened from white rather than
-//                        lightened from black -- so a grey a partial refresh
-//                        redraws may not match the same level drawn here;
-//                        the board's to show (board_notes.md, open item "The
-//                        vendor's full refresh").
+//                        and MODE_GC16, which flashes white pixels in any
+//                        column holding ink: 3.3-3.7 s, residue left in greys
+//                        (ADR 0008) and faint stripes in white. GL16 from a
+//                        white model drives nothing that stays white, and
+//                        takes every grey the way a partial refresh does:
+//                        towards black, then lightened to its level. That is
+//                        why not MODE_EPDIY_WHITE_TO_GL16, the vendor's own
+//                        draw and twice as quick, tried first: it darkens a
+//                        grey from white, to a darker grey than GL16's, and
+//                        every partial refresh then re-drove the static
+//                        greys of the rows and columns it touched to GL16's
+//                        lighter one -- rules and the footer's label went
+//                        lighter in patches on the board (below).
 //   REFRESH_PARTIAL   -> MODE_GL16 over `area`. Sixteen greys without the
-//                        clear pass: no flash, and only the changed pixels
-//                        are driven, so ghosting accumulates -- port_display.h's
-//                        definition of partial, word for word. EPDiy clips the
+//                        clear pass: no flash, and the unchanged pixels are
+//                        not driven to a new level, so ghosting accumulates
+//                        -- port_display.h's definition of partial. Not
+//                        "only the changed pixels are touched", though: in
+//                        every row EPDiy writes and every column of its
+//                        global mask, GL16 takes an unchanged grey L towards
+//                        black and back to L (epdiy_ED047TC1.h, mode 5, its
+//                        L -> L entries; black and white get nothing). A grey
+//                        drawn any other way than GL16's would change there,
+//                        which is ADR 0035's amendment. EPDiy clips the
 //                        far edge of `area` to the panel itself
 //                        (epd_difference_image_base()), and rect_t's unsigned
 //                        fields cannot produce a negative near edge.
@@ -284,7 +290,7 @@ static hal_status_t adp_flush(port_display_t *port, const rect_t *area, refresh_
             epd_poweron();
             clear_panel(d);
             model_glass_as_white(d);
-            status = update_and_log(d, MODE_EPDIY_WHITE_TO_GL16, epd_full_screen());
+            status = update_and_log(d, MODE_GL16, epd_full_screen());
             epd_poweroff();
             return status;
 

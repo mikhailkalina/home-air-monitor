@@ -21,6 +21,10 @@ evening (ELF `89905d8a5...`). What the glass shows -- the flashes, any trace,
 the stripes, the greys -- is the owner's eye's, not the log's (board_notes.md,
 open item "The vendor's full refresh").
 
+**Amended the same evening** (below, "Amendment: GL16 after the clear"): the
+draw is `MODE_GL16`, not the vendor's `WHITE_TO_GL16` -- its greys did not
+survive the partial refreshes after it. The clear stays.
+
 ## Context
 
 The owner put LILYGO's own firmware and this one side by side on the panel,
@@ -129,3 +133,41 @@ Partial refreshes are unchanged: `MODE_GL16` over the changed rows.
   `EPD_SIM_CLEAR_REFRESH_MS` and `EPD_SIM_FULL_DRAW_*`; the calibration image
   (`sdkconfig.calibration`, ADR 0008) times `clear`, `full_black`,
   `full_home` and `full_ramp` through the same port.
+
+## Amendment: GL16 after the clear (2026-10-22, the same evening)
+
+**What the board showed.** The owner, on the image timed above: no trace of
+the screen before after a full refresh -- the clear does what it was taken
+for -- but after a partial refresh, lighter patches in static greys it had not
+redrawn: the rules between the fields beside a changed digit, the footer's
+"updated". ADR 0035 had named this risk ("Greys come by another path").
+
+**Why.** In EPDiy's waveform for this panel GL16's entry for an unchanged grey
+L -> L is not "nothing": it takes the pixel towards black for up to 14 phases
+and lightens it back for as many (`epdiy_ED047TC1.h`, mode 5; black and white
+get nothing). EPDiy applies it to every unchanged pixel of every row it
+writes, within its global column mask -- so a partial refresh re-drives the
+static greys around a changed digit to GL16's level. Drawn by GL16 or GC16 --
+towards black, then lightened -- those greys come back where they were. Drawn
+by `WHITE_TO_GL16` -- darkened from white -- they were darker than GL16's, and
+the re-drive lightened them, patch by patch, wherever a partial reached.
+
+**Decision.** After the vendor's clear a full refresh draws with `MODE_GL16`
+from the white model. GL16 from white drives nothing that stays white -- no
+white-to-white flash, so still no stripes -- and takes every grey the way
+every partial refresh does. ADR 0013's lightness table, measured under GC16's
+identical path, holds again for the slideshow and the photo frame. The
+`REFRESH_PARTIAL` comment in `adp_display.c` no longer says "only the changed
+pixels are driven".
+
+**What it costs.** GL16's 30 passes instead of 15: the draw about 900 ms
+instead of 440 -- GC16's, measured on the board the same evening at 897-910
+ms for the home screen, costs the same -- so a full refresh of about 2.2 s and
+a change of screen about 2.3 s, against 1.85 s with the vendor's draw and
+3.4 s before ADR 0035. And the glass shows it: after the eight flashes, what
+is to be grey or black goes black for the first half of the draw and then
+lightens to its level -- for black text, nothing to see. The simulator models
+it from measurements only: the measured clear, and GL16's measured formula
+over the frame's rows, held within 1 % of ADR 0008's GC16 draws put behind the
+new clear.
+

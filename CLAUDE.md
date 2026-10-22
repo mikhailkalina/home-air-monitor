@@ -811,13 +811,15 @@ On the same branch (ADR 0035), after the owner compared LILYGO's firmware on the
 through EPDiy. Its clear (`BOARD_EPD_CLEAR_*`: 4 cycles of 4 pushes towards black and 4 towards
 white, rows driven 50 us, from LilyGo-EPD47's `epd_clear()` -- numbers only, that code is GPL-3.0)
 is a loop over EPDiy's `epd_push_pixels()` in `adp_display.c`, replacing EPDiy's 66-push
-`epd_clear()`; the draw is `MODE_EPDIY_WHITE_TO_GL16`, EPDiy's own copy of the vendor's
-fifteen darkening frames, replacing GC16, which took every drawn pixel through black. About 1.9 s
-by estimate against 3.3-3.7 s measured; the simulator's clear and full draw are ESTIMATES until
-the board's `panel cleared took_ms=` replaces them. A full refresh's greys now come darkened from
-white, a partial's (GL16) lightened from black: whether they match, and whether ADR 0013's
-lightness table still holds, is the board's to show (`board_notes.md`, open item "The vendor's
-full refresh").
+`epd_clear()` -- 1,214 ms on the board against 2,456. The draw after it is `MODE_GL16` from the
+white model: no white-to-white flash (GC16's stripes gone) and greys by GL16's path. The vendor's
+own draw, `MODE_EPDIY_WHITE_TO_GL16`, was tried first the same evening -- 1.85 s a change of
+screen -- and replaced: its greys, darkened from white, were darker than GL16's, and since GL16
+re-drives an unchanged grey (L -> L: towards black and back) in every row and column a partial
+touches, the static greys beside a changed digit went lighter in patches (ADR 0035's amendment).
+A full refresh about 2.2 s, a change of screen about 2.3 s, against 3.4 s before; the simulator
+models it from measurements. On the next image: the patches gone (`board_notes.md`, open item
+"The vendor's full refresh").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
