@@ -819,8 +819,11 @@ changed digit went lighter in patches -- with GL16 after the clear too, less. Th
 this project's, "through white" (`platform/esp32_t5s3/epd_white_path.c`, pure, tested on the host,
 added to EPDiy's waveform at boot under type `0x12`): a changed pixel whitened in GL16's lightening
 phases and darkened in WHITE_TO_GL16's, an unchanged one never driven -- every grey by one path
-(ADR 0035, both amendments). On the board still to see: no patches, and whether greys a partial
-redraws drift or ghosting comes sooner (`board_notes.md`, open item "The vendor's full refresh").
+(ADR 0035, both amendments). Seen on the board 2026-10-22: the owner likes it -- no serious
+artifact, only the expected trace around a vanished black digit; partial draws as long as GL16's to
+the millisecond, a change of screen 1,844-1,865 ms. Still to see: a day of it, greys a partial
+redraws often, ghosting against the budget (`board_notes.md`, open item "The vendor's full
+refresh").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable

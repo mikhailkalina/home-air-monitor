@@ -67,8 +67,10 @@
 // "through white" (platform/esp32_t5s3/epd_white_path.h) instead: GL16's 15
 // lightening passes and WHITE_TO_GL16's 15 darkening ones, every one driving a
 // row for 1-30 us, under the ~53 us a row the data bus takes as all of GL16's
-// are -- so it costs what GL16 did, these measurements still. To confirm on
-// the board: EPDiy's `draw:` for the same rectangles as before.
+// are -- so it costs what GL16 did, these measurements still. CONFIRMED on the
+// board, 2026-10-22 (ELF 216d55c04... against 7c58fe323...): EPDiy's `draw:`
+// to the millisecond the same as GL16's for the same rectangles -- 322 ms for
+// 54 rows, 517 for 264, 567 for 381.
 #define EPD_SIM_PARTIAL_BASE_US 233977u
 #define EPD_SIM_PARTIAL_PER_ROW_US 1601u
 

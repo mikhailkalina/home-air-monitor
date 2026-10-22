@@ -28,6 +28,17 @@ that takes a changed pixel through white and leaves an unchanged one alone --
 and the full refresh went back to the vendor's draw ("Second amendment: the
 partial refresh through white"). That is the design now.
 
+**Seen on the board, 2026-10-22 23:04 local** (ELF `216d55c04...`, the
+owner's YAT log, five minutes, against the GL16-after-clear image of 22:49,
+ELF `7c58fe323...`): the owner likes how it refreshes -- no serious artifact,
+only the expected trace around a black element that went away, a digit's.
+The mode built at boot (`phases=30 lighten_phases=15 darken_phases=15`);
+partial refreshes as long as GL16's to the millisecond; the full refresh's
+draw 432-456 ms again (864-911 with GL16 after the clear), a change of screen
+1,844-1,865 ms (2,277-2,309); the twentieth partial's next redraw full as
+before; no error or warning line but BSEC's late calls. Still to see: a day
+of it -- greys redrawn often, ghosting against the budget.
+
 ## Context
 
 The owner put LILYGO's own firmware and this one side by side on the panel,

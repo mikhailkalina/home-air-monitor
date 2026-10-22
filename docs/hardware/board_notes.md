@@ -2847,3 +2847,13 @@ layout settles, not before.
       refreshes as long as with GL16; and over a budget of twenty partials,
       whether the greys they redrew drift, and whether close-up outlines
       (ADR 0008's ghosting) come sooner than the 11th.
+      **Seen 2026-10-22 23:04 local** (ELF `216d55c04...`, five minutes;
+      against ELF `7c58fe323...`, GL16 after the clear, 22:49): the owner likes
+      it -- no serious artifact, only the expected trace around a black
+      element that went away, a digit. `phases=30` at boot; partial draws to
+      the millisecond GL16's (322 ms for 54 rows, 517 for 264, 567 for 381);
+      the full refresh's draw 432-456 ms (864-911 with GL16), a change of
+      screen 1,844-1,865 ms (2,277-2,309); the budget's full refresh after the
+      twentieth partial as before; nothing in the log but BSEC's late calls.
+      Still to see: a day of it -- greys a partial redraws often, the traces
+      around vanished digits against the budget of twenty, residue in greys.
