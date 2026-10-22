@@ -256,7 +256,6 @@ static void a_working_session_and_its_network(void)
     const reporter_status_t n = online();
     const diag_view_t v = build_net(&n, LINK_ONLINE);
     HAC_CHECK(v.network_present);
-    HAC_CHECK_EQ_INT(v.link, LINK_ONLINE);
     HAC_CHECK(strcmp(v.wifi_state, "up") == 0 && !v.wifi_trouble);
     HAC_CHECK(strcmp(v.ssid, "sim-ap") == 0);
     HAC_CHECK(strcmp(v.rssi, "-61 dBm") == 0);
@@ -266,14 +265,6 @@ static void a_working_session_and_its_network(void)
     HAC_CHECK(strcmp(v.refused, "refused 0") == 0 && !v.refused_trouble);
     // 2026-10-16T11:07:12Z, at UTC+2.
     HAC_CHECK(strcmp(v.last, "last 13:07") == 0);
-    // The bar's word, drawn in the title line: what redraws the network.
-    HAC_CHECK(strcmp(v.link_text, "online") == 0 && !v.link_trouble);
-    diag_view_t w = build_net(&n, LINK_NO_BROKER);
-    HAC_CHECK(strcmp(w.link_text, "no broker") == 0 && w.link_trouble);
-    w = build_net(&n, LINK_NO_WIFI);
-    HAC_CHECK(strcmp(w.link_text, "no Wi-Fi") == 0 && w.link_trouble);
-    w = build_net(&n, LINK_UNKNOWN);
-    HAC_CHECK(strcmp(w.link_text, "") == 0 && !w.link_trouble);
 }
 
 static void the_network_in_trouble(void)
@@ -381,16 +372,17 @@ static void without_telemetry_both_say_off(void)
     HAC_CHECK(v.ssid[0] == '\0' && v.rssi[0] == '\0' && v.address[0] == '\0');
 }
 
-// What changes with every message or attempt is as of the drawing; the held
-// link and the network's name redraw.
-static void the_network_redraws_only_for_the_held_link_and_its_name(void)
+// What changes with every message or attempt is as of the drawing, and so is
+// the held link, which the screen does not draw (ADR 0034); the network's
+// name redraws.
+static void the_network_redraws_only_for_its_name(void)
 {
     setup();
     const reporter_status_t n = online();
     const diag_view_t a = build_net(&n, LINK_ONLINE);
 
     // The link as it is now gone, an attempt under way, messages sent and
-    // refused, the signal moved: nothing to redraw while the bar's link holds.
+    // refused, the signal moved: nothing to redraw.
     reporter_status_t m = online();
     m.link = LINK_NO_WIFI;
     m.net = NET_CONNECTING;
@@ -403,9 +395,10 @@ static void the_network_redraws_only_for_the_held_link_and_its_name(void)
     const diag_view_t b = build_net(&m, LINK_ONLINE);
     HAC_CHECK(diag_view_equal(&a, &b));
 
-    // The bar's link changing does.
+    // Nor the bar's link changing: it is not on this screen, and a redraw due
+    // for it would be an empty diff.
     const diag_view_t c = build_net(&m, LINK_NO_WIFI);
-    HAC_CHECK(!diag_view_equal(&b, &c));
+    HAC_CHECK(diag_view_equal(&b, &c));
     // So does the network's name, and telemetry coming or going.
     m = online();
     strcpy(m.net_info.ssid, "other-ap");
@@ -430,6 +423,6 @@ int main(void)
     HAC_RUN(messages_sent_in_thousands_past_four_digits);
     HAC_RUN(a_name_that_is_not_text_is_shown_with_question_marks);
     HAC_RUN(without_telemetry_both_say_off);
-    HAC_RUN(the_network_redraws_only_for_the_held_link_and_its_name);
+    HAC_RUN(the_network_redraws_only_for_its_name);
     return hac_test_summary();
 }

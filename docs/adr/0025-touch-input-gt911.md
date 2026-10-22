@@ -34,6 +34,11 @@ One decision here goes beyond the brief and is the owner's to confirm or
 undo: the bound on partial refreshes past the budget ("A person's redraw",
 below).
 
+**Superseded in part 2026-10-22 by ADR 0034**: a change of screen is a full
+refresh, always, held by neither the budget nor the panel's interval -- "A
+person's redraw" below, and the bound past the budget it set, which now binds
+nothing at the sensors' pace.
+
 **Amended 2026-10-21 by ADR 0031** (phase 4d): the diagnostics screen has
 two lines on the network -- the Wi-Fi link's state, name, signal and address;
 the MQTT session's state, messages sent and refused, and the local time of
@@ -244,6 +249,9 @@ under the same policy as the home screen's (`update_policy_evaluate_content()`).
 Trouble is black, what is well is grey.
 
 ### A person's redraw
+
+*Superseded by ADR 0034: a change of screen is a full refresh. Kept as the
+record of the first design.*
 
 A change of screen is a redraw a person asked for:
 `update_policy_request()` makes it due at once, with

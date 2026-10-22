@@ -795,6 +795,17 @@ later). Still owed (`board_notes.md`, open item "MQTT on the board (phase 4g)"):
 Assistant on that broker, its restart, Wi-Fi gone for an hour, a day unattended with HA's
 long-term statistics -- requirements 16's acceptance -- and the test app.
 
+On branch `ui-screen-change-full-refresh` (ADR 0034), at the owner's request after watching the
+board: a change of screen -- a tap, or the diagnostics screen's timeout -- is a full refresh,
+always, held by neither the partial-refresh budget nor the panel's minimum full-refresh interval
+(a guard, not a measurement); a whole new screen drawn partially kept the old one's outlines and
+read badly. It resets the budget; a tap now costs about 3.3 s to the new screen and a late BSEC
+call. `UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET` stays, binding nothing at the sensors' pace. And the
+diagnostics screen's title no longer carries the bar's link word -- the MQTT line says the same --
+nor compares the held link, so its network lines are all as of the drawing and a redraw is never
+due for something it does not draw. Verified on the host; not yet seen on the board
+(`board_notes.md`, open item "A change of screen as a full refresh").
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

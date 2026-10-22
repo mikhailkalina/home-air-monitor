@@ -5,7 +5,8 @@
 # taps, then to diagnostics again and home by the screen's own timeout --
 # and says, for each change a tap made, how long it took to reach the glass;
 # each change is a redraw a person asked for, so it goes out at once as a
-# partial refresh. A malformed --taps is refused before anything runs.
+# full refresh (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md). A
+# malformed --taps is refused before anything runs.
 #
 #   cmake -DSIMULATOR=<path> -DSCENARIOS=<dir> -P simulator_taps.cmake
 
@@ -28,7 +29,7 @@ endif()
 # In this order: each a tap's, the last the timeout's, 60 s after the last tap.
 set(expected
     "\\[screen\\] tap at 480,270: diagnostics next"
-    "\\[policy\\] partial  reason=request"
+    "\\[policy\\] full     reason=request"
     "\\[screen\\] diagnostics \\(tap\\) latency_ms=[0-9]+"
     "\\[screen\\] tap at 100,100: home next"
     "\\[screen\\] home \\(tap\\) latency_ms=[0-9]+"
@@ -53,6 +54,14 @@ foreach(w IN LISTS waits)
         message(FATAL_ERROR "a tap's screen waited for the loop: ${w}\n${out}")
     endif()
 endforeach()
+
+# Every change of screen full, none partial: the 45 s tap comes 15 s after
+# the 30 s tap's full refresh, inside the panel's minimum interval.
+string(REGEX MATCHALL "\\[policy\\] [a-z]+ +reason=request" requests "${out}")
+list(LENGTH requests n_requests)
+if(NOT n_requests EQUAL 4 OR requests MATCHES "partial")
+    message(FATAL_ERROR "the changes of screen were \"${requests}\", not four full ones:\n${out}")
+endif()
 
 execute_process(
     COMMAND ${SIMULATOR} --headless --duration 10

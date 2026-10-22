@@ -680,7 +680,9 @@ interval -- never at the firmware's pace, which draws at most once per 5 s
 sensor cycle (20 partials, at least 105 s between full refreshes) -- and the
 next redraw after the interval is full. Past it by the budget again at most,
 40 in all, the most this panel has been driven through: a person tapping
-between screens could otherwise take it further (ADR 0025).
+between screens could otherwise have taken it further (ADR 0025) -- until a
+change of screen became a full refresh, held by neither the budget nor the
+minimum interval (ADR 0034).
 
 ## Ghosting observed in the simulator — a calibration starting point
 
@@ -2737,3 +2739,22 @@ layout settles, not before.
         The event loop never waited for it. To count in the day unattended.
       - *Not yet seen*: Home Assistant with its MQTT on this broker; its restart;
         Wi-Fi gone for an hour; a day's `published in the hour`; the test app.
+- [ ] **A change of screen as a full refresh (ADR 0034).** Built 2026-10-22,
+      verified on the host only: every change of screen -- a tap, and the
+      diagnostics screen's timeout -- is a full refresh, whatever the budget
+      and the panel's minimum interval; the diagnostics screen's title has no
+      link word. What to see:
+      - *Readability*: the new screen with no outline of the old one, by eye,
+        both ways -- what the owner saw wrong with partial changes.
+      - *Latency*: `event_loop: screen changed ... latency_ms=... action=full
+        partials=0`, the latency about 3,400 (the clear ~2.3 s on the event loop's task, the GC16 draw
+        ~0.9-1.1 s, ~80 ms of rendering), against 1,163-1,173 for a partial
+        change; a tap during a full refresh handled after it.
+      - *Taps in a row*: home, diagnostics and home again within a few
+        seconds -- each change full, none deferred (`deferred` would say the
+        panel's interval held it), the budget at 0 after each.
+      - *BSEC*: a `BSEC called late` line at each change, as at every full
+        refresh; whether IAQ's accuracy still reaches `high` on a day with a
+        few visits to the diagnostics screen.
+      - *The title*: `Diagnostics` and `tap to return`, nothing between them;
+        the MQTT line says `online` or `offline` as of the tap.
