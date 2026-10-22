@@ -8,6 +8,12 @@ Accepted. Replaces every estimate phase 1 put into
 `platform/host/epd_emulation.h` and the partial-refresh budget phase 2a put
 into `platform/esp32_t5s3/board_config.h`.
 
+**Amended 2026-10-22 by ADR 0035**: a full refresh is no longer EPDiy's
+`epd_clear()` and GC16 but the vendor's clear and a draw from white. The clear
+and full-refresh timings below measure the sequence it replaced; the
+simulator's are estimates until the board times the new one. The partial,
+fast-mono and difference-pass measurements stand.
+
 ## Context
 
 Phase 1 invented the simulator's e-paper constants -- refresh latencies quoted

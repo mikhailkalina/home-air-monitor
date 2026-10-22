@@ -1923,7 +1923,10 @@ layout settles, not before.
       rect now reaches the panel as the core computed it, so phase 2c watches
       the CO2 headline region only, as it originally planned.
 - [ ] **Residue that survives full refreshes, in greys only -- and how fast
-      it fades.** Found 2026-10-13, phase 2c
+      it fades.** *Since ADR 0035 the full refresh is the vendor's clear,
+      which drives each row twice as long in all, and a draw from white: the
+      owner saw no trace on the vendor's firmware. Whether this residue is
+      gone is that item's ("The vendor's full refresh").* Found 2026-10-13, phase 2c
       (`docs/adr/0008-panel-timing.md`, "Residue that survives a full
       refresh"). Forty partial refreshes that flipped the CO2 headline
       between three and four digits left the "ppm" unit legible on mid-dark
@@ -1969,7 +1972,11 @@ layout settles, not before.
       measured below, 11-14 estimated; the simulator and `image_gen.py
       prepare` both use it, and photographs dithered towards it at their
       own tones were judged best on the panel. Open: measuring 11-14, and
-      the chart's own bias.
+      the chart's own bias. **Measured under the old full refresh**: GC16
+      takes a grey through black and lightens it; since ADR 0035 a full
+      refresh darkens it from white (`MODE_EPDIY_WHITE_TO_GL16`), and the
+      slideshow and photo frame show nothing else. `06_level_match` again
+      under the new full refresh says whether the table still holds.
       Found 2026-10-14 with the
       photo frame (`docs/adr/0012-image-pipeline.md`, "The photo frame"):
       its photographs look overexposed on the panel, though their files are
@@ -2032,7 +2039,9 @@ layout settles, not before.
       same shot (local normalisation, no flat field, no second shot), with
       the levels spread so each one sits at several distances from the
       centre.
-- [ ] **Vertical stripes in white after a full refresh.** Found 2026-10-13,
+- [ ] **Vertical stripes in white after a full refresh.** *No cause left
+      since ADR 0035: the draw after the clear drives nothing that stays
+      white. To confirm by eye ("The vendor's full refresh").* Found 2026-10-13,
       phase 2c. In `REFRESH_FULL`, GC16 after `epd_clear()` flashes
       white-to-white pixels (15 passes dark, 15 light -- GL16 does nothing
       for them), but only in columns that contain a changed pixel, because
@@ -2050,7 +2059,9 @@ layout settles, not before.
       kept earlier digits' outlines; a GL16 redraw would take it from every
       white pixel. Any GL16 trial must re-run the ghosting probe, not just
       the grey ramp.
-- [ ] **Re-measure the clear from the product's task.** The calibration ran
+- [ ] **Re-measure the clear from the product's task.** *EPDiy's
+      `epd_clear()` is no longer run (ADR 0035); the vendor's clear logs its own
+      `took_ms` from wherever it runs, the event loop's task included.* The calibration ran
       on `app_main`'s task (core 0); the product refreshes from the event
       loop's task (core 1, priority 5), where the device run's log puts
       `epd_clear()` at about 2,322 ms against the calibrated 2,456 ms. EPDiy
@@ -2747,9 +2758,10 @@ layout settles, not before.
       - *Readability*: the new screen with no outline of the old one, by eye,
         both ways -- what the owner saw wrong with partial changes.
       - *Latency*: `event_loop: screen changed ... latency_ms=... action=full
-        partials=0`, the latency about 3,400 (the clear ~2.3 s on the event loop's task, the GC16 draw
-        ~0.9-1.1 s, ~80 ms of rendering), against 1,163-1,173 for a partial
-        change; a tap during a full refresh handled after it.
+        partials=0`, the latency about 2,000 since ADR 0035 (the vendor's
+        clear ~1.3 s and the draw from white ~0.6 s, both estimates, ~80 ms of
+        rendering; 3,400 with EPDiy's clear and GC16), against 1,163-1,173 for
+        a partial change; a tap during a full refresh handled after it.
       - *Taps in a row*: home, diagnostics and home again within a few
         seconds -- each change full, none deferred (`deferred` would say the
         panel's interval held it), the budget at 0 after each.
@@ -2758,3 +2770,32 @@ layout settles, not before.
         few visits to the diagnostics screen.
       - *The title*: `Diagnostics` and `tap to return`, nothing between them;
         the MQTT line says `online` or `offline` as of the tap.
+- [ ] **The vendor's full refresh (ADR 0035).** Built 2026-10-22, verified on
+      the host only: `REFRESH_FULL` and `REFRESH_CLEAR` start with the
+      vendor's clear -- 4 cycles of 4 pushes towards black and 4 towards
+      white, rows driven 50 us (`BOARD_EPD_CLEAR_*`) -- and a full refresh then
+      draws with `MODE_EPDIY_WHITE_TO_GL16` instead of GC16. What to see:
+      - *The flashes*: eight quick ones, then the picture darkening in with
+        no black phase -- as on the vendor's firmware the owner compared.
+      - *Timing*: `adp_display: panel cleared took_ms=` (ESTIMATE 1,280) and
+        EPDiy's own timing line after it for the draw (ESTIMATE: the diff
+        ~106 ms, then ~117 ms + 0.8 ms per non-white row, ~0.5 s for the home
+        screen); the boot's first frame has both. Into
+        `EPD_SIM_CLEAR_REFRESH_MS` and `EPD_SIM_FULL_DRAW_*`
+        (`platform/host/epd_emulation.h`), or the calibration image's
+        `clear`, `full_black`, `full_home`, `full_ramp`.
+      - *No trace*: after a change of screen, and after the twenty-first
+        redraw's full refresh, no outline of what was there -- close up, and
+        on the greys (the item "Residue that survives full refreshes").
+      - *No stripes in white*: the white columns beside text the same white
+        as the rest (the item "Vertical stripes in white").
+      - *Greys, full against partial*: the footer's "updated HH:MM" after a
+        full refresh and after a partial one that changed some of its digits
+        -- the same grey in both, or two? Likewise a status word in grey
+        (`warm`, `stale`) drawn by each. Two greys mean `MODE_GL16` after the
+        same clear instead (ADR 0035, "Greys come by another path").
+      - *The slideshow*: `06_level_match` and the photographs, all full
+        refreshes, against ADR 0013's judgement (the item "How light each grey
+        level really is").
+      - *BSEC*: a late call at each full refresh as before, shorter by about
+        1.5 s.

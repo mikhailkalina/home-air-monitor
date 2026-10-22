@@ -806,6 +806,19 @@ nor compares the held link, so its network lines are all as of the drawing and a
 due for something it does not draw. Verified on the host; not yet seen on the board
 (`board_notes.md`, open item "A change of screen as a full refresh").
 
+On the same branch (ADR 0035), after the owner compared LILYGO's firmware on the panel -- about
+2 s, eight quick flashes, no trace -- with ours: a full refresh is now the vendor's sequence,
+through EPDiy. Its clear (`BOARD_EPD_CLEAR_*`: 4 cycles of 4 pushes towards black and 4 towards
+white, rows driven 50 us, from LilyGo-EPD47's `epd_clear()` -- numbers only, that code is GPL-3.0)
+is a loop over EPDiy's `epd_push_pixels()` in `adp_display.c`, replacing EPDiy's 66-push
+`epd_clear()`; the draw is `MODE_EPDIY_WHITE_TO_GL16`, EPDiy's own copy of the vendor's
+fifteen darkening frames, replacing GC16, which took every drawn pixel through black. About 1.9 s
+by estimate against 3.3-3.7 s measured; the simulator's clear and full draw are ESTIMATES until
+the board's `panel cleared took_ms=` replaces them. A full refresh's greys now come darkened from
+white, a partial's (GL16) lightened from black: whether they match, and whether ADR 0013's
+lightness table still holds, is the board's to show (`board_notes.md`, open item "The vendor's
+full refresh").
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

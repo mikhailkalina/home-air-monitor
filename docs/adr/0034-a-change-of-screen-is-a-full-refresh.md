@@ -13,6 +13,10 @@ golden frames regenerated and looked at, and two CLI tests. Not yet seen on
 the board (`docs/hardware/board_notes.md`, open item "A change of screen as
 a full refresh").
 
+**Amended the same day by ADR 0035**: the full refresh itself is now the
+vendor's, about 1.9 s by estimate rather than 3.3 s, so "about 3.3 s" below
+reads about 2 s.
+
 ## Context
 
 **The change of screen.** Since ADR 0025 a tap that changes the screen has

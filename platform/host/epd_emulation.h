@@ -9,7 +9,10 @@
 // this file emulates, power bracket and epd_clear() included.
 // docs/adr/0008-panel-timing.md holds the raw table, the fits and the margins
 // tests/unit/test_epd_model.c holds the model to. Re-measure on a second unit,
-// or this one well away from 21 C: e-paper timing depends on both.
+// or this one well away from 21 C: e-paper timing depends on both. The clear
+// and the full refresh are the exception since ADR 0035 changed both: ESTIMATES
+// from those measurements, each saying so at its definition, until the board
+// times the new ones.
 //
 // They are gathered here, rather than spread through the adapters, so that
 // replacing a measurement is an edit to this file and nothing else.
@@ -68,42 +71,42 @@
 #define EPD_SIM_FAST_MONO_BASE_US 40711u
 #define EPD_SIM_FAST_MONO_PER_ROW_US 548u
 
-// REFRESH_CLEAR -> epd_clear(): three cycles of 22 whole-panel pushes.
-// Content plays no part; five samples spanned 32 us.
-#define EPD_SIM_CLEAR_REFRESH_MS 2456u
+// REFRESH_CLEAR -> the vendor's clear (platform/esp32_t5s3/board_config.h,
+// BOARD_EPD_CLEAR_*; docs/adr/0035-the-vendors-full-refresh.md): four cycles of
+// four whole-panel pushes towards black and four towards white, every row
+// driven for 50 us. Content plays no part. ESTIMATE until the board's
+// `adp_display: panel cleared took_ms=` replaces it (board_notes.md, open
+// item "The vendor's full refresh"), from two measured figures: a push costs
+// 7.6 ms of its own -- EPDiy's 66-push clear fitted 502 ms + 3.607 ms per row
+// (ADR 0010) -- and a row costs about 10 us beyond its drive -- DU's 100 us
+// rows took 109.6 us (ADR 0008). So 32 x (7.6 ms + 540 x 60 us) = 1,280 ms.
+// EPDiy's own clear, which this replaced, measured 2,456 ms (ADR 0008).
+#define EPD_SIM_CLEAR_REFRESH_MS 1280u
 
-// REFRESH_FULL -> epd_clear() and then MODE_GC16 over the whole panel. GC16
-// has the same 30 passes as GL16 and costs the same (1,204.7 ms after the
-// clear for 540 rows, against GL16's 1,206.1), and it writes only rows that
-// are not white once the clear has made EPDiy's model white. So a full
-// refresh is EPD_SIM_CLEAR_REFRESH_MS plus the partial formula over the whole
-// panel's difference pass and the frame's written rows, which the model counts
-// from the frame itself: 3,661 ms for a solid fill, 3,325 ms for screen_home.
+// REFRESH_FULL -> the clear, then MODE_EPDIY_WHITE_TO_GL16 over the whole
+// panel. It writes only rows that are not white once the clear has made
+// EPDiy's model white, as GL16 does. Its 15 passes drive a row for 3-30 us,
+// GL16's 30 for 1-30 us: both under the ~53 us a row the data bus takes
+// whatever the drive (GL16's 1.601 ms per row over 30 passes), so a pass of
+// one costs what a pass of the other does -- half GL16's base and half its
+// per-written-row rate. ESTIMATE, derived from GL16's measurement, until
+// EPDiy's own timing line for the board's full refresh replaces it. So a full
+// refresh is EPD_SIM_CLEAR_REFRESH_MS, the whole panel's difference pass and
+// this over the frame's written rows: about 1,936 ms for a solid fill, against
+// 3,661 measured with EPDiy's clear and GC16 (ADR 0008).
+#define EPD_SIM_FULL_DRAW_BASE_US (EPD_SIM_PARTIAL_BASE_US / 2u)
+#define EPD_SIM_FULL_DRAW_PER_ROW_US (EPD_SIM_PARTIAL_PER_ROW_US / 2u)
 
-// What the clear looks like, and so what the window shows during it: EPDiy's
-// epd_clear() is epd_clear_area_cycles(area, 3, ...) (render.c), and each of
-// the three cycles pushes the area towards black 10 times, then towards white
-// 10 times, then 2 neutral pushes. Taken from the source, not measured; the
-// measured part is the total, EPD_SIM_CLEAR_REFRESH_MS, which the window
-// shares out over the pushes -- about 37 ms each, so roughly 0.37 s black and
-// 0.45 s white, three times. The remainder of a full refresh is the image
-// drawing in.
-#define EPD_SIM_CLEAR_CYCLES 3u
-#define EPD_SIM_CLEAR_DARK_PUSHES 10u
-#define EPD_SIM_CLEAR_WHITE_PUSHES 12u  // 10 towards white + 2 neutral
-
-// What the glass shows while GC16 draws the image after the clear, and so what
-// the window shows then. GC16 takes each pixel it drives towards black for the
-// first half of its passes and to its own level in the second -- 15 and 15 for
-// white to white (docs/hardware/board_notes.md, "Vertical stripes in white
-// after a full refresh"). After the clear it drives a pixel only where its row
-// holds a non-white pixel of the new frame (the rows it writes) and so does its
-// column (EPDiy's one, global column mask). Seen on the panel 2026-10-14:
-// after the clear's flashing the screen goes black, then the picture appears.
-// From the source and that observation; only the total is timed, and the
-// window gives the dark passes their share of the draw.
-#define EPD_SIM_GC16_PASSES 30u
-#define EPD_SIM_GC16_DARK_PASSES 15u
+// What the clear looks like, and so what the window shows during it: each
+// cycle pushes the panel towards black 4 times, then towards white 4 times --
+// eight flashes in all, as the owner counted on the vendor's firmware. From
+// the vendor's source; the window shares EPD_SIM_CLEAR_REFRESH_MS out over the
+// pushes, about 40 ms each. Then nothing changes while EPDiy works out the
+// difference, and the picture darkens in from white: this draw never takes a
+// pixel through black first, as GC16 did.
+#define EPD_SIM_CLEAR_CYCLES 4u
+#define EPD_SIM_CLEAR_DARK_PUSHES 4u
+#define EPD_SIM_CLEAR_WHITE_PUSHES 4u
 
 // --- panel constraints reported up to the core -----------------------------
 //
