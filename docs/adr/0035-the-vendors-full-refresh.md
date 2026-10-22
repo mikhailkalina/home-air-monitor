@@ -8,9 +8,18 @@ Accepted, at the owner's request after comparing the two on the board.
 Supersedes ADR 0008's "A full refresh is `epd_clear()` plus a
 content-dependent GC16 pass" and its full-refresh and clear timings, which
 now describe the sequence this replaced. Verified on the host: the simulator's
-panel model and window, its unit tests; the firmware builds. **Not yet seen on
-the board** -- the timings below are estimates (board_notes.md, open item "The
-vendor's full refresh").
+panel model and window, its unit tests; the firmware builds.
+
+**Timed on the board, 2026-10-22** (ELF `6c4244ce7...`, the BSEC image, the
+owner's YAT logs of 20:19 and 22:20 local, two hours and 24 full refreshes --
+22 changes of screen, the boot's, one the budget forced): the clear
+1,213-1,220 ms (estimated 1,280; now the simulator's figure), EPDiy's draw
+after it 432-456 ms with its difference pass 107-120 ms (the model's 448-455
+for the same frames), a change of screen on the glass 1,842-1,901 ms after the
+finger's lift against 3,376-3,411 ms with EPDiy's clear and GC16 the same
+evening (ELF `89905d8a5...`). What the glass shows -- the flashes, any trace,
+the stripes, the greys -- is the owner's eye's, not the log's (board_notes.md,
+open item "The vendor's full refresh").
 
 ## Context
 
@@ -79,16 +88,15 @@ Partial refreshes are unchanged: `MODE_GL16` over the changed rows.
 
 ## Consequences
 
-- **A full refresh of about 1.8-1.9 s instead of 3.2-3.7 s** -- an
-  ESTIMATE, as the simulator now models it (`platform/host/epd_emulation.h`):
-  the clear 1,280 ms (32 pushes of 7.6 ms each and 540 rows at about 60 us,
-  both rates from ADR 0008 and 0010's fits), the draw half of GL16's measured
-  base and per-row rate (15 passes against 30, every row under the data bus's
-  ~53 us floor in both): 1,770 ms for the screen_home ADR 0008 measured at
-  3,325 ms, 1,936 ms for a solid fill against 3,661. The owner's stopwatch
-  said "about 2 s" for the vendor's. A change of screen (ADR 0034) costs
-  that, not 3.3 s, and holds the event loop -- and BSEC's call -- for half as
-  long.
+- **A full refresh of about 1.8 s instead of 3.2-3.7 s**, measured above;
+  the simulator models it (`platform/host/epd_emulation.h`) with the measured
+  clear and a draw at half of GL16's measured base and per-row rate (15
+  passes against 30, every row under the data bus's ~53 us floor in both),
+  which the board confirmed within 4 %. The owner's stopwatch said "about 2
+  s" for the vendor's. A change of screen (ADR 0034) costs that, not 3.4 s,
+  and holds the event loop -- and BSEC's call -- for half as long: BSEC's
+  calls at a change of screen came 0.24-1.73 s late, against 1.62-3.30 s
+  with the old full refresh.
 - **No black phase after the flashes, no white-to-white flash**: the stripes
   in white (board_notes.md, "Vertical stripes in white after a full refresh")
   have no cause left. ADR 0010 warned that GC16's white flash was doing real

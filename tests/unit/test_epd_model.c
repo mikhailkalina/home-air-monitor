@@ -259,12 +259,12 @@ static const row_range_t k_measured_screen_home_rows[] = {
 
 // Full refreshes depend on content, so they are checked against content: a
 // solid frame (every row non-white) and the frame screen_home's old full
-// refresh was measured on. ESTIMATES since ADR 0035 (epd_emulation.h): the
-// vendor's clear and the fifteen-pass draw from white, the draw costing half
-// of GL16's measured base and rate. What the panel measured with EPDiy's clear
-// and GC16 -- 3,660,569 us solid, 3,324,863 us for this screen_home -- is what
-// they replaced; the model must come out well under both, near the 2 s the
-// owner saw on the vendor's firmware.
+// refresh was measured on. Since ADR 0035 (epd_emulation.h): the vendor's
+// clear, measured, and the fifteen-pass draw from white at half of GL16's
+// measured base and rate, which the board confirmed within 4 %. What the panel
+// measured with EPDiy's clear and GC16 -- 3,660,569 us solid, 3,324,863 us for
+// this screen_home -- is what they replaced; the model must come out well under
+// both, near the 2 s the owner saw on the vendor's firmware.
 static void a_full_refresh_is_the_vendors_clear_and_a_draw_from_white(void)
 {
     const uint32_t old_solid_fill_us = 3660569u;

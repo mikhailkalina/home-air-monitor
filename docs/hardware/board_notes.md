@@ -2770,6 +2770,13 @@ layout settles, not before.
         few visits to the diagnostics screen.
       - *The title*: `Diagnostics` and `tap to return`, nothing between them;
         the MQTT line says `online` or `offline` as of the tap.
+      **Seen 2026-10-22**: with EPDiy's clear and GC16 (ELF `89905d8a5...`,
+      the owner's YAT log of 19:49 local) six changes of screen, every one
+      `action=full reason=request`, `latency_ms=3376` to `3411`, none deferred
+      though five came within the panel's minute of the last full refresh,
+      the budget at 0 after each; BSEC late 1.62-3.30 s at each. With the
+      vendor's full refresh (ADR 0035, the item "The vendor's full refresh")
+      1,842-1,901 ms. The title and the readability by eye: not reported yet.
 - [ ] **The vendor's full refresh (ADR 0035).** Built 2026-10-22, verified on
       the host only: `REFRESH_FULL` and `REFRESH_CLEAR` start with the
       vendor's clear -- 4 cycles of 4 pushes towards black and 4 towards
@@ -2799,3 +2806,12 @@ layout settles, not before.
         level really is").
       - *BSEC*: a late call at each full refresh as before, shorter by about
         1.5 s.
+      **Timed 2026-10-22** (ELF `6c4244ce7...`, the BSEC image, the owner's YAT
+      logs of 20:19 and 22:20 local, two hours): 24 clears, `took_ms=`
+      1,213-1,220 (1,214 the median, estimated 1,280 -- now the simulator's);
+      EPDiy's draw after them `draw: 432-456ms` with `diff: 107-120ms` (the
+      model's 448 for the diagnostics screen and 455 for the home screen); 22
+      changes of screen, `latency_ms=1842` to `1901`; the twentieth partial's
+      next redraw full as before (`forced_full=true`, 21:50). BSEC late at a
+      change of screen 0.24-1.73 s. No error or warning line besides those.
+      Still to report, by eye: the flashes, any trace, the stripes, the greys.
