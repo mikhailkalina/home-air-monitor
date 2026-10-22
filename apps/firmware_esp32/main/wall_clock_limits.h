@@ -54,7 +54,8 @@
 
 // What a learned delay from the start to the first tick must lie within to
 // be believed. The datasheet's is 507.874 ms (pcf8563.h); this board's chip
-// takes a whole second, 1,000 ms by its INT on 2026-10-22 (board_notes.md).
+// takes about a second, 986-1,000 ms over the starts of 2026-10-22
+// (board_notes.md) -- so a learned delay lands the next write within ±12 ms.
 // Anything outside is a measurement gone wrong, and the last believed value
 // stays.
 #define RTC_SYNC_FIRST_TICK_MIN_MS 100u

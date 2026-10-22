@@ -13,7 +13,9 @@ whenever a dependency is added or removed.
 | Espressif's Wi-Fi and PHY libraries (`libnet80211`, `libpp`, `libphy` and their kin, ESP-IDF's `esp_wifi/lib` and `esp_phy/lib`) | ESP-IDF 5.5's (`esp_wifi/lib` at `8a1b7bbc00e895d040c5c9a6fb9d1db2bbfc7958`) | Apache-2.0, as object code | `platform/esp32_t5s3/adp_net.c` (the Wi-Fi station, phase 4e) -- only in an image built with a network | No — part of ESP-IDF; see below |
 | lwIP (inside ESP-IDF's `lwip` component) | 2.2.0, ESP-IDF 5.5's copy | BSD-3-Clause | the same: the station's TCP/IP, through `esp_netif`; since phase 4f also its SNTP client and DNS resolver (`apps/firmware_esp32/main/net_time.c`) | No — part of ESP-IDF; see below |
 | wpa_supplicant (inside ESP-IDF's `wpa_supplicant` component) | ESP-IDF 5.5's copy | BSD-3-Clause | the same: WPA2/WPA3's handshakes | No — part of ESP-IDF; see below |
-| Mbed TLS (inside ESP-IDF's `mbedtls` component) | 3.6.3 | Apache-2.0 OR GPL-2.0-or-later -- **used under Apache-2.0** | the same: the supplicant's cryptography | No — part of ESP-IDF; see below |
+| Mbed TLS (inside ESP-IDF's `mbedtls` component) | 3.6.3 | Apache-2.0 OR GPL-2.0-or-later -- **used under Apache-2.0** | the same: the supplicant's cryptography; since phase 4g, in an image with a broker, also its TLS layer and X.509, linked by `esp-tls` and never run (see below) | No — part of ESP-IDF; see below |
+| esp-mqtt (ESP-IDF's `mqtt` component, `components/mqtt/esp-mqtt` at `cac1552e62b0474c162547b7cce345d7cd1aecfe`) | ESP-IDF 5.5's copy | Apache-2.0 | `platform/esp32_t5s3/adp_mqtt.c` (the MQTT client, phase 4g) -- only in an image built with a broker | No — part of ESP-IDF; see below |
+| http_parser (inside ESP-IDF's `http_parser` component, linked by esp-mqtt for broker URIs) | 2.7.0, ESP-IDF 5.5's copy | MIT (Joyent, Inc. and other Node contributors; based on NGINX's parser, Igor Sysoev) | the same | No — part of ESP-IDF; see below |
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
@@ -153,6 +155,34 @@ argtable3) already ask. Nothing of any of them is vendored here; the rest of
 what Wi-Fi pulls in -- `esp_wifi`'s adapter code, `esp_netif`, `esp_event`,
 `nvs_flash`, `esp_phy` -- is ESP-IDF's own, under its Apache-2.0 (the first
 row).
+
+## Notes on esp-mqtt, the board's MQTT client
+
+Phase 4g (`docs/adr/0033-mqtt-on-the-board.md`) links ESP-IDF's MQTT client
+into an image built with a broker -- `sdkconfig.credentials` naming one beside
+the Wi-Fi network -- and into no other: without a broker the composition never
+starts the client and the linker drops it (no `libmqtt` in such an image's
+`idf.py size-components`). Checked in `~/esp/esp-idf/components` (ESP-IDF 5.5),
+2026-10-22:
+
+- **esp-mqtt** (`mqtt/esp-mqtt/LICENSE`): Apache-2.0, Espressif's own, the
+  same terms as ESP-IDF.
+- **tcp_transport** and **esp-tls**, through which esp-mqtt's plain TCP
+  transport connects: ESP-IDF's own, `SPDX-License-Identifier: Apache-2.0`.
+  Their plain-TCP path tears a connection down through esp-tls, which
+  references Mbed TLS's TLS layer and X.509 code: about 54 KB of it is linked
+  and never run, since TLS is left out (`CONFIG_MQTT_TRANSPORT_SSL` off; the
+  ADR has the measurement). Mbed TLS stays under Apache-2.0, as above.
+- **http_parser** 2.7.0 (`http_parser/LICENSE.txt`, `sbom.yml`): MIT --
+  "Copyright Joyent, Inc. and other Node contributors", based on NGINX's HTTP
+  parser by Igor Sysoev, "licensed under the same terms as NGINX". esp-mqtt
+  links it to parse broker URIs; the adapter hands esp-mqtt a host and a port
+  instead, but the reference stays.
+
+No copyleft term is involved. http_parser's MIT terms ask that its copyright
+and permission notice be included with copies of it: an image with a broker,
+if ever distributed, carries that notice beside the others ESP-IDF's
+third-party code already asks for. Nothing is vendored here.
 
 ## Notes on the EPDiy display backend, and its LGPL-3.0 obligations
 
@@ -377,8 +407,8 @@ in the same file: `uthash.h`/`utlist.h` (BSD-1-Clause) -- permissive too.
 dynamically into the simulator and `test_port_telemetry_contract`. Without it
 both build and run as before, with no `--broker`. Nothing of it is vendored,
 and it is never part of a firmware image: the board's MQTT client is
-ESP-IDF's esp-mqtt (Apache-2.0, the first row) when its adapter lands, and `platform/esp32_t5s3/`
-never includes it.
+ESP-IDF's esp-mqtt (Apache-2.0, since phase 4g; its own notes above), and
+`platform/esp32_t5s3/` never includes libmosquitto.
 
 **What EDL-1.0 obliges.** Source redistribution keeps the notices -- nothing
 of its source is in this repository. Binary redistribution reproduces the

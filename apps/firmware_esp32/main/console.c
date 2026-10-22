@@ -18,6 +18,8 @@
 #include "esp_timer.h"
 
 #include "adp_clock.h"
+#include "adp_mqtt.h"
+#include "adp_mqtt_pure.h"
 #include "adp_net.h"
 #include "adp_net_pure.h"
 #include "board_config.h"
@@ -660,6 +662,77 @@ static int cmd_wifi(void *context, int argc, char **argv)
     return (s_net.state == NET_UP) ? 0 : 1;
 }
 
+// --- mqtt -------------------------------------------------------------------------
+
+// The status, static: about 0.2 KB, and only the console's task uses it.
+static adp_mqtt_status_t s_mqtt;
+
+static int cmd_mqtt(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (s_deps.mqtt == NULL) {
+        printf("MQTT off: no broker in this image -- set CONFIG_HAC_MQTT_BROKER_URI (and the "
+               "Wi-Fi network) in apps/firmware_esp32/sdkconfig.credentials "
+               "(sdkconfig.credentials.example), or see the boot log's main and adp_mqtt lines\n");
+        return 1;
+    }
+    adp_mqtt_status(s_deps.mqtt, &s_mqtt);
+    const adp_mqtt_stats_t *st = &s_mqtt.stats;
+    if (s_mqtt.init_status != HAL_OK) {
+        printf("MQTT FAILED: the client was not set up (%s) -- see the boot log's adp_mqtt "
+               "lines\n",
+               hal_status_text(s_mqtt.init_status));
+        return 1;
+    }
+    printf("MQTT %s, attempt %lu (%lu sessions), broker %s:%u, %s%s%s\n",
+           (s_mqtt.state == ADP_MQTT_STATE_CONNECTED)    ? "CONNECTED"
+           : (s_mqtt.state == ADP_MQTT_STATE_CONNECTING) ? "CONNECTING"
+           : (s_mqtt.state == ADP_MQTT_STATE_OVER)       ? "OVER"
+                                                         : "IDLE",
+           (unsigned long)s_mqtt.attempt, (unsigned long)st->sessions, s_mqtt.broker.host,
+           (unsigned)s_mqtt.broker.port, (s_mqtt.username[0] != '\0') ? "user " : "no user",
+           (s_mqtt.username[0] != '\0') ? s_mqtt.username : "",
+           (s_mqtt.username[0] != '\0') ? " (the password never shown)" : "");
+    if (s_mqtt.end != ADP_MQTT_END_NONE) {
+        printf("MQTT the last session ended: %s", adp_mqtt_end_name(s_mqtt.end));
+        if (s_mqtt.end == ADP_MQTT_END_REFUSED) {
+            printf(", %s (%d)", adp_mqtt_connack_name(s_mqtt.last_connack), s_mqtt.last_connack);
+        }
+        if (s_mqtt.last_errno != 0) {
+            printf(", the socket's errno %d", s_mqtt.last_errno);
+        }
+        printf("\n");
+    }
+    printf("MQTT published %lu, subscribed %lu, refused %lu (the queue full), forwarded %lu, "
+           "acknowledged %lu, discarded %lu; received %lu, dropped %lu\n",
+           (unsigned long)st->published, (unsigned long)st->subscribed,
+           (unsigned long)st->refused_calls, (unsigned long)st->forwarded,
+           (unsigned long)st->acknowledged, (unsigned long)st->discarded,
+           (unsigned long)st->received, (unsigned long)st->inbox_dropped);
+    printf("MQTT queued %lu messages, %lu bytes; esp-mqtt's outbox %lu bytes, full %lu times; "
+           "%lu received waiting\n",
+           (unsigned long)s_mqtt.queued_messages, (unsigned long)s_mqtt.queued_bytes,
+           (unsigned long)s_mqtt.outbox_bytes, (unsigned long)st->outbox_full,
+           (unsigned long)s_mqtt.inbox_waiting);
+    printf("MQTT since boot: %lu attempts, %lu sessions; %lu refused, %lu without a connection, "
+           "%lu lost, %lu by the network, %lu not started\n",
+           (unsigned long)st->attempts, (unsigned long)st->sessions, (unsigned long)st->refused,
+           (unsigned long)st->no_connection, (unsigned long)st->lost, (unsigned long)st->network,
+           (unsigned long)st->not_started);
+    printf("MQTT the event loop's longest call %lu us (%s); the client's task stack %lu bytes free "
+           "at least, esp-mqtt's %lu\n",
+           (unsigned long)s_mqtt.post_max_us, s_mqtt.post_max_call,
+           (unsigned long)((s_mqtt.task_stack_free_min_bytes == UINT32_MAX)
+                               ? 0u
+                               : s_mqtt.task_stack_free_min_bytes),
+           (unsigned long)((s_mqtt.mqtt_stack_free_min_bytes == UINT32_MAX)
+                               ? 0u
+                               : s_mqtt.mqtt_stack_free_min_bytes));
+    return (s_mqtt.state == ADP_MQTT_STATE_CONNECTED) ? 0 : 1;
+}
+
 // --- vbat -------------------------------------------------------------------------
 //
 // The battery's divider on GPIO14, an ADC2 input, which ESP-IDF documents as
@@ -896,6 +969,12 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_wifi,
         .context = NULL,
     };
+    const esp_console_cmd_t mqtt_cmd = {
+        .command = "mqtt",
+        .help = "MQTT: session, broker, published, refused, queued, the event loop's longest call",
+        .func_w_context = cmd_mqtt,
+        .context = NULL,
+    };
     const esp_console_cmd_t vbat_cmd = {
         .command = "vbat",
         .help = "Read the battery's divider on GPIO14 (ADC2, shared with Wi-Fi) 32 times",
@@ -945,6 +1024,9 @@ static esp_err_t register_commands(adp_i2c_t *bus)
     if (err == ESP_OK) {
         err = esp_console_cmd_register(&vbat_cmd);
     }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&mqtt_cmd);
+    }
     return err;
 }
 
@@ -974,7 +1056,7 @@ hal_status_t console_start(const console_deps_t *deps)
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
         log_str("commands", "help i2c_scan i2c_recover restart time time_set rtc_stop sd "
-                            "sd_mount sd_eject rec touch touch_sleep touch_wake wifi vbat"),
+                            "sd_mount sd_eject rec touch touch_sleep touch_wake wifi vbat mqtt"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

@@ -57,7 +57,8 @@
 // ESTIMATE: how long a connection attempt may take before it is given up --
 // a TCP handshake and the broker's answer on a home network take tens of
 // milliseconds; a name lookup or a slow broker may take seconds. Nothing has
-// measured it: the board's first session (phase 4c) does.
+// measured it: the board's first sessions do (phase 4g,
+// docs/adr/0033-mqtt-on-the-board.md, whose client gives up after 5 s).
 #define REPORT_CONNECT_TIMEOUT_MS 10000u
 
 // CHOICE: after a failed attempt, the next waits this long, doubling to the

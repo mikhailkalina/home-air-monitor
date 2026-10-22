@@ -68,6 +68,18 @@
 //                shares: 32 reads, how many ADC2 refused, the pin's and the
 //                battery's millivolts -- whether it reads at all with Wi-Fi
 //                up (docs/hardware/board_notes.md, open item on GPIO14)
+//
+// Phase 4g's (docs/adr/0033-mqtt-on-the-board.md), every line starting
+// "MQTT":
+//
+//   mqtt         the session: its state and why the last one ended, the
+//                broker and the user (never the password); what was
+//                published, forwarded to esp-mqtt, acknowledged, refused
+//                because the queue was full, discarded with a session, and
+//                received; what waits -- messages and bytes in the adapter's
+//                ring, bytes in esp-mqtt's outbox; sessions, attempts and
+//                failures since boot; the event loop's longest call into the
+//                port, and the two tasks' stacks
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
 #define HAC_APPS_FIRMWARE_ESP32_CONSOLE_H
@@ -75,6 +87,7 @@
 #include "adp_clock.h"
 #include "adp_i2c.h"
 #include "adp_input.h"
+#include "adp_mqtt.h"
 #include "adp_net.h"
 #include "domain/civil_time.h"
 #include "hal_status.h"
@@ -101,6 +114,7 @@ typedef struct {
     wall_clock_source_t *wall_source;
     adp_input_t *touch;     // the console's touch, touch_sleep and touch_wake
     adp_net_t *net;         // the console's wifi; NULL without a network in this image
+    adp_mqtt_t *mqtt;       // the console's mqtt; NULL without a broker in this image
     const char *device_id;  // "hac-..." from the station's MAC; "" when unread
     const port_log_t *log;
 } console_deps_t;

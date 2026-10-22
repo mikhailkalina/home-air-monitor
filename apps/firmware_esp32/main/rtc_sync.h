@@ -23,9 +23,9 @@
 //      landed: the mark the next drift is measured from -- measured, never
 //      assumed -- and the delay from the start to the first tick, learned
 //      for the next write. On this board the datasheet's 0.508 s does not
-//      hold -- its chip first ticks a whole second after a start, 1,000 ms
-//      by INT on 2026-10-22 -- so the first write after a boot lands half a
-//      second off; the next one does not.
+//      hold -- its chip first ticks 986-1,000 ms after a start (2026-10-22)
+//      -- so the first write after a boot lands half a second off, the next
+//      ones within ±12 ms.
 //
 // Each step is a few I2C transfers of about a millisecond, and the write's
 // spin at most RTC_SYNC_SPIN_MAX_MS; the whole takes one to three minutes of

@@ -32,15 +32,19 @@
 // (adp_net.c), for the network sdkconfig.credentials names -- none, and the
 // firmware runs as before. Its driver is set up with the rest; its radio
 // starts once the first frame is on the glass (start_radio()), and the
-// console's wifi shows it. Nothing uses the link yet but phase 4f's time:
-// MQTT is the next sub-phase's. Phase 4f
+// console's wifi shows it; phase 4f's time and 4g's MQTT use the link. Phase 4f
 // (docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md, "Amendment
 // (phase 4f): time from the network"): once Wi-Fi first has an address,
 // SNTP sets the system time, and after each answer the event loop measures
 // the RTC by its alarm's tick on INT -- stamped in an interrupt on IO9 -- and
 // writes it to a second's start (net_time.c, rtc_sync.c): the drift, logged
 // every hour. The console's time shows it, and rtc_stop leaves the RTC with
-// no time for a boot to find.
+// no time for a boot to find. Phase 4g (docs/adr/0033-mqtt-on-the-board.md):
+// with a broker in sdkconfig.credentials as well, esp-mqtt behind
+// port_telemetry (adp_mqtt.c, a task of its own that alone calls esp-mqtt)
+// and core/reporting/reporter.c on the event loop: the device announces
+// itself to Home Assistant, publishes what the screen shows, and the status
+// bar and the diagnostics screen show the link. The console's mqtt shows it.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -53,7 +57,8 @@
 // rail as well (see start_card()) -- then the touch controller and its task
 // (start_touch()), the Wi-Fi station with its radio off (start_network())
 // and the wait for its first address, the RTC's INT interrupting
-// (start_net_time()),
+// (start_net_time()), the MQTT client's task and the reporter
+// (start_telemetry()), which connect once the radio's link is up,
 // optionally the whole-panel bring-up
 // diagnostic
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
@@ -71,6 +76,7 @@
 
 #include "sdkconfig.h"  // CONFIG_HAC_*: which display and which BME68x source
 
+#include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
@@ -82,6 +88,7 @@
 #include "adp_i2c.h"
 #include "adp_input.h"
 #include "adp_log.h"
+#include "adp_mqtt.h"
 #include "adp_net.h"
 #include "adp_sd.h"
 #include "board_config.h"
@@ -95,6 +102,8 @@
 #include "domain/civil_time.h"
 #include "recording/log_file.h"
 #include "recording/recorder.h"
+#include "reporting/ha_discovery.h"
+#include "reporting/reporter.h"
 #include "reporting/topics.h"
 #if CONFIG_HAC_BSEC
 #include "bme68x_bsec_source.h"
@@ -168,6 +177,17 @@
 #define NET_TASK_PRIORITY 4
 #define NET_TASK_CORE 0
 
+// The MQTT client's task (adp_mqtt.c), the only caller of esp-mqtt: it makes,
+// starts, stops and destroys a client per session and hands it what the
+// reporter published, with its log lines and esp-mqtt's under them. 6 KB, as
+// the station's, until its own low-water mark, which it logs, says
+// otherwise. On the protocol core beside esp-mqtt's own task (5, its
+// default, adp_mqtt_limits.h), below it and level with the station's: it
+// waits for esp-mqtt, never the other way round.
+#define MQTT_TASK_STACK_BYTES 6144u
+#define MQTT_TASK_PRIORITY 4
+#define MQTT_TASK_CORE 0
+
 // The sources' ids, which every measurement carries as its source_id and the
 // priorities below are written in -- the same two the simulator gives the
 // same two sensors (apps/simulator/main.c).
@@ -207,6 +227,17 @@ typedef bme68x_source_config_t bme68x_composed_config_t;
 // time_zone_eu()). The simulator shows the same (apps/simulator/main.c).
 #define LOCAL_ZONE_NAME "Vilnius"
 #define LOCAL_STANDARD_OFFSET_MIN 120
+
+// CHOICES: what Home Assistant calls the board, and what it says about it
+// (core/reporting/ha_discovery.h). The project built it, on LILYGO's board;
+// the simulator is "Home Air Monitor (simulator)" (apps/simulator/main.c),
+// so the two appear side by side. The image's version is its app
+// description's, git describe at build time.
+#define HA_DEVICE_NAME "Home Air Monitor"
+#define HA_MANUFACTURER "home-air-monitor"
+#define HA_MODEL "LILYGO T5 4.7\" e-Paper S3"
+#define HA_ORIGIN_NAME "home-air-monitor"
+#define HA_SUPPORT_URL "https://github.com/mikhailkalina/home-air-monitor"
 
 // CHOICE: how often each source's latest sample is logged, besides what the
 // sensor manager logs on every change of state -- often enough to compare
@@ -502,6 +533,9 @@ static void start_touch(adp_input_t *touch, adp_i2c_t *i2c, const port_clock_t *
     }
 }
 
+// The MQTT client, for the console's mqtt: NULL without telemetry.
+static adp_mqtt_t *s_console_mqtt;
+
 // The touch task has queued input: the event loop looks now.
 static void wake_event_loop(void *ctx)
 {
@@ -509,9 +543,8 @@ static void wake_event_loop(void *ctx)
     event_loop_post_input();
 }
 
-// The station's state changed: the event loop looks now. Nothing there reads
-// it until the reporter does, in the next sub-phase; the wake is wired so
-// that it is in place.
+// The station's state changed, or the MQTT session's, or a message arrived:
+// the event loop looks now, and the reporter with it.
 static void wake_event_loop_network(void *ctx)
 {
     (void)ctx;
@@ -591,6 +624,88 @@ static bool start_net_time(port_net_t *net, adp_i2c_t *i2c, const port_clock_t *
         .wake = event_loop_post_time,
     };
     return net_time_init(&cfg) == HAL_OK;
+}
+
+// MQTT, for an image with a network and a broker: the topics from the
+// overlay's prefix and the device id, the client and its task, and the
+// reporter, which connects once the station's link is up -- the radio starts
+// after the first frame (start_radio()), so the first session comes some
+// seconds after it. The condition is a constant, as start_network()'s:
+// without a broker nothing here is called, and the linker drops esp-mqtt.
+// NULL without telemetry; the event loop then runs without a reporter, and
+// the status bar says nothing about the link.
+static reporter_t *start_telemetry(port_net_t *net, const char *device_id, sensor_caps_t caps,
+                                   const port_clock_t *clock, const port_log_t *log)
+{
+    static adp_mqtt_t s_mqtt;
+    static mqtt_topics_t s_topics;
+    static reporter_t s_reporter;
+    if (CONFIG_HAC_WIFI_SSID[0] == '\0' || CONFIG_HAC_MQTT_BROKER_URI[0] == '\0' || net == NULL) {
+        port_log_write(log, LOG_LEVEL_INFO, "main",
+                       "MQTT off: no broker in this image (sdkconfig.credentials)", NULL, 0u);
+        return NULL;
+    }
+    if (mqtt_topics_init(&s_topics, CONFIG_HAC_MQTT_TOPIC_PREFIX, device_id,
+                         MQTT_DISCOVERY_PREFIX_DEFAULT) != HAL_OK) {
+        const log_field_t fields[] = {
+            log_str("prefix", CONFIG_HAC_MQTT_TOPIC_PREFIX),
+            log_str("device_id", (device_id[0] != '\0') ? device_id : "-"),
+        };
+        port_log_write(log, LOG_LEVEL_ERROR, "main",
+                       "MQTT off: the topic prefix or the device id is not valid "
+                       "(core/reporting/topics.h)",
+                       fields, sizeof(fields) / sizeof(fields[0]));
+        return NULL;
+    }
+    const adp_mqtt_config_t cfg = {
+        .broker_uri = CONFIG_HAC_MQTT_BROKER_URI,
+        .username = CONFIG_HAC_MQTT_USER,
+        .password = CONFIG_HAC_MQTT_PASSWORD,
+        .net = net,
+        .clock = clock,
+        .log = log,
+        .task_stack_bytes = MQTT_TASK_STACK_BYTES,
+        .task_priority = MQTT_TASK_PRIORITY,
+        .task_core = MQTT_TASK_CORE,
+    };
+    if (adp_mqtt_init(&s_mqtt, &cfg) != HAL_OK) {
+        return NULL;  // logged by the adapter
+    }
+    adp_mqtt_set_waker(&s_mqtt, wake_event_loop_network, NULL);
+
+    const esp_app_desc_t *app = esp_app_get_description();
+    reporter_deps_t deps = {
+        .telemetry = adp_mqtt_port(&s_mqtt),
+        .net = net,
+        .log = log,
+        .topics = &s_topics,
+    };
+    deps.discovery.device.name = HA_DEVICE_NAME;
+    deps.discovery.device.manufacturer = HA_MANUFACTURER;
+    deps.discovery.device.model = HA_MODEL;
+    deps.discovery.device.hw_version = BOARD_SILKSCREEN_REVISION;
+    deps.discovery.device.sw_version = app->version;
+    deps.discovery.origin.name = HA_ORIGIN_NAME;
+    deps.discovery.origin.sw_version = app->version;
+    deps.discovery.origin.support_url = HA_SUPPORT_URL;
+    deps.discovery.caps = caps;
+    deps.discovery.has_rssi = true;
+    const reporter_config_t rcfg = reporter_config_default();
+    if (reporter_init(&s_reporter, &deps, &rcfg) != HAL_OK) {
+        port_log_write(log, LOG_LEVEL_ERROR, "main",
+                       "MQTT off: the reporter would not start (a discovery config too long?)",
+                       NULL, 0u);
+        return NULL;
+    }
+    const log_field_t fields[] = {
+        log_str("topics", s_topics.base),
+        log_str("discovery", s_topics.discovery_prefix),
+        log_str("sw_version", app->version),
+    };
+    port_log_write(log, LOG_LEVEL_INFO, "main", "MQTT: the reporter waits for the link", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+    s_console_mqtt = &s_mqtt;
+    return &s_reporter;
 }
 
 // event_loop.h's first-frame hook: the radio on, now that the switched rail
@@ -859,14 +974,14 @@ void app_main(void)
 
     port_log_write(log, LOG_LEVEL_INFO, "main",
 #if CONFIG_HAC_DISPLAY_NULL
-                   "phase 4f: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
-                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch, Wi-Fi, SNTP",
+                   "phase 4g: null display (CONFIG_HAC_DISPLAY_NULL), PWR_EN raised without "
+                   "EPDiy, " SENSORS_TEXT ", the RTC, the microSD card, touch, Wi-Fi, SNTP, MQTT",
 #elif CONFIG_HAC_EPD_CALIBRATION
                    "phase 2c: panel calibration mode (CONFIG_HAC_EPD_CALIBRATION), no event loop, "
                    "no sensors",
 #else
-                   "phase 4f: EPDiy driving the panel, " SENSORS_TEXT
-                   ", the RTC, the microSD card, touch, Wi-Fi, SNTP",
+                   "phase 4g: EPDiy driving the panel, " SENSORS_TEXT
+                   ", the RTC, the microSD card, touch, Wi-Fi, SNTP, MQTT",
 #endif
                    NULL, 0u);
 
@@ -954,6 +1069,10 @@ void app_main(void)
                    sizeof(panel_fields) / sizeof(panel_fields[0]));
 
     compose_sensors(&s_sensors, &s_scd4x, &s_bme68x, &s_i2c, clock, log);
+    // After the sensors, whose capabilities say which entities discovery
+    // announces; before the event loop, which steps the reporter.
+    reporter_t *reporter = start_telemetry(
+        net, s_device_id, (sensor_caps_t)(s_scd4x.port.caps | s_bme68x.port.caps), clock, log);
     s_hook.log = log;
 #if !CONFIG_HAC_DISPLAY_NULL
     s_hook.display = &s_display;
@@ -963,7 +1082,8 @@ void app_main(void)
     screen_controller_init(&s_screens, &screens_cfg);
     adp_input_set_waker(&s_touch, wake_event_loop, NULL);
     // Without a reporter the link is LINK_OFF: the bar says nothing about it
-    // (docs/adr/0031-the-network-on-the-screen.md).
+    // (docs/adr/0031-the-network-on-the-screen.md); with one, what the link
+    // has held for a minute.
     const link_hold_config_t link_cfg = link_hold_config_default();
     link_hold_init(&s_link, &link_cfg);
 
@@ -980,7 +1100,7 @@ void app_main(void)
         .screens = &s_screens,
         .facts = screen_facts,
         .facts_ctx = &s_wall_source,
-        .reporter = NULL,  // the next sub-phase: the MQTT adapter, then the reporter
+        .reporter = reporter,  // NULL without a broker: no telemetry
         .link = &s_link,
         .after_first_frame = start_radio,
         .after_first_frame_ctx = net,
@@ -999,6 +1119,7 @@ void app_main(void)
         .wall_source = &s_wall_source,
         .touch = &s_touch,
         .net = (net != NULL) ? &s_net : NULL,
+        .mqtt = s_console_mqtt,
         .device_id = s_device_id,
         .log = log,
     };

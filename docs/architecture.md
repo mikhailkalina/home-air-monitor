@@ -203,7 +203,9 @@ home-air-monitor/
 │   │   ├── adp_net.c               # the Wi-Fi station behind port_net: a task, the driver (ADR 0032)
 │   │   ├── adp_net_pure.c          # ... its decisions -- backoff, timeouts -- tested on the host
 │   │   ├── adp_net_limits.h        # ... and every number they run on
-│   │   ├── adp_telemetry_mqtt.c    # esp-mqtt
+│   │   ├── adp_mqtt.c              # esp-mqtt behind port_telemetry: a task, the only caller (ADR 0033)
+│   │   ├── adp_mqtt_pure.c         # ... its decisions -- the queues, the session -- tested on the host
+│   │   ├── adp_mqtt_limits.h       # ... and every number they run on
 │   │   ├── adp_storage.c           # NVS + LittleFS
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
 │   │   ├── adp_log.c               # ESP_LOG
@@ -623,6 +625,8 @@ struct port_power_s {
 
 **The board's network is a station with a task of its own** (phase 4e, ADR 0032): `platform/esp32_t5s3/adp_net.c` over ESP-IDF's Wi-Fi, its decisions -- a lost link sought at once, failed attempts after a backoff of 1 s doubling to 30 s, an attempt without an address given up at 30 s, refused credentials never given up -- in `adp_net_pure.c`, tested on the host. `up()` and `down()` record and wake the task; the driver is the task's alone. The network and its password come from a gitignored overlay, `sdkconfig.credentials`, and never reach NVS; without them the firmware sets no station up and links no Wi-Fi. The radio starts only once the boot's first frame is on the glass, away from the switched rail's inrush and from any panel drive (`event_loop.h`'s first-frame hook).
 
+**The board's MQTT client is esp-mqtt behind a task of its own** (phase 4g, ADR 0033): `platform/esp32_t5s3/adp_mqtt.c`. esp-mqtt's task holds its client's lock while it waits for the network, and every call into the client takes that lock, `esp_mqtt_client_enqueue()` included; so the event loop calls none of it. `publish()` and `subscribe()` copy into a ring in PSRAM, `connect()` and `disconnect()` record what is asked, and the adapter's task alone hands esp-mqtt the messages -- `enqueue()`, never `publish()` -- and makes, starts, stops and destroys a client per session, its reconnection off and its outbox bounded. Plain MQTT on the LAN, no TLS. The broker, its user, password and the topics' prefix come from the same overlay as the network's; the device id from the station's MAC.
+
 **Files on a removable medium are a port of their own** (phase 3f, ADR 0024), not `port_storage`'s `log_append`: the sensor recordings and the debug log are streams of rows on a microSD card that may be absent, pulled out or full, where `port_storage` holds small values written whole into NVS and RTC memory.
 
 ```c
@@ -982,7 +986,7 @@ The same file runs:
 
 This is what makes "it works in the simulator" mean "it will work on hardware". Without contract tests, abstractions inevitably diverge at the edges — NVS key length limits, behaviour on a full partition, I²C error codes.
 
-The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, and `port_telemetry` against libmosquitto and a private mosquitto broker on the host and in CI (ADR 0030 and its amendment), and `port_net` against the board's Wi-Fi station in the test app when the image has a network to join (ADR 0032), the board's MQTT adapter to follow. Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
+The suites that exist run that way: `port_clock` and `port_log` at every boot, `port_i2c` and `port_sensor` in the test app, `port_files` against a directory on the host and against the board's microSD card in the test app (ADR 0024), and `port_input` against the GT911 driver over its model, the simulator's scripted taps and its window's mouse on the host and against the real controller in the test app (ADR 0025), and `port_net` and `port_telemetry` against the simulated network and the loopback client of the broker model on the host, and `port_telemetry` against libmosquitto and a private mosquitto broker on the host and in CI (ADR 0030 and its amendment), and `port_net` against the board's Wi-Fi station in the test app when the image has a network to join (ADR 0032), and `port_telemetry` against esp-mqtt and the owner's broker in the test app when the image has one, its network taken away and given back by the station (ADR 0033). Where a runner cannot provoke a condition -- filling a real card takes hours -- the suite says the check was not exercised rather than passing it.
 
 ### 9.3 Scenario tests
 
@@ -1033,7 +1037,7 @@ The difference from §16 of the requirements: a substantial amount of work happe
 | **1. Simulator** | CSV replay, 960×540 SDL window, `framebuffer` + `gfx` + fonts, Home/Status/Error screens, `update_policy` | The full UI and threshold logic finished **without hardware** |
 | **2. Board bring-up** | `board_config.h` for the specific revision, `adp_i2c`, `adp_display` (EPDiy/ED047TC1), `adp_clock`, `adp_log` | The same UI seen on the PC appears on the panel. The core is unchanged |
 | **3. Sensors** | BME68x and SCD4x drivers over `port_i2c`, wrapped as `sensor_source_t`, plus a fake-i2c model for the PC | Real measurements; drivers covered by tests on a PC |
-| **4. Telemetry** | `mqtt_payload`, `ha_discovery` (pure functions, tested), `adp_telemetry_mqtt` for both platforms | The simulator appears in Home Assistant as a device, before the hardware is ready |
+| **4. Telemetry** | `mqtt_payload`, `ha_discovery` (pure functions, tested), MQTT for both platforms: `adp_telemetry_mqtt` (host, libmosquitto), `adp_mqtt` (board, esp-mqtt) | The simulator appears in Home Assistant as a device, before the hardware is ready |
 | **5. Power** | `power_policy`, `persisted_state_t`, `adp_power`, cold-boot emulation in the simulator | The battery duty cycle is debugged in accelerated time, then measured on hardware |
 | **6. Reliability and UX** | touch menu, error screens, NVS config, OTA, watchdog, on-device contract tests | A prototype meeting §14 |
 | **7. Matter** | `platform/esp32_t5s3/adp_telemetry_matter.c` as a second reporter | The core and UI are untouched |

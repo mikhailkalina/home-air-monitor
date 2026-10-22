@@ -123,8 +123,11 @@ cd apps/firmware_esp32 && idf.py build
 # Firmware with Wi-Fi (ADR 0032): the network in the gitignored overlay, layered last over
 # every build's defaults (the test app's too); it reaches only a fresh sdkconfig, and the
 # build refuses to configure while the two disagree. Without it the image has no Wi-Fi.
+# With CONFIG_HAC_MQTT_BROKER_URI (and _USER, _PASSWORD) in the same overlay, MQTT to
+# that broker and the reporter (ADR 0033); without a broker, no MQTT. Console: mqtt.
 cd apps/firmware_esp32 && cp sdkconfig.credentials.example sdkconfig.credentials  # fill in
 rm -f sdkconfig && idf.py reconfigure build && grep CONFIG_HAC_WIFI_SSID sdkconfig
+grep CONFIG_HAC_MQTT_BROKER_URI sdkconfig
 
 # Firmware with BSEC2 IAQ, in its own build dir and sdkconfig (ADR 0020); then grep
 # CONFIG_HAC_BSEC out of build-bsec/sdkconfig and bme680_iaq_33v_3s_4d out of the .bin
@@ -174,8 +177,8 @@ the phase landed (the old files kept as `sdkconfig.old`); any other one needs th
 
 - `sdkconfig` — it holds Wi-Fi SSID, password and broker address after `menuconfig`.
   Only `sdkconfig.defaults`, without credentials, belongs in the repository.
-- `sdkconfig.credentials` — the Wi-Fi network and its password (ADR 0032); the repository
-  has `sdkconfig.credentials.example`. An image built with credentials holds them in plain
+- `sdkconfig.credentials` — the Wi-Fi network and its password (ADR 0032), the MQTT broker,
+  its user and password (ADR 0033); the repository has `sdkconfig.credentials.example`. An image built with credentials holds them in plain
   text: never attach one, nor an sdkconfig, to an issue or a pull request.
 - Any credentials, tokens, certificates or keys. Provide `credentials.h.example` instead.
 - Anything from Bosch's BSEC/BSEC2 archive: the binary (`libalgobsec.a`) ships under a
@@ -727,16 +730,75 @@ after a start (the 989 of the polling version was its own error); -21 ppm over t
 the first version's write; 72,503 bytes free with the link up. One `E gpio: ... GPIO isr
 service already installed` line at every boot, the touch adapter's second install: since then
 the shared GPIO ISR service is installed once (`platform/esp32_t5s3/board_gpio_isr.c`, on
-app_main before either asks), not yet seen on the board. Still owed (`board_notes.md`, open
-item "Time from the network on the board (phase 4f)"): the next sync landing on the second,
-a day's drift, a cold boot after `rtc_stop`, the chip's marking, the autumn change.
+app_main before either asks) -- the line gone since. A night of hourly syncs, 2026-10-22 (ELF
+`ec5d8a60f...`, 9.4 hours, the last three syncs from the card's log): **the RTC loses 20.8
+ppm** (±2.0 hour to hour, ~54 s a month -- the ±20 ppm ESTIMATE holds); each write lands
+within ±12 ms with the learned delay, which varies 986-1,000 ms from start to start (not the
+±1-2 ms first claimed); on time throughout, no warning. A power cut of 6.5 hours the same day
+cost the RTC 2.6 s beyond its drift, VL clear -- the cell's slower oscillator or a moment's
+stop, not yet told apart. The card's log of that night also gave ADR 0026's delta its first
+board figures: about 190 redraws a day, 135 for IAQ, 8 full, 13 late BSEC calls, against
+921-1,568, 884-1,494, 44-74 and 167-292 before. Still owed (`board_notes.md`, open item "Time from the network
+on the board (phase 4f)"): a day and another temperature, a cold boot after `rtc_stop`, the
+chip's marking, the autumn change; a default delay of ~995 ms is the owner's to choose.
 
-Next: Wi-Fi's and SNTP's board runs; then the board's esp-mqtt adapter behind
-`port_telemetry` and the reporter composed, with its device id from
-`mqtt_device_id_from_mac()`; the board run of
-phases 3d to 3f, the rest of phase 3c's measurements -- now recordable unattended -- and this
-unit's own figures for the remaining estimates; the rest of the simulator's checks in Home
-Assistant (ADR 0030's amendment).
+Phase 4g on branch `phase-4g-board-mqtt` (ADR 0033): MQTT on the board.
+`platform/esp32_t5s3/adp_mqtt.c` is `port_telemetry` over esp-mqtt (ESP-IDF 5.5's, Apache-2.0).
+Its source showed what its header did not: every call into a client takes the client's lock,
+`esp_mqtt_client_enqueue()` included, and esp-mqtt's task holds that lock while it waits for the
+network -- the name lookup, the TCP handshake, the CONNACK, a write into a dead link, up to
+its network timeout each. So the event loop calls none of it: `publish()` and `subscribe()`
+copy into a ring of 16 slots in PSRAM, `connect()` and `disconnect()` record what is asked,
+and a task of the adapter's own (`hac_mqtt`, 6 KB, priority 4, core 0) alone calls esp-mqtt --
+`esp_mqtt_client_enqueue()` with `store` set, never `esp_mqtt_client_publish()`;
+`subscribe_single()`; a client made, started, stopped and destroyed per session, its
+reconnection off, its outbox bounded at 4 KB (QoS 1 waits there for PUBACK, internal RAM), so
+nothing of one session is resent in the next. The ring's indices move under a spinlock, a slot
+is filled and emptied outside it. esp-mqtt's events (on its task, pinned to core 0 by
+`sdkconfig.defaults`) set the session's state and fill an inbox of 8, and wake the loop
+(`event_loop_post_network()`); clients are numbered, and an event from one let go changes
+nothing. With `port_net` given, `connect()` needs the link and a session whose network went is
+over at the next call. Decisions in `adp_mqtt_pure.c`, tested on the host
+(`tests/unit/test_adp_mqtt_pure.c`: the URI, the rings, a message in pieces cut at 256, the
+session and what the task does next); numbers in `adp_mqtt_limits.h`. Plain MQTT on the LAN:
+`mqtts://` refused, esp-mqtt's TLS and websocket transports off (`adp_mqtt.c` refuses an
+sdkconfig with them); the ADR has what TLS would cost (an Mbed TLS session in internal RAM) and
+what the owner accepts without it (the password in clear text on the LAN). Configuration:
+`CONFIG_HAC_MQTT_BROKER_URI`, `_USER`, `_PASSWORD`, `_TOPIC_PREFIX` (`homeair`) in
+`components/hac_platform/Kconfig`, set in `sdkconfig.credentials`, checked by
+`cmake/credentials_idf.cmake` with the network's; empty broker, no MQTT and nothing of it
+linked. `main.c`'s `start_telemetry()`: device id from the MAC, the discovery's device "Home
+Air Monitor", model "LILYGO T5 4.7" e-Paper S3", hardware version the silkscreen's, software
+version the app description's; the reporter goes to the event loop, so the status bar and the
+diagnostics screen show the board's link (ADR 0031). The event loop logs `published in the
+hour` (state, heartbeats, discovery, sessions, lost, refused) -- the card keeps INFO. Console
+`mqtt`: state, broker, user, published, acknowledged, refused, discarded, queued messages and
+bytes, esp-mqtt's outbox, attempts and failures, the event loop's longest call into the port,
+both stacks. Test app: the `port_telemetry` contract against the owner's broker, over the
+station the `port_net` case shares (`tests/contract/esp32/test_station.c`), client
+`contract-<MAC>` under `hac-contract/board-<MAC>`, the drop exercised by taking the station
+down, `stall` not exercised, run on core 1 at the event loop's priority; IGNORED without a
+broker. Weighed and not made: a port change for "the attempt is over" (ADR 0030's amendment).
+Measured in the build, network and broker against network alone: static internal RAM +3,904
+bytes, image +124,500 (1.36 MB, 33 % of the partition) -- 54 KB of it Mbed TLS's TLS layer,
+linked by esp-tls under the plain TCP transport and never run. Verified on the host (unit,
+ASan); the firmware, its BSEC variant and the test app in both variants build from
+regenerated sdkconfigs, and the firmware and the test app with a dummy broker. On the board,
+2026-10-22 (ELF `6211314dd...`, BSEC; a mosquitto 2.0.21 on a Raspberry Pi Zero W with users
+and an ACL, `192.168.1.141`): the first session at the first attempt, `online` and nine
+configs; MQTT costs about 10 KB of internal RAM with a session (51,799 free), under the
+estimate; the event loop's longest call into the port 138-204 us; stacks with margin
+(esp-mqtt's 4,700 free, the adapter's 3,256); a broker restart recovered in 15 s, 10 of them
+the reporter's connect timeout on an attempt esp-mqtt knew had failed -- the weighed port
+change's first board figure; a `restart` left the will (`status` offline, then online 12 s
+later). Still owed (`board_notes.md`, open item "MQTT on the board (phase 4g)"): Home
+Assistant on that broker, its restart, Wi-Fi gone for an hour, a day unattended with HA's
+long-term statistics -- requirements 16's acceptance -- and the test app.
+
+Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
+day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
+unattended -- and this unit's own figures for the remaining estimates; the rest of the
+simulator's checks in Home Assistant (ADR 0030's amendment).
 
 The phase order is in section 10 of `docs/architecture.md`. Do not run ahead to later phases
 unless asked. Note that phase numbers here refer to those branches; the "phase 2c" named in

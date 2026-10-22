@@ -20,6 +20,9 @@ idf_component_register(
         ${HAC_ROOT}/tests/contract/esp32/test_port_files_contract.c
         ${HAC_ROOT}/tests/contract/esp32/test_port_input_contract.c
         ${HAC_ROOT}/tests/contract/esp32/test_port_net_contract.c
+        ${HAC_ROOT}/tests/contract/esp32/test_port_telemetry_contract.c
+        # The Wi-Fi station both network cases share (ESP-IDF's is one).
+        ${HAC_ROOT}/tests/contract/esp32/test_station.c
     PRIV_REQUIRES unity hac_platform hac_contract hac_drivers
 )
 

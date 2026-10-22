@@ -36,6 +36,12 @@
 
 #define EVENT_LOOP_QUEUE_DEPTH 8u
 
+// CHOICE: how often the reporter's counts go to the log, as the hour's: the
+// state messages one by one are DEBUG lines (log_report()), which the card's
+// log does not hold at its default level, and a day's publishing is read from
+// these -- 24 lines a day.
+#define EVENT_LOOP_REPORT_LOG_INTERVAL_MS 3600000u
+
 // What docs/architecture.md 6.1's app_event_t will eventually be. Since
 // phase 3g the touch adapter posts one when it has queued input
 // (event_loop_post_input()), since phase 4b the network and MQTT adapters
@@ -51,6 +57,16 @@ typedef struct {
 #define PUMP_EVENT_INPUT 1u
 #define PUMP_EVENT_NETWORK 2u
 #define PUMP_EVENT_TIME 3u
+
+// What the hourly line counts, as the reporter had it at the last one.
+typedef struct {
+    uint32_t state;
+    uint32_t heartbeats;
+    uint32_t discovery;
+    uint32_t sessions;
+    uint32_t lost;
+    uint32_t refused;
+} report_counts_t;
 
 typedef struct {
     event_loop_deps_t deps;
@@ -74,6 +90,10 @@ typedef struct {
     // What the reporter and its network said at the last step: the
     // diagnostics screen's, and the link the hold is fed.
     reporter_status_t network;
+
+    // The reporter's counts at the last hourly line, and when the next is due.
+    report_counts_t counted;
+    uint64_t next_report_log_ms;
 
     // A snapshot of what the panel was last successfully flushed with, so a
     // partial redraw can be shrunk to what actually changed instead of the
@@ -218,6 +238,55 @@ static void log_report(const event_loop_state_t *s, const reporter_note_t *note,
         };
         port_log_write(s->deps.log, LOG_LEVEL_DEBUG, EVENT_LOOP_TAG, "state published", fields,
                        sizeof(fields) / sizeof(fields[0]));
+    }
+}
+
+static report_counts_t report_counts(const reporter_t *r)
+{
+    const report_counts_t c = {
+        .state = r->state_messages,
+        .heartbeats = r->state_by_reason[PUBLISH_REASON_HEARTBEAT],
+        .discovery = r->discovery_messages,
+        .sessions = r->sessions,
+        .lost = r->sessions_lost,
+        .refused = r->refusals,
+    };
+    return c;
+}
+
+// The hour's publishing, once an hour: state messages, of them heartbeats,
+// discovery configs, sessions begun and lost, messages the adapter refused.
+// The first line comes an hour after boot.
+static void log_report_hour(event_loop_state_t *s, uint64_t now_ms)
+{
+    const reporter_t *r = s->deps.reporter;
+    if (r == NULL) {
+        return;
+    }
+    const report_counts_t now = report_counts(r);
+    if (s->next_report_log_ms == 0u) {
+        s->next_report_log_ms = now_ms + EVENT_LOOP_REPORT_LOG_INTERVAL_MS;
+        s->counted = now;
+        return;
+    }
+    if (now_ms < s->next_report_log_ms) {
+        return;
+    }
+    const report_counts_t *c = &s->counted;
+    const log_field_t fields[] = {
+        log_u64("state", now.state - c->state),
+        log_u64("heartbeats", now.heartbeats - c->heartbeats),
+        log_u64("discovery", now.discovery - c->discovery),
+        log_u64("sessions", now.sessions - c->sessions),
+        log_u64("lost", now.lost - c->lost),
+        log_u64("refused", now.refused - c->refused),
+    };
+    port_log_write(s->deps.log, LOG_LEVEL_INFO, EVENT_LOOP_TAG, "published in the hour", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+    s->counted = now;
+    s->next_report_log_ms += EVENT_LOOP_REPORT_LOG_INTERVAL_MS;
+    if (s->next_report_log_ms <= now_ms) {
+        s->next_report_log_ms = now_ms + EVENT_LOOP_REPORT_LOG_INTERVAL_MS;
     }
 }
 
@@ -382,6 +451,7 @@ static void pump_task(void *arg)
             reporter_note_t note;
             report_due = reporter_step(s->deps.reporter, &s->reading, now_ms, &note);
             log_report(s, &note, now_ms);
+            log_report_hour(s, now_ms);
         }
         const uint64_t link_due = hold_link(s, now_ms);
         const uint64_t step_due =
