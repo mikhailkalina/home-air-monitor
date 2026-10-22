@@ -38,6 +38,9 @@ idf_component_register(
              esp_adc
              # net_time.c: esp_netif's SNTP, lwIP's esp_sntp.h, the IP event.
              esp_netif lwip esp_event
+             # main.c's MQTT discovery: the image's version, from its app
+             # description (phase 4g).
+             esp_app_format
 )
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)

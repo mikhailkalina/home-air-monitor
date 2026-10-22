@@ -19,9 +19,10 @@
 //
 // The shared body: cmake/sources_contract.cmake compiles this file,
 // unmodified, into the host runner (tests/contract/test_port_telemetry_contract.c,
-// against the loopback client of the broker model) and into the ESP-IDF
-// hac_contract component, for the board's MQTT client when phase 4c brings
-// one. No stdio, no malloc, no harness.
+// against the loopback client of the broker model and libmosquitto) and into
+// the ESP-IDF hac_contract component, whose runner
+// (tests/contract/esp32/test_port_telemetry_contract.c) holds the board's
+// MQTT client to it. No stdio, no malloc, no harness.
 //
 // A runner that cannot take the network away from under the session, or
 // make the broker stop taking messages, leaves cut/restore or stall NULL,

@@ -309,6 +309,23 @@ target_link_libraries(test_adp_net_pure PRIVATE hac_test_support)
 hac_apply_warnings(test_adp_net_pure)
 add_test(NAME test_adp_net_pure COMMAND test_adp_net_pure)
 
+# The MQTT client's decisions -- the broker's URI, the queues' indices, a
+# message put together from pieces, which session an esp-mqtt event belongs
+# to and what the adapter's task does next -- compiled from where the firmware
+# compiles them (docs/adr/0033-mqtt-on-the-board.md). adp_mqtt.c itself needs
+# ESP-IDF and is held to the port_telemetry contract in the test app.
+add_executable(test_adp_mqtt_pure
+    unit/test_adp_mqtt_pure.c
+    ${HAC_ROOT}/platform/esp32_t5s3/adp_mqtt_pure.c
+)
+target_include_directories(test_adp_mqtt_pure PRIVATE
+    ${HAC_ROOT}/platform/esp32_t5s3
+    ${HAC_ROOT}/ports
+)
+target_link_libraries(test_adp_mqtt_pure PRIVATE hac_test_support)
+hac_apply_warnings(test_adp_mqtt_pure)
+add_test(NAME test_adp_mqtt_pure COMMAND test_adp_mqtt_pure)
+
 # The device's panel limits against the simulator's. Only board_config.h's
 # directory is added -- it is plain data -- not anything that builds for the
 # ESP32.

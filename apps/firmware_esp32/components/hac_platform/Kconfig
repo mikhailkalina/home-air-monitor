@@ -40,3 +40,57 @@ menu "Home Air Monitor: Wi-Fi"
             its length.
 
 endmenu
+
+menu "Home Air Monitor: MQTT"
+
+    config HAC_MQTT_BROKER_URI
+        string "MQTT broker (mqtt://<host>[:<port>])"
+        default ""
+        help
+            Phase 4g (docs/adr/0033-mqtt-on-the-board.md). The broker the
+            board reports to (platform/esp32_t5s3/adp_mqtt.c), plain MQTT on
+            the local network: mqtt://192.168.1.10:1883, or a name the
+            router's DNS resolves (lwIP does not do mDNS: not .local). No
+            TLS -- mqtts:// is refused -- and no user or password in the URI:
+            they have symbols of their own. Empty -- the default -- means no
+            MQTT: the firmware runs as before, Wi-Fi and SNTP included, and
+            the test app reports the port_telemetry contract as IGNORED.
+            Needs HAC_WIFI_SSID.
+
+            Set it in the gitignored overlay
+            apps/firmware_esp32/sdkconfig.credentials, beside the Wi-Fi
+            network, never here or in sdkconfig.defaults: it says where the
+            owner's network has its broker. An overlay reaches only a fresh
+            sdkconfig (cmake/credentials_idf.cmake).
+
+    config HAC_MQTT_USER
+        string "MQTT user"
+        default ""
+        help
+            The user the board logs in as, or empty for an anonymous broker.
+            In sdkconfig.credentials, never anywhere committed.
+
+    config HAC_MQTT_PASSWORD
+        string "MQTT password"
+        default ""
+        help
+            The user's password, or empty. Sent only with a user name (MQTT
+            3.1.1, 3.1.2.9), in clear text over the LAN: no TLS (ADR 0033).
+            In sdkconfig.credentials, never anywhere committed; never logged
+            -- the boot log gives its length. An image built with it holds it
+            in plain text: never attach one to an issue or a pull request.
+
+    config HAC_MQTT_TOPIC_PREFIX
+        string "MQTT topic prefix"
+        default "homeair"
+        help
+            The first levels of the device's topics, <prefix>/<device
+            id>/state and .../status (core/reporting/topics.h): one or more
+            levels of [A-Za-z0-9_-], separated by single '/', at most 48
+            characters -- an invalid one leaves MQTT off, and the boot log
+            says why. The device id is the station MAC's, hac- and twelve
+            hex digits. "homeair", the default, is requirements 10.1's
+            example and the simulator's; a household with its own prefix sets
+            it in sdkconfig.credentials with the broker.
+
+endmenu

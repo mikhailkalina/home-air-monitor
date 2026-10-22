@@ -24,6 +24,12 @@ idf_component_register(
         # host tests from this location (phase 4e, docs/adr/0032).
         ${HAC_ROOT}/platform/esp32_t5s3/adp_net.c
         ${HAC_ROOT}/platform/esp32_t5s3/adp_net_pure.c
+        # The MQTT client behind port_telemetry, over esp-mqtt, and its
+        # decisions, which the host tests from this location (phase 4g,
+        # docs/adr/0033). Linked only into an image with a broker: without
+        # one nothing calls adp_mqtt_init().
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_mqtt.c
+        ${HAC_ROOT}/platform/esp32_t5s3/adp_mqtt_pure.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_power.c
         # The RTC's INT on IO9, its falling edges stamped in an interrupt
         # (phase 4f, docs/adr/0023's amendment), and the GPIO ISR service it
@@ -52,6 +58,9 @@ idf_component_register(
         esp_netif
         esp_event
         nvs_flash
+        # The MQTT client (adp_mqtt.c): esp-mqtt, bundled with ESP-IDF
+        # (THIRD_PARTY_NOTICES.md).
+        mqtt
         esp_psram
         esp_hw_support
         esp_rom

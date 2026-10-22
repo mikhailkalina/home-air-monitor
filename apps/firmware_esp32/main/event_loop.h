@@ -26,8 +26,9 @@
 // core/reporting/reporter.c after each poll, as the recorder's watch, and
 // wakes at the earliest of three deadlines: the sensor manager's,
 // update_policy's and the reporter's. The network and MQTT adapters wake it
-// through event_loop_post_network() when something changed. Until phase 4c
-// brings those adapters, the composition has no reporter to give it.
+// through event_loop_post_network() when something changed. The board
+// composes a reporter since phase 4g (docs/adr/0033-mqtt-on-the-board.md),
+// in an image with a broker; once an hour this logs what it published.
 //
 // Since phase 4d (docs/adr/0031-the-network-on-the-screen.md) it holds the
 // link the reporter reports (core/app/link_hold.h) and puts the held state

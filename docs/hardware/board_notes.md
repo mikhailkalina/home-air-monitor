@@ -656,6 +656,15 @@ run-time share is the board's to measure (open item "Wi-Fi on the board").
 Measured on the board the same day, 68 KB; with that, the IRAM optimisations
 were turned off: static internal RAM 131,379 bytes with a network, Wi-Fi's
 share 33,576.
+**MQTT's, in the build, 2026-10-22** (phase 4g,
+`docs/adr/0033-mqtt-on-the-board.md`): an image with the network and a broker
+against the same tree with the network alone, +3,904 bytes of static internal
+RAM (the reporter, the topics, the adapter's state) and +124,500 bytes of
+image, 1,363,697 in all, 33 % of the app partition -- about 54 KB of it Mbed
+TLS's TLS layer, which esp-tls links for the plain TCP transport and nothing
+runs. The adapter's buffers, about 27 KB, are in PSRAM. Its run-time share --
+two task stacks, esp-mqtt's client and buffers, the socket, the outbox -- is
+an ESTIMATE of 20-25 KB of internal RAM (open item "MQTT on the board").
 
 ## Known constraints (vendor warning, verbatim intent)
 
@@ -2121,7 +2130,9 @@ layout settles, not before.
 - [ ] **The network on the screen (phase 4d).** Built 2026-10-21, verified on
       the host only (`docs/adr/0031-the-network-on-the-screen.md`). Phase 4e
       brings the Wi-Fi adapter, not yet the reporter: what follows waits for
-      the MQTT adapter too. **What the board shows now**, with no reporter
+      the MQTT adapter too -- **there since phase 4g**, in an image with a
+      broker in `sdkconfig.credentials` (open item "MQTT on the board"). **What
+      the board shows without a broker**, with no reporter
       composed: no word where the bar
       said "offline", the battery text at the right margin instead; on the
       diagnostics screen a smaller title and two network lines, `Wi-Fi off`
@@ -2485,3 +2496,106 @@ layout settles, not before.
       Still to see: the second sync landing on the second with the learned
       delay and its `drift_ppm`; a day of hourly samples; the cold boot after
       `rtc_stop`; the chip's marking; the autumn change.
+- [ ] **MQTT on the board (phase 4g).** Built 2026-10-22, verified on the
+      host only (`docs/adr/0033-mqtt-on-the-board.md`): esp-mqtt behind
+      `port_telemetry` (`platform/esp32_t5s3/adp_mqtt.c`, a task of its own,
+      the only caller of esp-mqtt), its decisions tested on the host, and the
+      reporter composed; the firmware and the test app built with a dummy
+      broker. **Needs a broker**: in `apps/firmware_esp32/sdkconfig.credentials`,
+      beside the network, `CONFIG_HAC_MQTT_BROKER_URI="mqtt://<address>:1883"`
+      and, for a broker with users, `CONFIG_HAC_MQTT_USER` and
+      `CONFIG_HAC_MQTT_PASSWORD` (`sdkconfig.credentials.example`); delete the
+      build's sdkconfig and reconfigure -- the build refuses a stale one -- and
+      `grep CONFIG_HAC_MQTT_BROKER_URI sdkconfig`. Without one the image is phase
+      4f's: `main: MQTT off: no broker in this image`. What each check is to
+      show, and the lines that show it:
+      - *A boot*: `adp_mqtt: client ready: plain MQTT, no TLS broker=... user=...
+        password_len=... psram_bytes=...` and `main: MQTT: the reporter waits for
+        the link topics=homeair/hac-<MAC> ...` before the first frame; after
+        `adp_net: up`, `reporter: session up session=1`, `event_loop: published
+        online=true discovery=9 session=1`, and once `adp_mqtt: memory with a
+        session free_internal=... min_free_internal=... mqtt_stack_free_min=...`.
+        About a minute later `event_loop: link on the screen shown=online`, and
+        the bar says `online`.
+      - *In Home Assistant*: a device "Home Air Monitor", model "LILYGO T5 4.7"
+        e-Paper S3", hardware version the silkscreen's, software version the
+        image's `git describe`, beside the simulator's "Home Air Monitor
+        (simulator)"; nine entities with the BSEC image, seven without it --
+        IAQ and its accuracy removed; the values those of the screen at the same minute,
+        `rssi` that of `wifi`. `mosquitto_sub -v -t 'homeair/#' -t
+        'homeassistant/sensor/hac-+/#'` shows the retained state and status.
+      - *The console's `mqtt`*: `MQTT CONNECTED`, the broker and the user;
+        published and acknowledged growing a message a minute at least,
+        refused 0, queued 0 between messages, esp-mqtt's outbox 0 between
+        messages; **the event loop's longest call in microseconds** -- tens,
+        like the card's longest post -- and which call.
+      - *A broker restart* (the add-on or the container restarted): `adp_mqtt:
+        the session was lost`, `reporter: session lost why=dropped`, attempts
+        until the broker is back -- `no connection to the broker why=...` once --
+        then `session up session=2` and the configs again; the bar `no broker`
+        only if the broker was gone more than a minute. The sensors' `sample`
+        lines, the redraws and the card's rows go on through it.
+      - *A Home Assistant restart*: `reporter: home assistant started:
+        discovery again`, nine configs, the entities back without a restart of
+        the board.
+      - *Wi-Fi gone for an hour* (the access point off): `reporter: session lost
+        why=network`, the will -- Home Assistant shows the device unavailable
+        within 90 s -- the bar `no Wi-Fi` a minute after the loss; nothing
+        queued meanwhile (`mqtt`: queued 0); after the access point's return,
+        `adp_net: up`, `session up`, `online` and the state at once, the bar
+        `online` a minute later. Measuring, the screen and the card unaffected
+        throughout: the sensors' lines, `rec`'s rows and longest post, the
+        `mqtt` longest call still microseconds.
+      - *Resources*: `memory with a session` against phase 4f's 72,503 free
+        with the link up (an ESTIMATE of 20-25 KB less); `esp-mqtt's task:
+        stack low-water mark` of 6,144 (`ADP_MQTT_TASK_STACK_BYTES`, an
+        ESTIMATE); `adp_mqtt: stack low-water mark` of the adapter's 6,144;
+        the event loop's own, now with the reporter's step on it.
+      - *A day unattended*, from the card's `log/`: `event_loop: published in
+        the hour` -- 24 a day: state messages (ADR 0030's replay: 1,554-1,597 a
+        day), heartbeats, discovery, sessions, lost, refused -- and `reporter:
+        session lost` / `session up` for the reconnections; `BSEC called late`
+        and `decision action=full` per day against earlier days' (open item "BSEC
+        on the board"), to see whether MQTT's traffic moves either; and in Home
+        Assistant, **long-term statistics for every measurement entity** --
+        temperature, humidity, pressure, CO2, IAQ -- in Developer tools,
+        Statistics, with no "unit changed" or "no state class" issues:
+        requirements 16's acceptance for "Phase 3".
+      - *The test app*: with a broker in the overlay, `idf.py -T hac_platform
+        build` from a fresh `test_app/sdkconfig` adds `contract port_telemetry
+        adp_mqtt+esp-mqtt` lines, every one PASS -- the full queue's two "not
+        exercised", the drop and its will exercised by taking the station
+        down -- and a summary line with the longest call and both stacks;
+        without a broker the case is IGNORED and says why.
+      **First run 2026-10-22** (ELF `cbdd10e39...`, the BSEC image, a mosquitto
+      2.0.21 on a Raspberry Pi Zero W, plain MQTT with a user; the owner's YAT
+      logs of 16:57 and 17:01 local, 12 minutes in all):
+      - *A boot*: `adp_mqtt: client ready ... password_len=9`, the Wi-Fi up at
+        20.2 s (two failed attempts, the access point still holding the old
+        association), `reporter: session up session=1 attempts=1`, `published
+        online=true discovery=9`, and 60 s later `link on the screen
+        shown=online`. `memory with a session free_internal=51799` against 61,823
+        with the link up before it: **MQTT costs about 10 KB of internal RAM**,
+        under the 20-25 KB ESTIMATE; the stacks: esp-mqtt's 4,700 free of 6,144,
+        the adapter's 3,256 of 6,144.
+      - *The event loop's longest call into the port*: 138 us (`publish`) after
+        3 minutes, 204 us after 7 -- microseconds, as the contract of "nothing
+        waits" asks. esp-mqtt's outbox (4 KB) was full 7 and then 19 times at
+        the sessions' starts: twelve messages in a burst, the rest waiting in the
+        adapter's ring as designed; nothing refused (`refused 0`).
+      - *A broker restart* (17:05:48): `transport_read(): EOF`, `session lost
+        why=dropped`; the first attempt a second later met a broker still
+        starting (`Connection reset by peer`, esp-mqtt knew within 0.5 s); the
+        reporter, which cannot be told, waited out its 10 s connect timeout, then
+        its 5 s backoff -- `session up session=2` at 17:06:03, **15 s after the
+        loss, 10 of them the port's missing "the attempt is over"** (ADR 0030's
+        amendment saw the same with the simulator; ADR 0033 weighed the port
+        change and did not make it -- this is its first board figure). The
+        console's `mqtt` numbers sessions by the adapter's attempts (session 3),
+        the reporter's by the sessions that worked (session 2).
+      - *A `restart`* (17:09:41): ESP-IDF's shutdown stopped Wi-Fi under the
+        session (`tcp_read error, errno=Software caused connection abort`), the
+        broker published the will -- `homeair/hac-d83bda706774/status` went
+        `offline` -- and the new boot's `online` followed 12 s later.
+      - *Not yet seen*: Home Assistant with its MQTT on this broker; its restart;
+        Wi-Fi gone for an hour; a day's `published in the hour`; the test app.

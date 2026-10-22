@@ -3,8 +3,10 @@
 // A publish/subscribe session with an MQTT broker
 // (docs/architecture.md 5.6, docs/adr/0030-telemetry-ports-and-the-reporter.md).
 //
-// Two implementations: the board's MQTT client (phase 4c) and, on a PC, a
-// client of an in-memory broker model (platform/host/adp_telemetry_loopback.h).
+// Implementations: the board's MQTT client over esp-mqtt
+// (platform/esp32_t5s3/adp_mqtt.h, phase 4g) and, on a PC, a client of an
+// in-memory broker model (platform/host/adp_telemetry_loopback.h) and one of
+// a real broker over libmosquitto (platform/host/adp_telemetry_mqtt.h).
 // What uses it: core/reporting/reporter.h, which owns every decision -- when
 // to connect, what to publish and when to try again. The port decides none
 // of them: it never reconnects on its own and never queues a message for a

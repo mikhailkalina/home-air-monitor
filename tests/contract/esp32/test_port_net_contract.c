@@ -34,17 +34,11 @@
 
 #include "unity.h"
 
-#include "adp_clock.h"
-#include "adp_log.h"
 #include "adp_net.h"
 #include "adp_net_pure.h"
 #include "contract_print.h"
 #include "port_net_contract.h"
-
-// The firmware's, as its main.c gives them.
-#define NET_TASK_STACK_BYTES 6144u
-#define NET_TASK_PRIORITY 4
-#define NET_TASK_CORE 0
+#include "test_station.h"
 
 // The firmware's caller of up() and down(): the event loop
 // (EVENT_LOOP_TASK_PRIORITY in its main.c), above NET_TASK_PRIORITY.
@@ -52,9 +46,7 @@
 
 #define IMPLEMENTATION "adp_net+ESP-IDF station"
 
-static adp_log_t s_log;
-static adp_clock_t s_clock;
-static adp_net_t s_net;
+static const port_clock_t *s_clock;
 
 static void report(void *ctx, const char *check, bool ok)
 {
@@ -65,8 +57,7 @@ static void report(void *ctx, const char *check, bool ok)
 static void advance(void *ctx, uint64_t ms)
 {
     (void)ctx;
-    const port_clock_t *clock = adp_clock_port(&s_clock);
-    clock->delay_ms(clock, (uint32_t)ms);
+    s_clock->delay_ms(s_clock, (uint32_t)ms);
 }
 
 TEST_CASE("adp_net satisfies the port_net contract", "[contract][port_net]")
@@ -79,20 +70,11 @@ TEST_CASE("adp_net satisfies the port_net contract", "[contract][port_net]")
             "no Wi-Fi credentials in this image: the port_net contract was not run");
     }
 
-    adp_log_init(&s_log);
-    adp_clock_init(&s_clock, adp_log_port(&s_log));
-    const port_clock_t *clock = adp_clock_port(&s_clock);
-    const adp_net_config_t cfg = {
-        .ssid = CONFIG_HAC_WIFI_SSID,
-        .password = CONFIG_HAC_WIFI_PASSWORD,
-        .hostname = NULL,
-        .clock = clock,
-        .log = adp_log_port(&s_log),
-        .task_stack_bytes = NET_TASK_STACK_BYTES,
-        .task_priority = NET_TASK_PRIORITY,
-        .task_core = NET_TASK_CORE,
-    };
-    TEST_ASSERT_EQUAL_INT(HAL_OK, adp_net_init(&s_net, &cfg));
+    // The station the port_telemetry case shares (test_station.h).
+    const test_station_t *station = test_station();
+    TEST_ASSERT_EQUAL_INT(HAL_OK, station->status);
+    const port_clock_t *clock = station->clock;
+    s_clock = clock;
 
     const port_net_contract_env_t env = {
         .clock = clock,
@@ -105,11 +87,11 @@ TEST_CASE("adp_net satisfies the port_net contract", "[contract][port_net]")
     const uint64_t start = clock->now_ms(clock);
     const UBaseType_t own_priority = uxTaskPriorityGet(NULL);
     vTaskPrioritySet(NULL, CALLER_PRIORITY);
-    const unsigned failures = port_net_contract_run(adp_net_port(&s_net), &env, report, &ctx);
+    const unsigned failures = port_net_contract_run(adp_net_port(station->net), &env, report, &ctx);
     vTaskPrioritySet(NULL, own_priority);
 
     adp_net_status_t st;
-    adp_net_status(&s_net, &st);
+    adp_net_status(station->net, &st);
     printf("contract port_net %s: %lu s in all; %lu connections, %lu attempts, %lu failed "
            "(%lu timed out), the last reason %s (%u); task stack %lu bytes free at least, %lu "
            "events dropped\n",

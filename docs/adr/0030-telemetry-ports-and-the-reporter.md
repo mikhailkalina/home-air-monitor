@@ -262,7 +262,11 @@ drift; the simulator's CLI test holds one of them.
 `reporter_t` is 2,376 bytes, static when 4c composes one.
 
 **What the board's adapters inherit** (phase 4c's when this was written; the
-next sub-phase's since the amendment below):
+next sub-phase's since the amendment below; done in phase 4e, ADR 0032, and
+phase 4g, ADR 0033 -- which found, in esp-mqtt's source, that
+`esp_mqtt_client_enqueue()` takes the client's lock, which esp-mqtt's task
+holds while it waits for the network, so that only a task of the adapter's
+own calls it):
 
 - An MQTT adapter over esp-mqtt, from what its header in ESP-IDF 5.5 says
   (`components/mqtt/esp-mqtt/include/mqtt_client.h`, read, nothing tried):
