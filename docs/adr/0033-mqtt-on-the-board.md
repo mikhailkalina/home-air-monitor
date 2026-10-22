@@ -297,7 +297,12 @@ contract runs on a task of the event loop's priority on core 1, where the
 firmware's caller runs, away from the station's, the adapter's and esp-mqtt's
 tasks on core 0: its timing checks time the calls, not a preemption (ADR
 0032's lesson from the `port_net` case). An image without a broker reports
-the case IGNORED and says why.
+the case IGNORED and says why. The first run on the board failed once, on a race
+between cases: the `port_net` case ended with a `down()` the station's task had
+not acted on, so `up()` was answered at once with a link about to drop and
+esp-mqtt's single attempt met a stopping radio. The shared station now waits for
+the task's phase to be idle before it asks for the link; the adapter was not at
+fault, and the firmware calls `up()` once. The second run passed in full.
 
 ### A port change weighed, and not made
 

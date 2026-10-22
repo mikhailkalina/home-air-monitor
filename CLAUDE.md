@@ -793,7 +793,9 @@ the reporter's connect timeout on an attempt esp-mqtt knew had failed -- the wei
 change's first board figure; a `restart` left the will (`status` offline, then online 12 s
 later). Still owed (`board_notes.md`, open item "MQTT on the board (phase 4g)"): Home
 Assistant on that broker, its restart, Wi-Fi gone for an hour, a day unattended with HA's
-long-term statistics -- requirements 16's acceptance -- and the test app.
+long-term statistics -- requirements 16's acceptance. The test app passed on the board
+(`11 Tests 0 Failures`, 45 `port_telemetry` checks, its drop and will exercised by taking the
+station down) once its runner waited for the station to stop before asking it up again.
 
 On branch `ui-screen-change-full-refresh` (ADR 0034), at the owner's request after watching the
 board: a change of screen -- a tap, or the diagnostics screen's timeout -- is a full refresh,
