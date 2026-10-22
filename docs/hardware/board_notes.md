@@ -2761,8 +2761,58 @@ layout settles, not before.
         loss, the configs again. The Wi-Fi stayed up (no `adp_net` line). Why the
         socket stalled is not in the log: the Pi Zero W's broker, or the air.
         The event loop never waited for it. To count in the day unattended.
-      - *Not yet seen*: Home Assistant with its MQTT on this broker; its restart;
-        Wi-Fi gone for an hour; a day's `published in the hour`; the test app.
+      **Home Assistant and two hours, 2026-10-22** (ELF `6c4244ce7...`, branch
+      `ui-screen-change-full-refresh`, its MQTT code phase 4g's; the owner's
+      YAT logs of 20:19 and 22:20-22:26 local, uptime 2 h; the broker with its
+      ACL -- the board may write only `homeair/<its id>/#` and
+      `homeassistant/sensor/<its id>/#`, a simulator beside it under its own
+      user: the broker's configuration, not in the board's log):
+      - *A restart of Home Assistant* (22:25:52): `reporter: home assistant
+        started: discovery again session=1`, then `published online=false
+        discovery=9` 30 ms later -- the birth message answered with every
+        config again, in the session that was up: no loss, no reconnection.
+      - *Two hours*, taps in the first four minutes only: `published in the
+        hour state=77 heartbeats=51 discovery=9 sessions=1 lost=0 refused=0`,
+        then `state=66 heartbeats=54 discovery=0 sessions=0 lost=0 refused=0`:
+        66-77 an hour, 1,584-1,848 a day, against the 1,554-1,597 ADR 0030's
+        replay of the owner's days predicted. Why the first hour sent 11 more,
+        the log does not say: the session's first state and one change of
+        BSEC's accuracy (`unreliable` to `low`, at 180 s) are two of them.
+      - *The ACL*: the state and status still arrive under `%c`, the client id
+        being the device id. **The denial, seen 2026-10-22** on the broker:
+        three publishes as `hac-board`, each `CONNACK (0)` and sent -- with
+        client id `hac-board-probe` to `homeair/simulator/state`, with `probe1`
+        to `homeair/probe1/x`, with `probe1` to `homeair/probe2/x` -- and a
+        subscriber as `homeassistant` on `homeair/#` received only `homeair/probe1/x
+        allowed-B`: the board's user can write under its own client id alone, and
+        cannot touch the simulator's topics or another device's. Mosquitto drops
+        a denied QoS 0 publish without telling the client, so the check is the
+        receiver's.
+      - *Not yet seen*: Wi-Fi gone for an hour; a full day's hourly lines and
+        Home Assistant's long-term statistics.
+      **The test app, 2026-10-22** (the non-BSEC variant with the overlay, the
+      owner's YAT logs of 23:20 and 23:29 local):
+      - *The first run, one failure*: `connected within
+        PORT_TELEMETRY_CONTRACT_CONNECT_MS FAIL`. The runner's fault: the
+        `port_net` case before it ended with a `down()` the station's task had
+        not yet acted on, the port showed `NET_UP` until it had (ADR 0032, "what
+        the port shows"), `test_station_up()` returned at once, and esp-mqtt's
+        one attempt met a radio being stopped (`esp-tls: connect() error: Host
+        is unreachable`, 60 ms before `radio stopped`); the port never
+        reconnects, so the contract's 10 s ended in a failure. `test_station_up()`
+        now takes the link down and waits for the station's own phase to be idle
+        before it asks for it again. Nothing in the adapter: the firmware calls
+        `up()` once.
+      - *The run after the fix*: `11 Tests 0 Failures 0 Ignored`, `tests=11` (the
+        BSEC variant has one case more); 45 `contract port_telemetry` lines
+        PASS, the full queue's two "not exercised"; 47 s, 3 attempts, 3 sessions,
+        one ended by the network -- the station taken down under the session and
+        brought back -- and its will `gone` published, kept and cleared at the
+        broker; 30 published, 37 forwarded (subscriptions included), 30
+        acknowledged, 27 received; the longest call 136 us (`connect`); stacks 3,240
+        free (the adapter's) and 3,980 (esp-mqtt's). The broker, watched with
+        `mosquitto_sub -t 'hac-contract/#'`, saw the messages in the contract's
+        order and nothing left over.
 - [ ] **A change of screen as a full refresh (ADR 0034).** Built 2026-10-22,
       verified on the host only: every change of screen -- a tap, and the
       diagnostics screen's timeout -- is a full refresh, whatever the budget
