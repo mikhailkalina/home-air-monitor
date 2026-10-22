@@ -1004,6 +1004,18 @@ layout settles, not before.
       no reset since. One boot in the log; the reading holds for now, not
       proven. The four lines held off the file in that window are counted in
       `rec`'s `4 dropped`.
+      **Since Wi-Fi, from the card, 2026-10-20 to 22**: eight boots reported
+      `previous reset reason=BROWNOUT`, every one the boot after one the card
+      has nothing of -- the pattern of a brownout at `PWR_EN`'s rise, before the
+      card mounts, in the first boot of a freshly flashed image or after the
+      terminal's reset. One may be another kind: 13:56:30Z on 2026-10-22 followed
+      a `power_on` boot that had run 10 s, its last line on the card at 10.1 s,
+      the Wi-Fi associated and DHCP under way. Up to 10 s of lines never reach
+      the card before a reset (its flush interval), so whether the supply sagged
+      at run time -- the radio's current on `VDD3V3` -- or the terminal reopening
+      the port reset the chip into a brownout at the rail's rise, the card cannot
+      say. To see: a terminal attached through a cold boot, and `BOD:` after
+      `adp_net` lines rather than after `epdiy-i80: i80 row output ready`.
       **What follows, until the mechanism is known:** nothing may drive the
       bus while `PWR_EN` is low and the sensors are on the switched rail.
       That binds phase 5 above all: clearing `PWR_EN` for deep sleep, or
@@ -1284,6 +1296,18 @@ layout settles, not before.
       884-1,494, 44-74 and 167-292 before; and the redraws of ADR 0027 and
       0028 on the same branch, `reason=pressure` (none in the replay) and
       `reason=settle` (3-5 a day in the replay).
+      **The delta of 5 on the board, a night from the card** (ELF
+      `ec5d8a60f...`, one boot, 2026-10-21 22:04Z to 2026-10-22 07:27Z, 9.4
+      hours, the card's `log/` copied off by the owner): 73 redraws -- 53 for
+      IAQ (3 of them full), 9 temperature, 5 `settle`, 4 CO2, 2 status, none
+      for pressure -- and 5 late BSEC calls, 480-710 ms. Quiet until about 05Z:
+      11 redraws in the first seven hours, 51 in the two after, when the room
+      woke (CO2 to 865 ppm, IAQ to 176 at the power cut). Scaled to a day, about
+      190 redraws, 135 for IAQ, 8 full and 13 late calls, against 921-1,568,
+      884-1,494, 44-74 and 167-292 on 2026-10-18 and 19, and the replay's 243-280
+      IAQ redraws a day estimated for such days: the delta does on the board
+      what the replay said, or better. `settle` fired 5 times (the replay: 3-5
+      a day). A night, not yet a day with people in the room.
       - *A brownout before this boot*: `previous reset reason=BROWNOUT
         rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
         the image was flashed. The brownout itself is not in the logs. See the
@@ -1360,9 +1384,13 @@ layout settles, not before.
         reference a week or two after `time_set` gives this unit's figure.
         **Since phase 4f** the network measures it every hour, with nobody
         watching: open item "Time from the network on the board". Its first
-        answer, 2026-10-21, found the RTC 12.9 s behind: **-29 ppm** since the
+        answer, 2026-10-21, found the RTC 12.9 s behind: -29 ppm since the
         `time_set` of 2026-10-16 (±3, the hand-typed second), if nothing wrote
-        it in between -- a first figure, outside the ESTIMATE.
+        it in between. **Measured by the network over a night, 2026-10-22:
+        -20.8 ppm** (nine hourly samples, ±2.0 hour to hour), about 54 s a month
+        -- the ESTIMATE holds; the -29 was its own assumptions'. A power cut of
+        6.5 hours the same day cost 2.6 s more than that (open item "Time from
+        the network on the board").
       - *The autumn change*: 2026-10-25 at 01:00 UTC; if the device runs
         through it, its next redraw shows the hour step, 03:59 -> 03:00 in
         Vilnius.
@@ -1520,8 +1548,26 @@ layout settles, not before.
       the loop would have waited had it written itself. `sd`: 14,763 MB
       free, answered within a quarter second (the card's FSINFO held the
       count this time); `data/` 10 files, 122 KB, `log/` one file, 112 KB.
-      Still to see: hours unattended, a power cut in a write, a day on a PC
-      and in the simulator, the test app.
+      **Six days unattended, from the card copied off on 2026-10-22**
+      (`log/2026-10-16` to `-22`, `data/` alike, analysed locally): the night of
+      2026-10-21 to 22 recorded 17,260 rows with none dropped, the slowest flush
+      112 ms, the event loop's longest post 38 us. Two things seen for the first
+      time:
+      - *A power cut* (all power gone at about 07:27Z on 2026-10-22, open item
+        "Time from the network on the board"): the card mounted at the next
+        boot, every file of the day read, the last rows 07:27:03Z and 07:27:05Z
+        -- within the 10 s flush interval of the cut -- and the boot wrote the
+        day's next files, as designed.
+      - *A card pulled without `sd_eject`* (phase 4g's image, about 14:26Z):
+        found at the next write, 14:27:22Z -- two `diskio_sdmmc: Check status
+        failed (0x107)` lines, `recorder: recording stopped state=no_medium
+        ... rows_dropped=37`, and `card_writer: no card ... state=no_card`, not
+        the `state=lost` this item expected; `log: 28 lines lost while the card
+        could not be written`; the card's task's stack low-water mark at its
+        lowest yet, 2,048 bytes free of 6,144. The card back in, the minute's
+        quiet mount found it at 14:29:57Z and recording went on in the day's
+        tenth files. No reboot, nothing else held up.
+      Still to see: a day on a PC and in the simulator, the test app.
 - [x] **The touch panel on the board (phase 3g).** **Done 2026-10-20**:
       every check below seen, the test app's included; one fault found and
       fixed on the way (the controller's address, below). Built 2026-10-17,
@@ -2286,6 +2332,13 @@ layout settles, not before.
       Still to see: many boots, the access point rebooted and gone, the glass
       by eye, a day's late BSEC calls and the heating against a day without
       Wi-Fi, `vbat` under traffic and without Wi-Fi, the test app.
+      **The heating, a first comparison from the card** (2026-10-22): the
+      BME680's BSEC temperature minus the SCD41's, minute by minute in the
+      night's quiet hours up to 04:00Z (07:00 local), was 0.37 C (sd 0.12) from
+      the boot at 22:04Z on 2026-10-21, with Wi-Fi, and 0.51 and 0.52 C (sd
+      0.05) from 19:00Z on 2026-10-17 and 18, without: Wi-Fi does not warm the
+      BME680 relative to the SCD41. Both sit by the same board, so what it does
+      to both is the reference's to show.
       **Changed the same day** (ADR 0032): the Wi-Fi IRAM optimisations off,
       17,564 bytes of static internal RAM back by `idf.py size` -- the next
       image's `memory with the link up` should read about 74 KB free and 60 KB
@@ -2368,8 +2421,10 @@ layout settles, not before.
         difference between this chip's delay and the datasheet's -- -481 on
         2026-10-21, below -- and `first_tick_ms` says this chip's. The second
         sync's `rtc written` carries that `first_tick_ms`, and its `rtc landed`
-        a residual within a millisecond or two. A delay that changes from hour
-        to hour, or no learning (`learned=false`), is the thing to report.
+        a residual within ±12 ms -- this chip's delay varies 986-1,000 ms from
+        one start to the next (seen 2026-10-22, below). No learning
+        (`learned=false`), or a residual far outside that, is the thing to
+        report.
       - *The RTC chip itself*: its marking, read off the board (the chip
         beside the backup cell). A PCF8563 first ticks 0.508 s after a start
         by its datasheet; this one takes a whole second (1,000 ms by its INT,
@@ -2493,9 +2548,81 @@ layout settles, not before.
         on the board.
       - *Unchanged*: EPDiy's draw times; BSEC late 449 ms at the boot's full
         refresh and 530 at a status redraw, none at the write.
-      Still to see: the second sync landing on the second with the learned
-      delay and its `drift_ppm`; a day of hourly samples; the cold boot after
-      `rtc_stop`; the chip's marking; the autumn change.
+      **A night of hourly syncs, 2026-10-22** (ELF `ec5d8a60f...`, the BSEC
+      image with the GPIO ISR service installed once; the owner's YAT logs of
+      01:03 local -- the boot and its first sync -- and 01:10-07:52, 6.7 hours
+      of the same boot, syncs 2 to 7; syncs 8 to 10 from the card's `log/`,
+      which the owner copied off the card the same afternoon -- the boot ran
+      until the power went at 07:27Z):
+
+      | Sync (UTC) | `drift_ppm` (±1.13) | before the write | landed | first tick |
+      |---|---|---|---|---|
+      | 22:05 (boot) | -- | -494 ms | -479 ms | 987 ms |
+      | 23:05 | -21.19 | -554 | -8 | 994 |
+      | 00:05 | -20.90 | -82 | -5 | 999 |
+      | 01:05 | -18.08 | -69 | +8 | 991 |
+      | 02:05 | -23.16 | -74 | +3 | 987 |
+      | 03:05 | -20.90 | -71 | -9 | 995 |
+      | 04:05 | -20.62 | -82 | -5 | 1000 |
+      | 05:05 | -17.23 | -66 | +12 | 988 |
+      | 06:05 | -22.60 | -68 | -7 | 994 |
+      | 07:05 | -22.88 | -88 | +4 | 989 |
+
+      - **This unit's RTC loses 20.8 ppm** -- the mean of nine hours, spread
+        ±2.0 ppm hour to hour (±0.7 on the mean): 75 ms an hour, 1.8 s a day,
+        about 54 s in a 30-day month. ADR 0023's ESTIMATE of ±20 ppm holds; the
+        -29 ppm over the five days before was that estimate's own assumptions
+        (a hand-typed `time_set`, nothing writing the RTC since). One night,
+        indoors, the room at 23-24 C; a day and other temperatures are still to
+        see.
+      - **The learned delay lands every write within ±12 ms** of the second's
+        start -- not the ±1-2 the design first claimed. The delay from a start
+        to the first tick is not one figure: 987-1,000 ms over these ten
+        writes (and 986-994 at the boots of the afternoon, below), so each
+        write lands off by the difference between its delay and the one before.
+        Every landing is measured, so the drift is unaffected.
+      - *On time throughout*: `rearms=0`, `start_late_ms` 0 or 1, the clock
+        stopped 21-30 ms.
+      - *The ESP32's own clock*: `system_minus_sntp_ms` -2, -1, +8, -8, -1, -1
+        ms an hour -- within ±2 ppm, and within SNTP's own noise.
+      - *Nothing else*: no warning, no error, no `BSEC called late` in the 6.7
+        hours of the terminal's log (five in the card's 9.4 hours, all after
+        05Z, when the room woke and the redraws came: open item "BSEC on the
+        board"); 11 redraws, all partial; the touch interrupt on (`adp_input:
+        interrupt on gpio=47 ... esp_err=0`) and **no `E gpio: ... GPIO isr
+        service already installed` line**: the fix holds.
+      **Two boots of the afternoon, 2026-10-22** (ELF `6211314dd...`, phase 4g's
+      image; the owner's YAT logs of 16:57 and 17:01 local, the open item "MQTT
+      on the board" has their MQTT): each boot's first sync wrote with the
+      datasheet's 508 ms and landed half a second behind (`residual_ms=-485
+      first_tick_ms=993 learned=true` at 13:59Z) -- the learned delay lives in
+      RAM, as designed; no `E gpio` line in either boot; the one `i2c.master`
+      NACK after the `restart` is the SCD41's, still measuring. From that
+      landing to the next boot's `rtc_minus_sntp_ms=-508` 661 s later: -23 ms,
+      -35 ppm ±6 -- a span too short against SNTP's few milliseconds of noise
+      to say more than "about the same".
+      **A cold boot with the RTC set, from the card, 2026-10-22**: all power gone
+      from about 07:27Z -- the last rows on the card, flushed every 10 s -- to
+      13:56:11Z, 6 h 29 min (`previous reset reason=power_on`,
+      `kept_across_reset=false`: the system time lost with it). The boot read
+      `wall clock source=rtc rtc=rtc: valid` -- VL clear, the footer had a time
+      from the first frame -- and its first answer found the RTC
+      `rtc_minus_sntp_ms=-3127`, where the night's -20.8 ppm from the 07:05
+      write's +4 ms predicts about -510: **2.6 s lost beyond the drift** during
+      the outage, -112 ppm over it if spread evenly. Not established which: the
+      oscillator running slower on the backup cell, or stopping for a moment as
+      the supply changed over without the chip setting VL. One outage; a second,
+      of a known length, and `time` against a reference right after the power
+      returns would tell them apart. That boot's `rtc written` line is not on the
+      card -- esptool reset the chip within the card's 10 s flush interval to
+      flash phase 4g -- but the write happened: the next boot found the RTC
+      -484 ms behind, where a write with the datasheet's 508 ms lands on this
+      chip, not 3.1 s.
+      Still to see: a day of hourly samples, and another temperature; the cold
+      boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
+      measured delay, about 995 ms, should replace the datasheet's 508 as the
+      default, so that a boot's first write lands too, is the owner's (ADR
+      0023's amendment, "Not decided here").
 - [ ] **MQTT on the board (phase 4g).** Built 2026-10-22, verified on the
       host only (`docs/adr/0033-mqtt-on-the-board.md`): esp-mqtt behind
       `port_telemetry` (`platform/esp32_t5s3/adp_mqtt.c`, a task of its own,
@@ -2567,7 +2694,7 @@ layout settles, not before.
         exercised", the drop and its will exercised by taking the station
         down -- and a summary line with the longest call and both stacks;
         without a broker the case is IGNORED and says why.
-      **First run 2026-10-22** (ELF `cbdd10e39...`, the BSEC image, a mosquitto
+      **First run 2026-10-22** (ELF `6211314dd...`, the BSEC image, a mosquitto
       2.0.21 on a Raspberry Pi Zero W, plain MQTT with a user; the owner's YAT
       logs of 16:57 and 17:01 local, 12 minutes in all):
       - *A boot*: `adp_mqtt: client ready ... password_len=9`, the Wi-Fi up at
@@ -2591,11 +2718,22 @@ layout settles, not before.
         loss, 10 of them the port's missing "the attempt is over"** (ADR 0030's
         amendment saw the same with the simulator; ADR 0033 weighed the port
         change and did not make it -- this is its first board figure). The
-        console's `mqtt` numbers sessions by the adapter's attempts (session 3),
-        the reporter's by the sessions that worked (session 2).
+        console's `mqtt` said "session 3" for the adapter's third attempt where the
+        reporter's log said session 2, the second that worked: since then it
+        says `attempt 3 (2 sessions)`.
       - *A `restart`* (17:09:41): ESP-IDF's shutdown stopped Wi-Fi under the
         session (`tcp_read error, errno=Software caused connection abort`), the
         broker published the will -- `homeair/hac-d83bda706774/status` went
         `offline` -- and the new boot's `online` followed 12 s later.
+      - *A write that did not finish* (14:10:58Z, from the card's `log/`, the
+        session after that `restart`): 66 s into it, `transport_base: Poll
+        timeout or error, errno=Connection already in progress ...
+        timeout_ms=5000` and `mqtt_client: Writing didn't complete in specified
+        timeout: errno=119` -- esp-mqtt's socket would not take a write for 5 s
+        -- then `session lost why=dropped`; the client's stop took 5.5 s (its
+        ping met the same), and `session up session=2` came 5.6 s after the
+        loss, the configs again. The Wi-Fi stayed up (no `adp_net` line). Why the
+        socket stalled is not in the log: the Pi Zero W's broker, or the air.
+        The event loop never waited for it. To count in the day unattended.
       - *Not yet seen*: Home Assistant with its MQTT on this broker; its restart;
         Wi-Fi gone for an hour; a day's `published in the hour`; the test app.

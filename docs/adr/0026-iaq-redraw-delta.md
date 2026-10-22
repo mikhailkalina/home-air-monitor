@@ -179,9 +179,16 @@ crossing low/medium); 2 full refreshes, the first frame's and one at the
 budget in the breath; 6 late BSEC calls. At rest the minute samples read
 49.5-51.9.
 
-**On the board, still to see**: a day unattended -- `reason=iaq` redraws, full
-refreshes and late BSEC calls from the card's `log/`, against 884-1,494, 44-74
-and 167-292 a day before and the estimates above; and how the number reads
-following an evening's event.
+**Seen on the board with the delta of 5** -- a night from the card's `log/`
+(ELF `ec5d8a60f...`, one boot, 2026-10-21 22:04Z to 2026-10-22 07:27Z, 9.4
+hours): 73 redraws, 53 of them for IAQ (3 full), 9 temperature, 5 `settle`
+(ADR 0028), 4 CO2, 2 status, none for pressure (ADR 0027); 5 late BSEC calls.
+Quiet for seven hours -- 11 redraws -- then 51 in the two hours the room woke.
+Scaled to a day: about 190 redraws, 135 for IAQ, 8 full refreshes and 13 late
+calls, against 921-1,568, 884-1,494, 44-74 and 167-292 on 2026-10-18 and 19,
+and under the estimate above of 243-280 IAQ redraws a day.
+
+**On the board, still to see**: a day unattended with people in the room, by
+the same counts; and how the number reads following an evening's event.
 
 Out of scope: BSEC's timing (ADR 0020) and the CO2 bands (requirements 13.1).

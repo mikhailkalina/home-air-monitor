@@ -730,9 +730,17 @@ after a start (the 989 of the polling version was its own error); -21 ppm over t
 the first version's write; 72,503 bytes free with the link up. One `E gpio: ... GPIO isr
 service already installed` line at every boot, the touch adapter's second install: since then
 the shared GPIO ISR service is installed once (`platform/esp32_t5s3/board_gpio_isr.c`, on
-app_main before either asks), not yet seen on the board. Still owed (`board_notes.md`, open
-item "Time from the network on the board (phase 4f)"): the next sync landing on the second,
-a day's drift, a cold boot after `rtc_stop`, the chip's marking, the autumn change.
+app_main before either asks) -- the line gone since. A night of hourly syncs, 2026-10-22 (ELF
+`ec5d8a60f...`, 9.4 hours, the last three syncs from the card's log): **the RTC loses 20.8
+ppm** (±2.0 hour to hour, ~54 s a month -- the ±20 ppm ESTIMATE holds); each write lands
+within ±12 ms with the learned delay, which varies 986-1,000 ms from start to start (not the
+±1-2 ms first claimed); on time throughout, no warning. A power cut of 6.5 hours the same day
+cost the RTC 2.6 s beyond its drift, VL clear -- the cell's slower oscillator or a moment's
+stop, not yet told apart. The card's log of that night also gave ADR 0026's delta its first
+board figures: about 190 redraws a day, 135 for IAQ, 8 full, 13 late BSEC calls, against
+921-1,568, 884-1,494, 44-74 and 167-292 before. Still owed (`board_notes.md`, open item "Time from the network
+on the board (phase 4f)"): a day and another temperature, a cold boot after `rtc_stop`, the
+chip's marking, the autumn change; a default delay of ~995 ms is the owner's to choose.
 
 Phase 4g on branch `phase-4g-board-mqtt` (ADR 0033): MQTT on the board.
 `platform/esp32_t5s3/adp_mqtt.c` is `port_telemetry` over esp-mqtt (ESP-IDF 5.5's, Apache-2.0).
@@ -776,7 +784,7 @@ bytes, image +124,500 (1.36 MB, 33 % of the partition) -- 54 KB of it Mbed TLS's
 linked by esp-tls under the plain TCP transport and never run. Verified on the host (unit,
 ASan); the firmware, its BSEC variant and the test app in both variants build from
 regenerated sdkconfigs, and the firmware and the test app with a dummy broker. On the board,
-2026-10-22 (ELF `cbdd10e39...`, BSEC; a mosquitto 2.0.21 on a Raspberry Pi Zero W with users
+2026-10-22 (ELF `6211314dd...`, BSEC; a mosquitto 2.0.21 on a Raspberry Pi Zero W with users
 and an ACL, `192.168.1.141`): the first session at the first attempt, `online` and nine
 configs; MQTT costs about 10 KB of internal RAM with a session (51,799 free), under the
 estimate; the event loop's longest call into the port 138-204 us; stacks with margin

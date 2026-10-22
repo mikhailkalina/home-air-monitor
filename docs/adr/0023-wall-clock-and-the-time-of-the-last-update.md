@@ -457,7 +457,26 @@ local, one sync; `board_notes.md` has the lines):
 - **One error line at every boot**: the RTC's adapter installed the shared GPIO
   ISR service before the touch task, whose own install ESP-IDF then logged as
   an error. Removed after: `platform/esp32_t5s3/board_gpio_isr.c` installs it
-  once, on app_main before either asks; not yet seen on the board.
+  once, on app_main before either asks -- the line gone from every boot since.
+
+A night of hourly syncs, 2026-10-22 (ELF `ec5d8a60f...`, 9.4 hours, syncs 2 to
+10, the last three from the card's log; `board_notes.md` has the table):
+
+- **The RTC loses 20.8 ppm**, nine samples spread ±2.0 ppm: about 54 s a month.
+  The ESTIMATE of ±20 ppm holds; the -29 ppm over the five days before was its
+  own assumptions'.
+- **Each write lands within ±12 ms of the second's start**, not the ±1-2 ms this
+  amendment first claimed: the chip's delay from a start to its first tick is
+  986-1,000 ms, not one figure, and a write planned with the last one's lands
+  off by the difference. Every landing is measured, so no drift is lost.
+- On time throughout (`rearms=0`, `start_late_ms` 0-1); the ESP32's own clock
+  within ±8 ms an hour of SNTP; no warning all night.
+- **A power cut of 6.5 hours cost 2.6 s beyond the drift** (the same day, all
+  power gone 07:27Z-13:56Z): the RTC came back valid, VL clear, and the boot took
+  its time, but 3,127 ms behind SNTP where the drift predicts about 510 --
+  -112 ppm over the outage if spread evenly. The oscillator slower on the
+  backup cell, or a moment's stop at the changeover the chip did not flag: one
+  outage does not say. Each answer corrects it within the hour of the link.
 
 ### Precision
 
@@ -472,9 +491,10 @@ local, one sync; `board_notes.md` has the lines):
   trip. What varies from hour to hour is noise on each sample, which a day's
   samples average. `system_minus_sntp_ms`, hour by hour, is the ESP32's own
   drift.
-- The landing: ±1-2 ms from the second write of a boot on, the delay learned;
-  the first write after a boot as the datasheet's delay is right for this chip
-  -- 0.49 s off on this board, whose chip first ticks a whole second after a
+- The landing: within ±12 ms from the second write of a boot on, the delay
+  learned -- this chip's varies 986-1,000 ms from one start to the next; the
+  first write after a boot as the datasheet's delay is right for this chip --
+  about 0.49 s off on this board, whose chip first ticks about a second after a
   start. Known either way.
 - If INT does not reach IO9, no edges: "no INT edge" twice an hour, the RTC
   written with no offset measured and no landing seen, and no drift. `time`
@@ -555,9 +575,10 @@ steps on the event loop, a few I2C transfers each, and a spin of 30 ms at most
   error to an hour's drift. Whether the system time should be held to a
   measured rate between answers is phase 5's question, where deep sleep makes
   the RTC the only clock.
-- **The learned delay kept across boots**: in RAM only. The board's first
-  measurement by INT is 1,000 ms; if the next ones hold it, it can replace the
-  datasheet's 508 as the default, and a boot's first write land too.
+- **The learned delay kept across boots**: in RAM only. The board's chip took
+  986-1,000 ms over the starts of 2026-10-22; a default of about 995 ms
+  instead of the datasheet's 508 would land a boot's first write too, within
+  the same ±12 ms -- the owner's to choose.
 - **INT for deep sleep**: IO9 is one of the S3's RTC GPIOs, so phase 5 can wake
   on the same alarm.
 

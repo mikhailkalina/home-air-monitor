@@ -15,7 +15,7 @@ with the owner's network and no broker; the firmware and the test app also
 with a dummy broker in a scratch build directory, which linked esp-mqtt and
 carried the broker's address.
 
-**On the board, 2026-10-22** (ELF `cbdd10e39...`, the BSEC image, a mosquitto
+**On the board, 2026-10-22** (ELF `6211314dd...`, the BSEC image, a mosquitto
 2.0.21 on a Raspberry Pi Zero W with users and an ACL, 12 minutes): the first
 session at the first attempt, `online` and nine configs; about 10 KB of
 internal RAM with a session (51,799 bytes free against 61,823 before it),
