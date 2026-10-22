@@ -36,13 +36,15 @@
 // and the time of the last message change in ordinary operation -- every
 // minute at least -- and the states with every reconnection attempt, so they
 // are drawn as they are when the screen is drawn and redraw nothing by
-// themselves. What redraws the section is the link the status bar shows,
-// held as the bar holds it (core/app/link_hold.h) -- and drawn here too, the
-// bar's own word in the title line, so that its change is always a change of
-// the picture -- and the network's name: a flapping link costs this screen
-// nothing either. (Compared and not drawn, a change of the held link made a
-// redraw due whose picture was the one on the glass: an empty diff, tried
-// again every second until the screen timed out.)
+// themselves. Only the network's name, and telemetry coming or going, redraw
+// the section; a flapping link costs this screen nothing. The link the status
+// bar shows (core/app/link_hold.h) is not on this screen: its word is the
+// MQTT line's state, said twice, and the screen is up for a minute at most.
+// Neither is it compared: compared and not drawn, a change of it made a
+// redraw due whose picture was the one on the glass -- an empty diff, tried
+// again every second until the screen timed out
+// (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md, amending
+// docs/adr/0031-the-network-on-the-screen.md).
 
 #ifndef HAC_CORE_UI_DIAGNOSTICS_VIEW_H
 #define HAC_CORE_UI_DIAGNOSTICS_VIEW_H
@@ -126,12 +128,9 @@ typedef struct {
     bool recorder_trouble;              // no medium, full, failed
     char recorder_text[DIAG_LINE_MAX];  // "Recording: on", ...
 
-    // The network (above). What redraws: whether there is telemetry, the
-    // held link and the network's name. The rest is as of the drawing.
+    // The network (above). What redraws: whether there is telemetry and the
+    // network's name. The rest is as of the drawing.
     bool network_present;    // a reporter: telemetry configured
-    link_status_t link;      // the held link, the status bar's
-    const char *link_text;   // and its word, view_model_link_text(): "" before one has held
-    bool link_trouble;       // no Wi-Fi, or no broker
     const char *wifi_state;  // "up", "joining", "failed", "off"; "-" without a network port
     bool wifi_trouble;       // telemetry, and the link not up
     char ssid[DIAG_SSID_MAX];
@@ -162,7 +161,7 @@ typedef struct {
     // "console", "--wall-time" -- or NULL. Shown only while it is set.
     const char *clock_source;
     // The reporter and its network (reporter_status()), or NULL without
-    // telemetry. The held link is the reading's.
+    // telemetry.
     const reporter_status_t *network;
     // port_clock's time at which reading->wall_time_ms was read, and the zone
     // the time of the last message is shown in; without a zone it is not.

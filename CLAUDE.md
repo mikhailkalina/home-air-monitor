@@ -795,6 +795,36 @@ later). Still owed (`board_notes.md`, open item "MQTT on the board (phase 4g)"):
 Assistant on that broker, its restart, Wi-Fi gone for an hour, a day unattended with HA's
 long-term statistics -- requirements 16's acceptance -- and the test app.
 
+On branch `ui-screen-change-full-refresh` (ADR 0034), at the owner's request after watching the
+board: a change of screen -- a tap, or the diagnostics screen's timeout -- is a full refresh,
+always, held by neither the partial-refresh budget nor the panel's minimum full-refresh interval
+(a guard, not a measurement); a whole new screen drawn partially kept the old one's outlines and
+read badly. It resets the budget; a tap now costs about 3.3 s to the new screen and a late BSEC
+call. `UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET` stays, binding nothing at the sensors' pace. And the
+diagnostics screen's title no longer carries the bar's link word -- the MQTT line says the same --
+nor compares the held link, so its network lines are all as of the drawing and a redraw is never
+due for something it does not draw. Verified on the host; not yet seen on the board
+(`board_notes.md`, open item "A change of screen as a full refresh").
+
+On the same branch (ADR 0035), after the owner compared LILYGO's firmware on the panel -- about
+2 s, eight quick flashes, no trace -- with ours: a full refresh is now the vendor's sequence,
+through EPDiy. Its clear (`BOARD_EPD_CLEAR_*`: 4 cycles of 4 pushes towards black and 4 towards
+white, rows driven 50 us, from LilyGo-EPD47's `epd_clear()` -- numbers only, that code is GPL-3.0)
+is a loop over EPDiy's `epd_push_pixels()` in `adp_display.c`, replacing EPDiy's 66-push
+`epd_clear()` -- 1,214 ms on the board against 2,456 -- then `MODE_EPDIY_WHITE_TO_GL16`, the
+vendor's fifteen darkening frames: a full refresh about 1.8 s, a change of screen 1.85 s, against
+3.4 s before. Partial refreshes no longer use GL16: GL16 re-drives an unchanged grey (L -> L,
+towards black and back) in every row and column a partial touches, and the static greys beside a
+changed digit went lighter in patches -- with GL16 after the clear too, less. They use a mode of
+this project's, "through white" (`platform/esp32_t5s3/epd_white_path.c`, pure, tested on the host,
+added to EPDiy's waveform at boot under type `0x12`): a changed pixel whitened in GL16's lightening
+phases and darkened in WHITE_TO_GL16's, an unchanged one never driven -- every grey by one path
+(ADR 0035, both amendments). Seen on the board 2026-10-22: the owner likes it -- no serious
+artifact, only the expected trace around a vanished black digit; partial draws as long as GL16's to
+the millisecond, a change of screen 1,844-1,865 ms. Still to see: a day of it, greys a partial
+redraws often, ghosting against the budget (`board_notes.md`, open item "The vendor's full
+refresh").
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

@@ -217,9 +217,6 @@ static void last_text(char *dst, size_t cap, const reporter_status_t *n, const d
 
 static void build_network(diag_view_t *v, const diag_facts_t *f)
 {
-    v->link = f->reading->link;
-    v->link_text = view_model_link_text(v->link);
-    v->link_trouble = v->link == LINK_NO_WIFI || v->link == LINK_NO_BROKER;
     const reporter_status_t *n = f->network;
     v->network_present = n != NULL && n->link != LINK_OFF;
     if (!v->network_present) {
@@ -310,11 +307,8 @@ bool diag_view_equal(const diag_view_t *a, const diag_view_t *b)
         !same_text(a->recorder_text, b->recorder_text)) {
         return false;
     }
-    // The network: what redraws it -- the held link, drawn as the title's
-    // word -- and nothing that is as of the drawing.
-    if (a->network_present != b->network_present || a->link != b->link ||
-        a->link_trouble != b->link_trouble || !same_text(a->link_text, b->link_text) ||
-        !same_text(a->ssid, b->ssid)) {
+    // The network: what redraws it, and nothing that is as of the drawing.
+    if (a->network_present != b->network_present || !same_text(a->ssid, b->ssid)) {
         return false;
     }
     for (size_t i = 0u; i < a->slot_count; ++i) {

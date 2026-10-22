@@ -680,7 +680,9 @@ interval -- never at the firmware's pace, which draws at most once per 5 s
 sensor cycle (20 partials, at least 105 s between full refreshes) -- and the
 next redraw after the interval is full. Past it by the budget again at most,
 40 in all, the most this panel has been driven through: a person tapping
-between screens could otherwise take it further (ADR 0025).
+between screens could otherwise have taken it further (ADR 0025) -- until a
+change of screen became a full refresh, held by neither the budget nor the
+minimum interval (ADR 0034).
 
 ## Ghosting observed in the simulator — a calibration starting point
 
@@ -1567,6 +1569,11 @@ layout settles, not before.
         lowest yet, 2,048 bytes free of 6,144. The card back in, the minute's
         quiet mount found it at 14:29:57Z and recording went on in the day's
         tenth files. No reboot, nothing else held up.
+      **The slowest flush yet, 2026-10-22** (ELF `6c4244ce7...`, the owner's
+      YAT log, `card_writer: recording stats`): 270 ms in the second hour of a
+      boot, against 160 ms at most over the three days before; the event
+      loop's longest post 35 us all the same -- the card's task waited, nothing
+      else did.
       Still to see: a day on a PC and in the simulator, the test app.
 - [x] **The touch panel on the board (phase 3g).** **Done 2026-10-20**:
       every check below seen, the test app's included; one fault found and
@@ -1921,7 +1928,10 @@ layout settles, not before.
       rect now reaches the panel as the core computed it, so phase 2c watches
       the CO2 headline region only, as it originally planned.
 - [ ] **Residue that survives full refreshes, in greys only -- and how fast
-      it fades.** Found 2026-10-13, phase 2c
+      it fades.** *Since ADR 0035 the full refresh is the vendor's clear,
+      which drives each row twice as long in all, and a draw from white: the
+      owner saw no trace on the vendor's firmware. Whether this residue is
+      gone is that item's ("The vendor's full refresh").* Found 2026-10-13, phase 2c
       (`docs/adr/0008-panel-timing.md`, "Residue that survives a full
       refresh"). Forty partial refreshes that flipped the CO2 headline
       between three and four digits left the "ppm" unit legible on mid-dark
@@ -1967,7 +1977,11 @@ layout settles, not before.
       measured below, 11-14 estimated; the simulator and `image_gen.py
       prepare` both use it, and photographs dithered towards it at their
       own tones were judged best on the panel. Open: measuring 11-14, and
-      the chart's own bias.
+      the chart's own bias. **Measured under the old full refresh**: GC16
+      takes a grey through black and lightens it; since ADR 0035 a full
+      refresh darkens it from white (`MODE_EPDIY_WHITE_TO_GL16`), and the
+      slideshow and photo frame show nothing else. `06_level_match` again
+      under the new full refresh says whether the table still holds.
       Found 2026-10-14 with the
       photo frame (`docs/adr/0012-image-pipeline.md`, "The photo frame"):
       its photographs look overexposed on the panel, though their files are
@@ -2030,7 +2044,9 @@ layout settles, not before.
       same shot (local normalisation, no flat field, no second shot), with
       the levels spread so each one sits at several distances from the
       centre.
-- [ ] **Vertical stripes in white after a full refresh.** Found 2026-10-13,
+- [ ] **Vertical stripes in white after a full refresh.** *No cause left
+      since ADR 0035: the draw after the clear drives nothing that stays
+      white. To confirm by eye ("The vendor's full refresh").* Found 2026-10-13,
       phase 2c. In `REFRESH_FULL`, GC16 after `epd_clear()` flashes
       white-to-white pixels (15 passes dark, 15 light -- GL16 does nothing
       for them), but only in columns that contain a changed pixel, because
@@ -2048,7 +2064,9 @@ layout settles, not before.
       kept earlier digits' outlines; a GL16 redraw would take it from every
       white pixel. Any GL16 trial must re-run the ghosting probe, not just
       the grey ramp.
-- [ ] **Re-measure the clear from the product's task.** The calibration ran
+- [ ] **Re-measure the clear from the product's task.** *EPDiy's
+      `epd_clear()` is no longer run (ADR 0035); the vendor's clear logs its own
+      `took_ms` from wherever it runs, the event loop's task included.* The calibration ran
       on `app_main`'s task (core 0); the product refreshes from the event
       loop's task (core 1, priority 5), where the device run's log puts
       `epd_clear()` at about 2,322 ms against the calibrated 2,456 ms. EPDiy
@@ -2618,6 +2636,14 @@ layout settles, not before.
       flash phase 4g -- but the write happened: the next boot found the RTC
       -484 ms behind, where a write with the datasheet's 508 ms lands on this
       chip, not 3.1 s.
+      **An evening of noisier answers, 2026-10-22** (ELF `6c4244ce7...`, the
+      owner's YAT logs of 20:19 and 22:20 local): two hourly syncs read
+      `drift_ppm=-9.887` and `-34.180`, where the night's nine spread +-2.0;
+      their mean, -22, is the night's -20.8. The ESP32's own clock moved
+      `system_minus_sntp_ms=38` and `-48` between the same answers, against +-8
+      in the night: the server's answers, which lwIP takes without a round-trip
+      correction, were tens of milliseconds noisier, not the RTC. One hour
+      says little; a day's samples average it out.
       Still to see: a day of hourly samples, and another temperature; the cold
       boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
       measured delay, about 995 ms, should replace the datasheet's 508 as the
@@ -2737,3 +2763,97 @@ layout settles, not before.
         The event loop never waited for it. To count in the day unattended.
       - *Not yet seen*: Home Assistant with its MQTT on this broker; its restart;
         Wi-Fi gone for an hour; a day's `published in the hour`; the test app.
+- [ ] **A change of screen as a full refresh (ADR 0034).** Built 2026-10-22,
+      verified on the host only: every change of screen -- a tap, and the
+      diagnostics screen's timeout -- is a full refresh, whatever the budget
+      and the panel's minimum interval; the diagnostics screen's title has no
+      link word. What to see:
+      - *Readability*: the new screen with no outline of the old one, by eye,
+        both ways -- what the owner saw wrong with partial changes.
+      - *Latency*: `event_loop: screen changed ... latency_ms=... action=full
+        partials=0`, the latency about 2,000 since ADR 0035 (the vendor's
+        clear ~1.3 s and the draw from white ~0.6 s, both estimates, ~80 ms of
+        rendering; 3,400 with EPDiy's clear and GC16), against 1,163-1,173 for
+        a partial change; a tap during a full refresh handled after it.
+      - *Taps in a row*: home, diagnostics and home again within a few
+        seconds -- each change full, none deferred (`deferred` would say the
+        panel's interval held it), the budget at 0 after each.
+      - *BSEC*: a `BSEC called late` line at each change, as at every full
+        refresh; whether IAQ's accuracy still reaches `high` on a day with a
+        few visits to the diagnostics screen.
+      - *The title*: `Diagnostics` and `tap to return`, nothing between them;
+        the MQTT line says `online` or `offline` as of the tap.
+      **Seen 2026-10-22**: with EPDiy's clear and GC16 (ELF `89905d8a5...`,
+      the owner's YAT log of 19:49 local) six changes of screen, every one
+      `action=full reason=request`, `latency_ms=3376` to `3411`, none deferred
+      though five came within the panel's minute of the last full refresh,
+      the budget at 0 after each; BSEC late 1.62-3.30 s at each. With the
+      vendor's full refresh (ADR 0035, the item "The vendor's full refresh")
+      1,842-1,901 ms. The title and the readability by eye: not reported yet.
+- [ ] **The vendor's full refresh (ADR 0035).** Built 2026-10-22, verified on
+      the host only: `REFRESH_FULL` and `REFRESH_CLEAR` start with the
+      vendor's clear -- 4 cycles of 4 pushes towards black and 4 towards
+      white, rows driven 50 us (`BOARD_EPD_CLEAR_*`) -- and a full refresh then
+      draws with `MODE_EPDIY_WHITE_TO_GL16` instead of GC16. What to see:
+      - *The flashes*: eight quick ones, then the picture darkening in with
+        no black phase -- as on the vendor's firmware the owner compared.
+      - *Timing*: `adp_display: panel cleared took_ms=` (ESTIMATE 1,280) and
+        EPDiy's own timing line after it for the draw (ESTIMATE: the diff
+        ~106 ms, then ~117 ms + 0.8 ms per non-white row, ~0.5 s for the home
+        screen); the boot's first frame has both. Into
+        `EPD_SIM_CLEAR_REFRESH_MS` and `EPD_SIM_FULL_DRAW_*`
+        (`platform/host/epd_emulation.h`), or the calibration image's
+        `clear`, `full_black`, `full_home`, `full_ramp`.
+      - *No trace*: after a change of screen, and after the twenty-first
+        redraw's full refresh, no outline of what was there -- close up, and
+        on the greys (the item "Residue that survives full refreshes").
+      - *No stripes in white*: the white columns beside text the same white
+        as the rest (the item "Vertical stripes in white").
+      - *Greys, full against partial*: the footer's "updated HH:MM" after a
+        full refresh and after a partial one that changed some of its digits
+        -- the same grey in both, or two? Likewise a status word in grey
+        (`warm`, `stale`) drawn by each. Two greys mean `MODE_GL16` after the
+        same clear instead (ADR 0035, "Greys come by another path").
+      - *The slideshow*: `06_level_match` and the photographs, all full
+        refreshes, against ADR 0013's judgement (the item "How light each grey
+        level really is").
+      - *BSEC*: a late call at each full refresh as before, shorter by about
+        1.5 s.
+      **Timed 2026-10-22** (ELF `6c4244ce7...`, the BSEC image, the owner's YAT
+      logs of 20:19 and 22:20 local, two hours): 24 clears, `took_ms=`
+      1,213-1,220 (1,214 the median, estimated 1,280 -- now the simulator's);
+      EPDiy's draw after them `draw: 432-456ms` with `diff: 107-120ms` (the
+      model's 448 for the diagnostics screen and 455 for the home screen); 22
+      changes of screen, `latency_ms=1842` to `1901`; the twentieth partial's
+      next redraw full as before (`forced_full=true`, 21:50). BSEC late at a
+      change of screen 0.24-1.73 s. No error or warning line besides those.
+      Still to report, by eye: the flashes, any trace, the stripes, the greys.
+      **By eye, the owner, the same evening**: no trace after a full refresh;
+      but after a partial one, lighter patches in static greys it had not
+      redrawn -- the rules beside a changed digit, the footer's "updated". GL16
+      re-drives an unchanged grey in every row and column it touches
+      (L -> L: towards black and back), and `WHITE_TO_GL16`'s greys were darker
+      than GL16's. Changed: GL16 after the vendor's clear (ADR 0035, amendment)
+      -- the draw ~900 ms, a full refresh ~2.2 s. To see on the next image: the
+      same patches gone; no stripes in white; a change of screen ~2,300 ms.
+      **Better, not cured** (the owner): still lighter patches. Changed again
+      (ADR 0035, second amendment): partial refreshes through white -- a
+      changed pixel whitened and darkened as the full refresh darkens it, an
+      unchanged one not driven at all -- and the full refresh the vendor's clear
+      and `WHITE_TO_GL16` again. To see: `adp_display: partial refreshes
+      through white, full ones darkened from white phases=30` at boot; no
+      patches in static greys after any partial refresh; a changed digit's old
+      strokes vanishing before the new ones appear; EPDiy's `draw:` for partial
+      refreshes as long as with GL16; and over a budget of twenty partials,
+      whether the greys they redrew drift, and whether close-up outlines
+      (ADR 0008's ghosting) come sooner than the 11th.
+      **Seen 2026-10-22 23:04 local** (ELF `216d55c04...`, five minutes;
+      against ELF `7c58fe323...`, GL16 after the clear, 22:49): the owner likes
+      it -- no serious artifact, only the expected trace around a black
+      element that went away, a digit. `phases=30` at boot; partial draws to
+      the millisecond GL16's (322 ms for 54 rows, 517 for 264, 567 for 381);
+      the full refresh's draw 432-456 ms (864-911 with GL16), a change of
+      screen 1,844-1,865 ms (2,277-2,309); the budget's full refresh after the
+      twentieth partial as before; nothing in the log but BSEC's late calls.
+      Still to see: a day of it -- greys a partial redraws often, the traces
+      around vanished digits against the budget of twenty, residue in greys.

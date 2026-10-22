@@ -15,6 +15,10 @@ firmware, its BSEC variant and the test app build. Nothing of it can be seen
 on the board until its Wi-Fi and MQTT adapters land; what changes there now is
 that the status bar no longer says "offline" (below, "On the board").
 
+**Amended 2026-10-22 by ADR 0034**: the diagnostics screen no longer draws
+the bar's word in its title line, nor compares the held link -- the MQTT line
+says the same; its network lines are all as of the drawing.
+
 Answers ADR 0030's "Not decided here: the status bar", and departs from its
 "the network reaches the message, never the screen".
 
@@ -167,7 +171,8 @@ they are when the screen is drawn and redraw nothing by themselves; what
 redraws the network's lines is the held link and the network's name
 (`diag_view_equal()`). A flapping link costs this screen nothing either.
 
-**The held link is drawn on it too**: the status bar's own word, beside the
+**The held link is drawn on it too** (*no longer since ADR 0034*: neither
+drawn nor compared): the status bar's own word, beside the
 hint in the title line -- black when it says something is wrong, as the rest
 of the screen -- so that what redraws the screen is always something it
 draws. The first version compared the held link and did not draw it: the

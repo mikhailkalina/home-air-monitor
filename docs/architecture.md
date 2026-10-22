@@ -199,6 +199,8 @@ home-air-monitor/
 │   │   ├── adp_clock.c
 │   │   ├── adp_i2c.c               # ESP-IDF i2c_master + recovery
 │   │   ├── adp_display.c           # EPDiy / LilyGo-EPD47 backend, PSRAM buffer
+│   │   ├── epd_white_path.c        # ... the partial refresh's mode through white, built from
+│   │   │                           #   EPDiy's GL16 and WHITE_TO_GL16, tested on the host (ADR 0035)
 │   │   ├── adp_input.c             # GT911's interrupt and task → event queue (ADR 0025)
 │   │   ├── adp_net.c               # the Wi-Fi station behind port_net: a task, the driver (ADR 0032)
 │   │   ├── adp_net_pure.c          # ... its decisions -- backoff, timeouts -- tested on the host
@@ -841,7 +843,7 @@ Multiple files are supported: `--scenario-co2 a.csv --scenario-env b.csv`. The s
 
 What emulating e-paper physics in the window gives you:
 
-- **Refresh latency**, measured on the panel in phase 2c (ADR 0008): full ≈ 3.3–3.7 s, most of it the flashing clear; partial ≈ 0.24 s plus 1.8 ms per row touched — by rows, not by area. It makes it immediately obvious when a redraw strategy leaves the UI feeling sluggish.
+- **Refresh latency**, measured on the panel in phase 2c (ADR 0008): full ≈ 3.3–3.7 s, most of it the flashing clear -- since ADR 0035 the vendor's shorter clear and a draw from white, ≈ 1.8–1.9 s by estimate until the board times it; partial ≈ 0.24 s plus 1.8 ms per row touched — by rows, not by area. It makes it immediately obvious when a redraw strategy leaves the UI feeling sluggish.
 - **Ghosting accumulation** across partial refreshes, with a forced full refresh after N of them, reproduces LilyGO's warning about artifacts and irreversible panel damage from prolonged partial refreshing.
 - **A 16-level grey palette** shows at once when a design is unreadable at 4 bpp — before the enclosure is ordered.
 - **Highlighting the flushed region** on each update reveals when a supposedly "partial" update is in fact redrawing the entire screen.

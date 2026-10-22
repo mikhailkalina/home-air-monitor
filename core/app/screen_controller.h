@@ -13,8 +13,9 @@
 // up would otherwise hide the readings the device exists to show.
 //
 // A change of screen is a redraw a person asked for: update_policy_request()
-// makes it due at once, as a partial refresh counted against the budget like
-// any other, a full one when the panel's rules say so (update_policy.h). No
+// makes it due at once, and always as a full refresh -- a whole new screen
+// drawn partially kept the old one's outlines and read badly
+// (update_policy.h, docs/adr/0034-a-change-of-screen-is-a-full-refresh.md). No
 // separate feedback for the tap: the screen changing is the feedback. When
 // the redraw that carries it reaches the glass, screen_controller_committed()
 // says so, with the time from the touch to that moment -- what the loops

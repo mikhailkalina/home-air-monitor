@@ -59,22 +59,15 @@ static void join(char *dst, size_t cap, const char *a, const char *b)
     dst[len] = '\0';
 }
 
-static void draw_title(framebuffer_t *fb, const diag_view_t *v)
+static void draw_title(framebuffer_t *fb)
 {
     const font_t *font = &font_dejavu_sans_32;
     const int32_t right = (int32_t)fb->width - SCREEN_DIAG_MARGIN;
     (void)gfx_draw_text(fb, SCREEN_DIAG_MARGIN, SCREEN_DIAG_TITLE_BASELINE, font, "Diagnostics",
                         ink(fb, VM_INK_SECONDARY));
     const char *hint = "tap to return";
-    const int32_t hint_x = right - gfx_measure_text_ink(font, hint);
-    (void)gfx_draw_text(fb, hint_x, SCREEN_DIAG_TITLE_BASELINE, font, hint,
-                        ink(fb, VM_INK_SECONDARY));
-    // The status bar's word for the link, where the bar has it: what redraws
-    // the network's lines (diagnostics_view.h).
-    const char *word = (v->link_text != NULL) ? v->link_text : "";
-    const int32_t word_x = hint_x - SCREEN_DIAG_TITLE_GAP - gfx_measure_text_ink(font, word);
-    (void)gfx_draw_text(fb, word_x, SCREEN_DIAG_TITLE_BASELINE, font, word,
-                        tone(fb, v->link_trouble));
+    (void)gfx_draw_text(fb, right - gfx_measure_text_ink(font, hint), SCREEN_DIAG_TITLE_BASELINE,
+                        font, hint, ink(fb, VM_INK_SECONDARY));
     draw_rule(fb, SCREEN_DIAG_TITLE_RULE_Y);
 }
 
@@ -184,7 +177,7 @@ static void draw_foot(framebuffer_t *fb, const diag_view_t *v)
 void screen_diagnostics_render(framebuffer_t *fb, const diag_view_t *v)
 {
     framebuffer_clear(fb, ink(fb, VM_INK_BACKGROUND));
-    draw_title(fb, v);
+    draw_title(fb);
     draw_slots(fb, v);
     draw_fields(fb, v);
     draw_network(fb, v);

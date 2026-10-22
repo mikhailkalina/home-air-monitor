@@ -127,9 +127,6 @@ static diag_view_t widest(const char *clock, const char *recorder)
     // The network at its widest. Digits share one width in this font, so one
     // address and one dated time stand for all.
     v.network_present = true;
-    v.link = LINK_NO_BROKER;
-    v.link_text = "no broker";  // the widest word the link has
-    v.link_trouble = true;
     v.wifi_state = "joining";
     v.wifi_trouble = true;
     memset(v.ssid, 'W', PORT_NET_SSID_MAX);
@@ -232,13 +229,6 @@ static void check_layout(const char *what)
 
     hac_test_check(widest_gap(0, SCREEN_DIAG_TITLE_RULE_Y - 1) >= HALVES_CLEARANCE,
                    "the title's halves stay apart", what, __LINE__);
-    // The link's word between them keeps clear of both.
-    const int32_t title_end = m + gfx_measure_text_ink(&font_dejavu_sans_32, "Diagnostics");
-    const int32_t hint_x = right - gfx_measure_text_ink(&font_dejavu_sans_32, "tap to return");
-    hac_test_check(
-        clear(title_end, 0, title_end + HALVES_CLEARANCE - 1, SCREEN_DIAG_TITLE_RULE_Y - 1) &&
-            clear(hint_x - HALVES_CLEARANCE, 0, hint_x - 1, SCREEN_DIAG_TITLE_RULE_Y - 1),
-        "the link's word keeps clear of the title and the hint", what, __LINE__);
     hac_test_check(widest_gap(LINE_TOP(SCREEN_DIAG_FOOT_BASELINE), PANEL_H - 1) >= HALVES_CLEARANCE,
                    "the last line's halves stay apart", what, __LINE__);
 }
@@ -319,12 +309,13 @@ static void no_sources_says_so(void)
                           SCREEN_DIAG_SLOTS_RULE_Y - 1, LINE_CLEARANCE) == 1);
 }
 
-// Every change of the link the screen redraws for changes its picture: a
-// redraw due for something the screen does not draw is an empty diff, which
-// the loops skip and try again -- every second until the screen times out,
-// as the first version of this screen did (docs/adr/0031). Same facts, only
-// the held link differs.
-static void every_change_of_the_held_link_changes_the_picture(void)
+// The held link is not on this screen (docs/adr/0034): the MQTT line says
+// it. Same facts, only the held link differs -- the same picture, and
+// diag_view_equal() says so, so no redraw is due for it: one due for
+// something the screen does not draw is an empty diff, which the loops skip
+// and try again -- every second until the screen times out, as the first
+// version of the network's lines did (docs/adr/0031).
+static void the_held_link_is_not_on_the_screen(void)
 {
     static const link_status_t k_links[] = {LINK_UNKNOWN, LINK_NO_WIFI, LINK_NO_BROKER,
                                             LINK_ONLINE};
@@ -339,19 +330,18 @@ static void every_change_of_the_held_link_changes_the_picture(void)
     n.net = NET_UP;
     n.rssi_dbm = -61;
     n.state = REPORTER_OFFLINE;
+    static diag_view_t views[N];
     for (size_t i = 0u; i < N; ++i) {
         r.link = k_links[i];
         const diag_facts_t f = {.reading = &r, .network = &n};
-        diag_view_t v;
-        diag_view_build(&v, &f);
-        screen_diagnostics_render(&g_fb, &v);
+        diag_view_build(&views[i], &f);
+        screen_diagnostics_render(&g_fb, &views[i]);
         memcpy(frames[i], g_pixels, sizeof(g_pixels));
     }
-    for (size_t i = 0u; i < N; ++i) {
-        for (size_t j = i + 1u; j < N; ++j) {
-            hac_test_check(memcmp(frames[i], frames[j], sizeof(g_pixels)) != 0,
-                           link_status_name(k_links[j]), link_status_name(k_links[i]), __LINE__);
-        }
+    for (size_t i = 1u; i < N; ++i) {
+        hac_test_check(memcmp(frames[0], frames[i], sizeof(g_pixels)) == 0 &&
+                           diag_view_equal(&views[0], &views[i]),
+                       link_status_name(k_links[i]), link_status_name(k_links[0]), __LINE__);
     }
 }
 
@@ -361,7 +351,7 @@ int main(void)
     HAC_RUN(the_widest_texts_fit);
     HAC_RUN(every_network_word_fits);
     HAC_RUN(a_long_network_name_is_shortened_to_its_column);
-    HAC_RUN(every_change_of_the_held_link_changes_the_picture);
+    HAC_RUN(the_held_link_is_not_on_the_screen);
     HAC_RUN(a_long_name_is_shortened_to_its_column);
     HAC_RUN(no_sources_says_so);
     return hac_test_summary();

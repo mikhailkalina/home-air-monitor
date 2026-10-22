@@ -261,8 +261,8 @@ static void contract_report(void *ctx_v, const char *check, bool ok)
 // Bring-up diagnostic (phase 2b/2c, CONFIG_HAC_EPD_TEST_PATTERN -- see
 // main/Kconfig.projbuild), run once at startup before the event loop: fill the
 // framebuffer solid black and flush it as a full refresh. On this backend that
-// is epd_clear() -- the panel visibly cycles to white -- followed by a
-// MODE_GC16 redraw of the buffer, so the panel should settle on solid black. That isolates "does
+// is the vendor's clear -- the panel visibly cycles to white -- followed by a
+// redraw of the buffer from white, so the panel should settle on solid black. That isolates "does
 // the panel respond to a drive sequence at all" from "is screen_home's rendering correct": a panel
 // that stays blank through this is a driver or wiring problem, while one that
 // goes black has been driven correctly and any later wrong image is a
@@ -272,7 +272,7 @@ static void contract_report(void *ctx_v, const char *check, bool ok)
 //
 // Deliberately REFRESH_FULL rather than REFRESH_CLEAR, which is what this
 // used while FastEPD was the backend. Under EPDiy, REFRESH_CLEAR is
-// epd_clear() alone: a dedicated multi-cycle drive to white that ignores the
+// the clear alone: a dedicated multi-cycle drive to white that ignores the
 // framebuffer by design, which would make a black fill meaningless. Going
 // through the ordinary full-refresh path also means this probe exercises the
 // same mapping every later frame uses, rather than a path of its own.

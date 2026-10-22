@@ -340,4 +340,22 @@
 // on the panel itself, which this one does not have.
 #define BOARD_EPD_ASSUMED_TEMPERATURE_C 25
 
+// --- the clear before a full refresh ----------------------------------------
+//
+// TAKEN FROM THE VENDOR'S DRIVER, not measured: LILYGO's epd_clear() in
+// Xinyuan-LilyGO/LilyGo-EPD47, branch esp32s3, commit
+// 50224221fb81a8fcf9068532374b775af84a38d4 (2026-09-07), src/epd_driver.c:218-
+// 248 -- epd_clear_area_cycles(area, 4, 50), each cycle 4 whole-panel pushes
+// towards black, then 4 towards white, every row driven for 50 us. The
+// numbers only: that driver is GPL-3.0 and no line of it is here (ADR 0007).
+// EPDiy's own epd_clear() is 3 cycles of 10 + 10 pushes and 2 neutral ones at
+// 12 us a row: 66 pushes, 2.46 s on this panel (ADR 0008), seen as six slow
+// flashes and leaving residue; the vendor's 32 pushes drive each row more than
+// twice as long in all and were seen by the owner, 2026-10-22, as eight quick
+// flashes, a whole full refresh in about 2 s, and no trace of the screen
+// before (docs/adr/0035-the-vendors-full-refresh.md).
+#define BOARD_EPD_CLEAR_CYCLES 4
+#define BOARD_EPD_CLEAR_PUSHES_PER_PHASE 4
+#define BOARD_EPD_CLEAR_ROW_US 50
+
 #endif  // HAC_PLATFORM_ESP32_T5S3_BOARD_CONFIG_H

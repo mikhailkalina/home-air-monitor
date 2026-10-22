@@ -5,7 +5,7 @@
 // (core/app/screen_controller.h). It draws a diag_view_t
 // (core/ui/diagnostics_view.h) and nothing else.
 //
-//   Diagnostics                               online    tap to return
+//   Diagnostics                                         tap to return
 //   ----------------------------------------------------------------------
 //   scd4x        running      failures 0          restarts 0
 //   bme68x       failing      failures 3          restarts 1
@@ -32,9 +32,9 @@
 // The network's two lines (docs/adr/0031-the-network-on-the-screen.md) took
 // the room of the title's larger type: the screen holds thirteen lines of
 // 32px text -- four sources at most, six readings, the network's two and the
-// clock's -- and the title is 32px as its hint always was. Beside the hint
-// goes the status bar's word for the link, held as the bar holds it: the
-// network's lines are as of the drawing, and this word is what redraws them.
+// clock's -- and the title is 32px as its hint always was. The status bar's
+// word for the link stood beside the hint until ADR 0034: the MQTT line says
+// the same, and the network's lines are as of the drawing.
 
 #ifndef HAC_CORE_UI_SCREEN_DIAGNOSTICS_H
 #define HAC_CORE_UI_SCREEN_DIAGNOSTICS_H
@@ -56,10 +56,8 @@ extern "C" {
 // below it.
 #define SCREEN_DIAG_PITCH 36
 
-#define SCREEN_DIAG_TITLE_BASELINE 32  // the title, the link's word and the hint
+#define SCREEN_DIAG_TITLE_BASELINE 32  // the title and the hint
 #define SCREEN_DIAG_TITLE_RULE_Y 43
-// What the link's word keeps clear of the hint, right of it.
-#define SCREEN_DIAG_TITLE_GAP 28
 
 #define SCREEN_DIAG_SLOTS_BASELINE 73  // the first source's line; up to DIAG_MAX_SLOTS
 #define SCREEN_DIAG_SLOTS_RULE_Y 192

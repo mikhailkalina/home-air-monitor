@@ -14,11 +14,12 @@
 #     state longer than the minute the screen holds -- and every change
 #     reaches the glass, a minute late, never two within a minute of each
 #     other, each costing at most a redraw and what it shifts;
-#   * the diagnostics screen up while the held link changes: one redraw for
-#     it, which changes the picture. Its first version compared the held
-#     link without drawing it, and the redraw due came out an empty diff,
-#     skipped and tried again every second until the screen timed out -- seen
-#     by the owner in the window. No run here may skip a redraw so.
+#   * the diagnostics screen up while the held link changes: no redraw for
+#     it, since the screen does not draw it (ADR 0034). Its first version
+#     compared the held link without drawing it, and the redraw due came out
+#     an empty diff, skipped and tried again every second until the screen
+#     timed out -- seen by the owner in the window. No run here may skip a
+#     redraw so.
 #
 #   cmake -DSIMULATOR=<path> -DSCENARIOS=<dir> -P simulator_link_flapping.cmake
 
@@ -170,9 +171,8 @@ foreach(d IN LISTS decisions)
     endif()
 endforeach()
 list(LENGTH while_up n_while_up)
-if(NOT n_while_up EQUAL 1 OR NOT while_up MATCHES "reason=status +partials=[0-9]+ now_ms=160000"
-   OR out MATCHES "partial refresh skipped")
-    message(FATAL_ERROR "the diagnostics screen's redraws while the link changed were "
-                        "\"${while_up}\", not one at 160 s:\n${out}")
+if(NOT n_while_up EQUAL 0 OR out MATCHES "partial refresh skipped")
+    message(FATAL_ERROR "the diagnostics screen redrew while the link changed: "
+                        "\"${while_up}\", where nothing it draws changed:\n${out}")
 endif()
-message(STATUS "diagnostics: one redraw for the link's change, none skipped")
+message(STATUS "diagnostics: no redraw for the link's change, none skipped")

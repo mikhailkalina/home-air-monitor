@@ -274,6 +274,19 @@ static void decide(const update_policy_t *p, update_reason_t reason, update_deci
         }
     }
 
+    // A change of screen a person asked for is a full refresh, at once,
+    // whatever the budget and the panel's interval: drawn partially, the new
+    // screen showed through with the old one's outlines and read badly. The
+    // interval is a guard against the flashing refresh coming at the
+    // sensors' pace, not a measured limit (board_config.h); a person's taps
+    // are paced by the 3.3 s the refresh itself takes
+    // (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md).
+    if (reason == UPDATE_REASON_REQUEST) {
+        out->action = UPDATE_FULL;
+        out->next_deadline_ms = now_ms;
+        return;
+    }
+
     // A due redraw is partial unless the panel says otherwise. The first frame
     // is always full: there is no previous image for a partial refresh to
     // build on.

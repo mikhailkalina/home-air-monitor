@@ -36,11 +36,12 @@
 //
 // A redraw a person asked for -- a tap that changes the screen
 // (core/app/screen_controller.h) -- goes out at once: update_policy_request()
-// makes it due without waiting out min_redraw_interval_ms. It is not free:
-// it is a partial refresh like any other, counted against the panel's
-// budget, and a full one when the budget says so -- or past the budget while
-// a full refresh waits for the panel's interval, as ADR 0019 has it
-// (docs/adr/0025-touch-input-gt911.md, "A person's redraw").
+// makes it due without waiting out min_redraw_interval_ms. It is a full
+// refresh, always: neither the budget nor the panel's minimum full-refresh
+// interval holds it, and it resets the budget as any full refresh does. A
+// whole new screen drawn partially kept the old one's outlines and read
+// badly (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md, superseding
+// docs/adr/0025-touch-input-gt911.md's "A person's redraw").
 //
 // The thresholds above are the home screen's. A screen that decides itself
 // whether what it would draw has changed -- the diagnostics screen -- says so
@@ -87,13 +88,14 @@ extern "C" {
 // CHOICE: past the panel's budget, while a full refresh waits for the
 // panel's minimum interval, partial refreshes go on -- but no further than
 // the budget again: at most this many times the budget between two full
-// refreshes. Then even a redraw a person asked for waits for the full one.
-// At the sensors' pace it never binds (ADR 0019: 23 at most); a person
-// tapping without pause would otherwise reach 55 in the panel's minute, past
-// the 40 this panel was ever driven through -- which is, for its budget of
-// 20, exactly this bound (docs/adr/0025-touch-input-gt911.md, "A person's
-// redraw"). Derived from the budget the panel reports, never a number of its
-// own.
+// refreshes. At the sensors' pace it never binds (ADR 0019: 23 at most). It
+// was set for a person tapping without pause, who would otherwise have
+// reached 55 in the panel's minute, past the 40 this panel was ever driven
+// through -- which is, for its budget of 20, exactly this bound
+// (docs/adr/0025-touch-input-gt911.md, "A person's redraw"). Taps are full
+// refreshes since ADR 0034, so it is a bound for a redraw source faster
+// than the sensors' cycle, should one come. Derived from the budget the
+// panel reports, never a number of its own.
 #define UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET 2u
 
 // CHOICE, the owner's (2026-10-20): a reading more than this fraction of its
@@ -251,9 +253,9 @@ void update_policy_evaluate_content(const update_policy_t *p, bool changed, upda
 
 // A person asked for a redraw: the screen they are looking at is to change.
 // The next evaluate() says it is due now, with UPDATE_REASON_REQUEST, without
-// waiting for min_redraw_interval_ms -- partial, or full as the budget and
-// the panel's interval decide, as any other redraw. Pending until a redraw
-// is committed.
+// waiting for min_redraw_interval_ms, and always as UPDATE_FULL -- neither
+// the budget nor the panel's minimum full-refresh interval holds it. Pending
+// until a redraw is committed.
 void update_policy_request(update_policy_t *p);
 
 // Records a redraw that actually reached the panel: `rendered` becomes the

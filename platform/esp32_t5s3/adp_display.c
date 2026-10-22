@@ -26,8 +26,10 @@
 
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
+#include "esp_timer.h"
 
 #include "board_config.h"
+#include "epd_white_path.h"
 
 // The panel this adapter drives. Named once and used by both epd_init() and
 // epd_hl_init(), so the two can never disagree about which panel -- and
@@ -57,6 +59,98 @@ static const EpdDisplay_t *const s_panel = &ED047TC1;
 // it); EPDiy's difference decides *how to drive each pixel inside that
 // region*, which needs the previous pixel value and is waveform business.
 static EpdiyHighlevelState s_hl;
+
+// The partial refresh's mode, "through white" (epd_white_path.h), added at
+// boot to EPDiy's waveform for this panel under a type number that waveform
+// does not use: get_waveform_index() (render.c) matches `mode & 0x3F` against
+// each mode's type and nothing else in EPDiy looks at it. EPDiy's own types
+// for this panel are 1, 2, 5, 16 and 17.
+#define MODE_HAC_WHITE_PATH ((enum EpdDrawMode)0x12)
+
+// The waveform handed to epd_hl_init(): EPDiy's modes for this panel and the
+// one above. Room for EPDiy's five and ours with some to spare.
+#define WAVEFORM_MAX_MODES 8u
+
+static epd_white_path_t s_white_path;
+static EpdWaveformPhases s_white_path_phases;
+static const EpdWaveformPhases *s_white_path_ranges[1];
+static EpdWaveformMode s_white_path_mode;
+static const EpdWaveformMode *s_waveform_modes[WAVEFORM_MAX_MODES];
+static EpdWaveform s_waveform;
+
+// What a partial and a full refresh draw with: through white and from white
+// when the mode above could be built, GL16 for both when it could not -- the
+// two must take greys the same way (ADR 0035, second amendment).
+static enum EpdDrawMode s_partial_mode = MODE_GL16;
+static enum EpdDrawMode s_full_draw_mode = MODE_GL16;
+
+// One of EPDiy's modes for this panel by its type, in the pure module's
+// terms; false if the waveform has no such mode or more than the one
+// temperature range this one has.
+static bool mode_of(const EpdWaveform *w, uint8_t type, epd_white_path_mode_t *out)
+{
+    if (w == NULL || w->num_temp_ranges != 1) {
+        return false;
+    }
+    for (int i = 0; i < w->num_modes; ++i) {
+        const EpdWaveformMode *m = w->mode_data[i];
+        if (m->type == type && m->temp_ranges == 1 && m->range_data[0] != NULL) {
+            const EpdWaveformPhases *ph = m->range_data[0];
+            out->phases = (size_t)ph->phases;
+            out->luts = ph->luts;
+            out->times = ph->phase_times;
+            return true;
+        }
+    }
+    return false;
+}
+
+// EPDiy's waveform for this panel with the mode "through white" added, or
+// EPDiy's own and GL16 for both kinds of refresh if it cannot be built.
+static const EpdWaveform *waveform_for_this_panel(const port_log_t *log)
+{
+    const EpdWaveform *base = s_panel->default_waveform;
+    epd_white_path_mode_t gl16;
+    epd_white_path_mode_t white_to;
+    const bool found = mode_of(base, (uint8_t)MODE_GL16, &gl16) &&
+                       mode_of(base, (uint8_t)MODE_EPDIY_WHITE_TO_GL16, &white_to);
+    if (!found || base->num_modes >= WAVEFORM_MAX_MODES ||
+        epd_white_path_build(&gl16, &white_to, &s_white_path) != 0) {
+        port_log_write(log, LOG_LEVEL_WARN, "adp_display",
+                       "no mode through white for this waveform: GL16 for every refresh's "
+                       "draw",
+                       NULL, 0u);
+        return base;
+    }
+
+    s_white_path_phases.phases = (int)s_white_path.phases;
+    s_white_path_phases.luts = s_white_path.luts;
+    s_white_path_phases.phase_times = s_white_path.times;
+    s_white_path_ranges[0] = &s_white_path_phases;
+    s_white_path_mode.type = (uint8_t)MODE_HAC_WHITE_PATH;
+    s_white_path_mode.temp_ranges = 1;
+    s_white_path_mode.range_data = s_white_path_ranges;
+    for (int i = 0; i < base->num_modes; ++i) {
+        s_waveform_modes[i] = base->mode_data[i];
+    }
+    s_waveform_modes[base->num_modes] = &s_white_path_mode;
+    s_waveform.num_modes = (uint8_t)(base->num_modes + 1);
+    s_waveform.num_temp_ranges = base->num_temp_ranges;
+    s_waveform.mode_data = s_waveform_modes;
+    s_waveform.temp_intervals = base->temp_intervals;
+
+    s_partial_mode = MODE_HAC_WHITE_PATH;
+    s_full_draw_mode = MODE_EPDIY_WHITE_TO_GL16;
+    const log_field_t fields[] = {
+        log_u64("phases", s_white_path.phases),
+        log_u64("lighten_phases", s_white_path.phases - white_to.phases),
+        log_u64("darken_phases", white_to.phases),
+    };
+    port_log_write(log, LOG_LEVEL_INFO, "adp_display",
+                   "partial refreshes through white, full ones darkened from white", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+    return &s_waveform;
+}
 
 static adp_display_t *self_of(port_display_t *port)
 {
@@ -108,7 +202,7 @@ static hal_status_t hal_status_of(enum EpdDrawError err)
 }
 
 // Tells EPDiy's model that the whole glass is white. Only ever called
-// immediately after epd_clear() has made that true; anywhere else it would
+// immediately after clear_panel() has made that true; anywhere else it would
 // make the model lie, and EPDiy would then skip driving pixels it believed
 // were already white.
 //
@@ -118,6 +212,40 @@ static hal_status_t hal_status_of(enum EpdDrawError err)
 static void model_glass_as_white(const adp_display_t *d)
 {
     memset(s_hl.back_fb, 0xFF, d->fb.pixels_size);
+}
+
+// epd_push_pixels()'s colour argument (epdiy.h): which way a push drives.
+#define EPD_PUSH_DARKEN 0
+#define EPD_PUSH_LIGHTEN 1
+
+// The clear a full refresh starts with: the vendor's, not EPDiy's
+// epd_clear() (board_config.h, BOARD_EPD_CLEAR_*) -- BOARD_EPD_CLEAR_CYCLES
+// rounds of the whole panel pushed towards black, then towards white, each
+// push driving every row for BOARD_EPD_CLEAR_ROW_US. EPDiy's own clear is
+// epd_clear_area_cycles() with ten pushes a phase fixed inside it, so the
+// vendor's four need this loop over its public epd_push_pixels(). The glass
+// ends white. The caller owns the power bracket. Logs how long it took: the
+// figure that replaces the estimate in platform/host/epd_emulation.h.
+static void clear_panel(const adp_display_t *d)
+{
+    const int64_t start_us = esp_timer_get_time();
+    const EpdRect whole = epd_full_screen();
+    for (int c = 0; c < BOARD_EPD_CLEAR_CYCLES; ++c) {
+        for (int i = 0; i < BOARD_EPD_CLEAR_PUSHES_PER_PHASE; ++i) {
+            epd_push_pixels(whole, BOARD_EPD_CLEAR_ROW_US, EPD_PUSH_DARKEN);
+        }
+        for (int i = 0; i < BOARD_EPD_CLEAR_PUSHES_PER_PHASE; ++i) {
+            epd_push_pixels(whole, BOARD_EPD_CLEAR_ROW_US, EPD_PUSH_LIGHTEN);
+        }
+    }
+    const log_field_t fields[] = {
+        log_u64("took_ms", (uint64_t)((esp_timer_get_time() - start_us) / 1000)),
+        log_i64("cycles", BOARD_EPD_CLEAR_CYCLES),
+        log_i64("pushes_per_phase", BOARD_EPD_CLEAR_PUSHES_PER_PHASE),
+        log_i64("row_us", BOARD_EPD_CLEAR_ROW_US),
+    };
+    port_log_write(d->log, LOG_LEVEL_INFO, "adp_display", "panel cleared", fields,
+                   sizeof(fields) / sizeof(fields[0]));
 }
 
 // The one call that drives the panel, with its result logged and mapped.
@@ -151,41 +279,50 @@ static hal_status_t update_and_log(const adp_display_t *d, enum EpdDrawMode draw
 // Everything that should drive *unchanged* pixels too has to arrange that
 // explicitly.
 //
-//   REFRESH_FULL      -> epd_clear(), mark the model white, then MODE_GC16
-//                        over the whole panel. port_display.h defines a full
-//                        refresh as the one that clears accumulated
-//                        ghosting, and update_policy forces one for exactly
-//                        that reason once the partial budget is spent. A
-//                        bare GC16 through the highlevel API would not do
-//                        it: unchanged pixels would never be driven, so
-//                        whatever residue they carry would stay. Clearing
-//                        first makes every non-white pixel a difference
-//                        against a white model, so the redraw reaches all of
-//                        them. Always the whole panel, whatever `area` says
-//                        -- a partial-area full refresh is not a thing this
-//                        port describes. This is also what synchronises
-//                        EPDiy's model with the glass on the first frame:
-//                        epd_hl_init() assumes white, which a bistable panel
-//                        has no obligation to be at boot. Two limits measured
-//                        in phase 2c (docs/adr/0008-panel-timing.md): the
-//                        clear does not remove residue from grey response,
-//                        only from what black and white show; and GC16
-//                        flashes white-to-white pixels in any column holding
-//                        a changed pixel while leaving other white columns
-//                        alone, which can leave faint vertical stripes in
-//                        white. Both are open items in board_notes.md; GL16
-//                        after the clear is the candidate for the second,
-//                        but the flash it would drop is also what cleans
-//                        white pixels (docs/adr/0010, which tried a full
-//                        refresh of part of the panel and lost it).
-//   REFRESH_PARTIAL   -> MODE_GL16 over `area`. Sixteen greys without the
-//                        clear pass: no flash, and only the changed pixels
-//                        are driven, so ghosting accumulates -- port_display.h's
-//                        definition of partial, word for word. EPDiy clips the
-//                        far edge of `area` to the panel itself
-//                        (epd_difference_image_base()), and rect_t's unsigned
-//                        fields cannot produce a negative near edge.
-//   REFRESH_CLEAR     -> epd_clear() and mark the model white. The glass ends
+//   REFRESH_FULL      -> the vendor's clear (clear_panel()), mark the model
+//                        white, then MODE_EPDIY_WHITE_TO_GL16 over the whole
+//                        panel -- the vendor's own fifteen darkening frames
+//                        (docs/adr/0035-the-vendors-full-refresh.md and its
+//                        amendments). port_display.h defines a full refresh
+//                        as the one that clears accumulated ghosting, and
+//                        update_policy forces one for exactly that reason
+//                        once the partial budget is spent. A bare redraw
+//                        through the highlevel API would not do it:
+//                        unchanged pixels would never be driven, so whatever
+//                        residue they carry would stay. Clearing first makes
+//                        every non-white pixel a difference against a white
+//                        model, so the redraw reaches all of them. Always the
+//                        whole panel, whatever `area` says -- a partial-area
+//                        full refresh is not a thing this port describes.
+//                        This is also what synchronises EPDiy's model with
+//                        the glass on the first frame: epd_hl_init() assumes
+//                        white, which a bistable panel has no obligation to
+//                        be at boot. It drives nothing that stays white, so
+//                        no stripes in white. Until ADR 0035 this was EPDiy's
+//                        epd_clear() and MODE_GC16: 3.3-3.7 s, residue in
+//                        greys (ADR 0008), stripes in white.
+//   REFRESH_PARTIAL   -> MODE_HAC_WHITE_PATH over `area`: a changed pixel
+//                        driven to white and darkened to its level as the
+//                        full refresh darkens it, an unchanged one not driven
+//                        at all (epd_white_path.h). No flash beyond the
+//                        changed pixels, and ghosting accumulates in what is
+//                        not redriven -- port_display.h's definition of
+//                        partial. EPDiy clips the far edge of `area` to the
+//                        panel itself (epd_difference_image_base()), and
+//                        rect_t's unsigned fields cannot produce a negative
+//                        near edge. Until ADR 0035's second amendment this
+//                        was MODE_GL16, which takes greys through black and
+//                        drives an unchanged grey L towards black and back
+//                        in every row EPDiy writes and every column of its
+//                        global mask (epdiy_ED047TC1.h, mode 5, its L -> L
+//                        entries): a grey any full refresh had drawn changed
+//                        there, and the static greys beside a changed digit
+//                        went lighter in patches -- with GC16's full refresh
+//                        unseen (its greys and GL16's share a path), with
+//                        WHITE_TO_GL16's at once, with the vendor's clear and
+//                        GL16 still a little. If the mode cannot be built,
+//                        both kinds of refresh draw with GL16 again.
+//   REFRESH_CLEAR     -> the vendor's clear and mark the model white. The glass ends
 //                        white; the front buffer, which is core/'s rendered
 //                        screen, is deliberately left alone. Nothing issues
 //                        REFRESH_CLEAR today (update_action_t has no clear
@@ -242,9 +379,9 @@ static hal_status_t adp_flush(port_display_t *port, const rect_t *area, refresh_
     switch (mode) {
         case REFRESH_FULL:
             epd_poweron();
-            epd_clear();
+            clear_panel(d);
             model_glass_as_white(d);
-            status = update_and_log(d, MODE_GC16, epd_full_screen());
+            status = update_and_log(d, s_full_draw_mode, epd_full_screen());
             epd_poweroff();
             return status;
 
@@ -257,17 +394,17 @@ static hal_status_t adp_flush(port_display_t *port, const rect_t *area, refresh_
                 .height = (int)resolved.h,
             };
             epd_poweron();
-            status = update_and_log(d, (mode == REFRESH_PARTIAL) ? MODE_GL16 : MODE_DU, partial);
+            status =
+                update_and_log(d, (mode == REFRESH_PARTIAL) ? s_partial_mode : MODE_DU, partial);
             epd_poweroff();
             return status;
         }
 
         case REFRESH_CLEAR:
             epd_poweron();
-            epd_clear();
+            clear_panel(d);
             epd_poweroff();
             model_glass_as_white(d);
-            port_log_write(d->log, LOG_LEVEL_INFO, "adp_display", "clear done", NULL, 0u);
             return HAL_OK;
 
         default:
@@ -338,7 +475,7 @@ hal_status_t adp_display_init(adp_display_t *d, uint16_t width, uint16_t height,
     // costs nothing and saves both a 253 KB allocation and a copy per flush.
     // epd_hl_init() memsets front and back to white, which is the state
     // adp_display_null.c and platform/host/adp_display_sdl.c also start from.
-    s_hl = epd_hl_init(s_panel->default_waveform);
+    s_hl = epd_hl_init(waveform_for_this_panel(log));
     d->pixels = epd_hl_get_framebuffer(&s_hl);
 
     framebuffer_init(&d->fb, d->pixels, fb_size, width, height, PIXFMT_GRAY4);

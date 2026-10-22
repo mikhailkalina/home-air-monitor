@@ -2,7 +2,7 @@
 //
 // The screen controller (core/app/screen_controller.h) with the real update
 // policy on the fake clock: a tap switches the screen and its redraw goes out
-// at once, counted as a partial refresh; the diagnostics screen redraws only
+// at once, as a full refresh; the diagnostics screen redraws only
 // when what it says changes, goes home after its timeout -- kept up by any
 // touch -- and a redraw that carried a tap reports the latency from the
 // finger's lift to the end of the flush.
@@ -89,7 +89,7 @@ static void tap_at(uint16_t x, uint16_t y)
     (void)screen_controller_input(&g_sc, &g_policy, &up);
 }
 
-static void a_tap_switches_the_screen_at_once_as_a_partial_refresh(void)
+static void a_tap_switches_the_screen_at_once_as_a_full_refresh(void)
 {
     setup();
     screen_redraw_note_t note;
@@ -107,15 +107,15 @@ static void a_tap_switches_the_screen_at_once_as_a_partial_refresh(void)
     const uint64_t lifted = g_clock.now_ms + 100u;
     tap_at(480u, 270u);
     HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_DIAGNOSTICS);
-    d = pass(1200u, &note);
-    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    d = pass(3300u, &note);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);  // a second after the first frame's
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
-    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&g_policy), 1);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&g_policy), 0);
     HAC_CHECK(note.screen_changed);
     HAC_CHECK(note.by_tap);
     HAC_CHECK_EQ_INT(note.screen, SCREEN_DIAGNOSTICS);
-    HAC_CHECK_EQ_U64(note.latency_ms, 1200u);  // the lift to the end of the flush
-    HAC_CHECK_EQ_U64(g_clock.now_ms - lifted, 1200u);
+    HAC_CHECK_EQ_U64(note.latency_ms, 3300u);  // the lift to the end of the flush
+    HAC_CHECK_EQ_U64(g_clock.now_ms - lifted, 3300u);
     HAC_CHECK(memcmp(home, g_pixels, sizeof(g_pixels)) != 0);  // another picture
 
     // Nothing it shows has changed: no redraw.
@@ -124,9 +124,10 @@ static void a_tap_switches_the_screen_at_once_as_a_partial_refresh(void)
     d = pass(0u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
 
-    // A tap goes home, the home screen drawn afresh.
+    // A tap goes home, the home screen drawn afresh -- fully again.
     tap_at(10u, 10u);
-    d = pass(1200u, &note);
+    d = pass(3300u, &note);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
     HAC_CHECK_EQ_INT(note.screen, SCREEN_HOME);
     HAC_CHECK(note.by_tap);
@@ -193,7 +194,8 @@ static void the_diagnostics_screen_goes_home_untouched_and_touches_keep_it(void)
     HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms),
                      SCREEN_CONTROLLER_NO_DEADLINE);
     HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_HOME);
-    const update_decision_t d = pass(1200u, &note);
+    const update_decision_t d = pass(3300u, &note);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);  // the timeout's change is full too
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
     HAC_CHECK(note.screen_changed);
     HAC_CHECK(!note.by_tap);  // the timeout's, not a person's
@@ -215,7 +217,7 @@ static void taps_before_the_first_frame_are_part_of_it(void)
 
 int main(void)
 {
-    HAC_RUN(a_tap_switches_the_screen_at_once_as_a_partial_refresh);
+    HAC_RUN(a_tap_switches_the_screen_at_once_as_a_full_refresh);
     HAC_RUN(the_diagnostics_screen_redraws_when_what_it_says_changes);
     HAC_RUN(the_diagnostics_screen_goes_home_untouched_and_touches_keep_it);
     HAC_RUN(taps_before_the_first_frame_are_part_of_it);
