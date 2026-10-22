@@ -9,6 +9,7 @@
 
 #include "adp_clock.h"
 #include "adp_log.h"
+#include "adp_net_pure.h"
 
 // The firmware's, as its main.c gives them.
 #define NET_TASK_STACK_BYTES 6144u
@@ -49,13 +50,38 @@ const test_station_t *test_station(void)
     return &s_station;
 }
 
+// The station's task has acted on every request and the radio is off. The
+// port shows what was asked until the task has acted (adp_net.h), so a
+// down() issued a moment ago still reads NET_UP: the task's own phase is the
+// thing to wait for.
+static bool settled_down(const test_station_t *st)
+{
+    adp_net_status_t status;
+    adp_net_status(st->net, &status);
+    return status.phase == ADP_NET_PHASE_IDLE && status.state == NET_DOWN;
+}
+
 bool test_station_up(const test_station_t *st, uint32_t within_ms)
 {
     port_net_t *net = adp_net_port(st->net);
+    // The case before this one may have ended with a down() the task has not
+    // acted on yet: an up() now would be answered with a link that is about to
+    // go (the first run of the port_telemetry case on the board, 2026-10-22:
+    // "Host is unreachable" 60 ms after the port_net case's last down()). So
+    // the link is taken down, and waited for, before it is asked for.
+    (void)net->down(net);
+    uint32_t waited = 0u;
+    while (!settled_down(st)) {
+        if (waited >= within_ms) {
+            return false;
+        }
+        st->clock->delay_ms(st->clock, POLL_MS);
+        waited += POLL_MS;
+    }
     if (net->up(net) != HAL_OK) {
         return false;
     }
-    for (uint32_t waited = 0u;; waited += POLL_MS) {
+    for (;; waited += POLL_MS) {
         if (net->state(net) == NET_UP) {
             return true;
         }

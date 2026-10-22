@@ -29,7 +29,8 @@ typedef struct {
 // (CONFIG_HAC_WIFI_SSID): the caller checks first, and IGNOREs without one.
 const test_station_t *test_station(void);
 
-// up(), and up to `within_ms` for the link; true once NET_UP.
+// down() first, and the wait for the station to be quiet; then up(), and the
+// wait for the link -- both within `within_ms` in all. True once NET_UP.
 bool test_station_up(const test_station_t *st, uint32_t within_ms);
 
 #endif  // HAC_TESTS_CONTRACT_ESP32_TEST_STATION_H
