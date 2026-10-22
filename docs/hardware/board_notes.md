@@ -1569,6 +1569,11 @@ layout settles, not before.
         lowest yet, 2,048 bytes free of 6,144. The card back in, the minute's
         quiet mount found it at 14:29:57Z and recording went on in the day's
         tenth files. No reboot, nothing else held up.
+      **The slowest flush yet, 2026-10-22** (ELF `6c4244ce7...`, the owner's
+      YAT log, `card_writer: recording stats`): 270 ms in the second hour of a
+      boot, against 160 ms at most over the three days before; the event
+      loop's longest post 35 us all the same -- the card's task waited, nothing
+      else did.
       Still to see: a day on a PC and in the simulator, the test app.
 - [x] **The touch panel on the board (phase 3g).** **Done 2026-10-20**:
       every check below seen, the test app's included; one fault found and
@@ -2631,6 +2636,14 @@ layout settles, not before.
       flash phase 4g -- but the write happened: the next boot found the RTC
       -484 ms behind, where a write with the datasheet's 508 ms lands on this
       chip, not 3.1 s.
+      **An evening of noisier answers, 2026-10-22** (ELF `6c4244ce7...`, the
+      owner's YAT logs of 20:19 and 22:20 local): two hourly syncs read
+      `drift_ppm=-9.887` and `-34.180`, where the night's nine spread +-2.0;
+      their mean, -22, is the night's -20.8. The ESP32's own clock moved
+      `system_minus_sntp_ms=38` and `-48` between the same answers, against +-8
+      in the night: the server's answers, which lwIP takes without a round-trip
+      correction, were tens of milliseconds noisier, not the RTC. One hour
+      says little; a day's samples average it out.
       Still to see: a day of hourly samples, and another temperature; the cold
       boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
       measured delay, about 995 ms, should replace the datasheet's 508 as the
