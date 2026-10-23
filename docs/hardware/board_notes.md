@@ -3095,7 +3095,10 @@ layout settles, not before.
       shows `Image rejected`, then goes home by tap or after ten seconds.
       A display failure aborts before further writing; inspect `step=display`
       in the log. Measure the new update duration: it includes display work
-      that the earlier 19.4 s did not. No board result for this UI yet.
+      that the earlier 19.4 s did not. **Owner confirmation, 2026-10-23**:
+      the update screen and touch lock work with build `b358b13`. No detailed
+      log or elapsed time accompanied the confirmation; the duration and
+      individual failure paths remain to check.
 - [ ] **Firmware from the card on the board (ADR 0037).** Built 2026-10-23,
       verified on the host only (`docs/adr/0037-firmware-from-the-card.md`):
       `home_air_monitor.bin` in the card's root is installed into the other OTA

@@ -5,8 +5,10 @@ Date: 2026-10-23
 ## Status
 
 Accepted, at the owner's request. Amends ADR 0037's background update with
-visible progress. Verified by host tests and a BSEC firmware build; the new
-screen and timing have not yet been checked on the board.
+visible progress. Verified by host tests and a BSEC firmware build. The owner
+confirmed the update screen and touch lock work on the board on 2026-10-23
+after installing build `b358b13`. No detailed log or timing accompanied the
+confirmation; the new duration remains to be measured.
 
 ## Context
 

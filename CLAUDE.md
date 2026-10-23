@@ -880,7 +880,7 @@ a minute late, a WPA3 PMKID the restarted access point no longer knew cost a bac
 return, and the broker reset every CONNECT for two minutes after the first (open items "Wi-Fi on
 the board" and "MQTT on the board").
 
-On branch `diagnostics-live-network` (ADR 0038), at the owner's request after watching an outage:
+On branch `usb-card-updates-and-live-diagnostics` (ADR 0038), at the owner's request after watching an outage:
 the diagnostics screen is a developer's. Its content redraws are partial without a count limit
 (`update_policy_evaluate_partial_content()`: past the budget and former bound too, one per
 sensor cycle); entering and returning home stay full and start the budget over (ADR 0034).
@@ -894,9 +894,10 @@ Firmware updates now have a modal progress screen and touch lock (ADR 0039): the
 updater reports stages and byte counts, waiting for the pump's display acknowledgement
 before the next flash operation. The pump starts before the card. Entry is full; progress
 is partial at ten-percent milestones and stage changes. Errors unlock touch and return
-home by tap or after ten seconds. Host tests and the BSEC build pass; the new UI is still
-to see on the board. Its first installation uses the old updater; copy an image again
-after installing it to exercise the screen.
+home by tap or after ten seconds. Host tests and the BSEC build pass; the owner confirmed
+the update screen and touch lock work on the board with build `b358b13` on 2026-10-23.
+No detailed log or timing accompanied that confirmation. Its first installation uses
+the old updater; copy an image again after installing it to exercise the screen.
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
