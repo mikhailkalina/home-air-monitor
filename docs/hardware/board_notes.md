@@ -3004,4 +3004,41 @@ layout settles, not before.
       Hardware", the PC asleep, a charger (`no_host`), a cable pulled on the
       battery (`host_gone`), writes and throughput, a second session in a
       boot, `sd`'s `USB_DISK` line.
+- [ ] **Firmware from the card on the board (ADR 0037).** Built 2026-10-23,
+      verified on the host only (`docs/adr/0037-firmware-from-the-card.md`):
+      `home_air_monitor.bin` in the card's root is installed into the other OTA
+      slot at the next mount, deleted, and booted; the new image confirms itself
+      at its first frame, or the bootloader -- new, with rollback -- returns to
+      the old one. **Needs the new bootloader once**: the usual esptool command,
+      bootloader at 0x0 and `ota_data_initial.bin` at 0xf000 included. What each
+      check is to show, and the lines that show it:
+      - *The bootloader*: after the esptool flash, `fw` says `FW running ota_0
+        ...: home_air_monitor <version> ..., flashed` and the boot log
+        `fw_update: running partition=ota_0 state=flashed`.
+      - *An update through the USB disk*: copy a build's `home_air_monitor.bin`
+        to the disk's root, eject. Then, in the card's `log/`: `firmware on the
+        card: installing version=... from_version=... bytes=... slot=ota_1`,
+        `firmware from the card installed: restarting into it ... took_ms=`
+        (an ESTIMATE of 5-10 s); the panel's boot; `fw_update: running
+        partition=ota_1 state=pending_verify`, about four seconds later `the
+        update confirmed: it reached its first frame`; `fw` says `valid`; the
+        file is gone from the card. The version in Home Assistant's device
+        page follows.
+      - *Back again*: the older image copied the same way installs into
+        `ota_0` -- no version check, by design.
+      - *Refusals*: the slideshow's image (another project), a bootloader or any
+        other file under that name, an empty file: `firmware on the card
+        refused: renamed .rejected verdict=project` (`not_an_image`, `empty`),
+        the file now `home_air_monitor.bin.rejected`, nothing installed. A copy
+        cut short (the cable pulled mid-copy): `verdict=invalid step=end`.
+      - *A rollback*: hard to provoke on purpose -- an image that panics before
+        its first frame, or RST held during the first boot of an update. The
+        boot after: `the other slot holds an update that did not start: rolled
+        back`, and `fw` says so.
+      - *The update's cost to the rest*: `took_ms=`, a `BSEC called late` at
+        it, whether a panel refresh under way showed a glitch, the card task's
+        `stack low-water mark`.
+      - *esptool after an update*: the usual command, `ota_data_initial.bin`
+        included, boots what it wrote (`fw`: `running ota_0 ... flashed`);
+        without it, the board would stay on `ota_1`.
 

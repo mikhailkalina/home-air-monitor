@@ -269,6 +269,8 @@ home-air-monitor/
 │   │   │   │                       #   start, its drift: the event loop's steps (ADR 0023, amended)
 │   │   │   ├── net_time.c          # SNTP: the answer on lwIP's task, the rest on the event loop
 │   │   │   ├── log_tee.c           # everything ESP_LOG prints, also into a ring for the card
+│   │   │   ├── fw_update.c         # firmware from the card: the other OTA slot, rollback (ADR 0037)
+│   │   │   ├── fw_image.c          # ... the image's header and the verdict, pure: no version check
 │   │   │   └── console.c           # the serial console's commands
 │   │   ├── components/             # thin wrappers over core/ drivers/ platform/
 │   │   │   ├── hac_core/CMakeLists.txt

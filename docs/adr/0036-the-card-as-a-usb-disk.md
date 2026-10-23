@@ -192,7 +192,9 @@ measure.
 
 ## For later: firmware through the disk
 
-Not built. What this branch found, for the phase that does it (architecture
+**Built since, by ADR 0037** (`docs/adr/0037-firmware-from-the-card.md`),
+along these lines; what follows is kept as the record of what this branch
+found. Not built here. What this branch found, for the phase that does it (architecture
 10's OTA, phase 6):
 
 - **The partitions are ready**: `partitions.csv` has `ota_0`, `ota_1` and

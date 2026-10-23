@@ -45,6 +45,10 @@
 //                board's button is pressed. Holding the button for two
 //                seconds does the same without the console. `sd` says how
 //                the last one ended ("USB_DISK" line).
+//   fw           (docs/adr/0037-firmware-from-the-card.md) the firmware in
+//                each OTA slot -- project, version, build date, state -- which
+//                runs and which boots next, an update rolled back, and the
+//                last attempt to install home_air_monitor.bin from the card
 //   rec          recording on or off, the file each source is written to,
 //                rows and bytes since boot and what was dropped, the log
 //                file's, and what the card costs the event loop

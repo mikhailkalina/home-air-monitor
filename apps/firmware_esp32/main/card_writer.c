@@ -11,9 +11,11 @@
 #include "freertos/task.h"
 
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 
 #include "board_button.h"
+#include "fw_update.h"
 #include "log_tee.h"
 #include "recording/record_files.h"
 #include "recording/record_limits.h"
@@ -30,6 +32,14 @@
 #define LOG_LINES_PER_WAKE 64u
 
 #define REQUEST_QUEUE_DEPTH 2u
+
+// CHOICE: from an installed update's last log line to the restart, so the
+// console's terminal shows it too.
+#define UPDATE_RESTART_DELAY_MS 200u
+
+// The most passes over the log's ring before an update's restart, each
+// LOG_LINES_PER_WAKE lines: the whole ring, 1024 lines, and then some.
+#define UPDATE_LOG_DRAIN_PASSES 32u
 
 typedef struct {
     card_writer_cmd_t cmd;
@@ -80,6 +90,9 @@ static port_files_t *files(void)
 
 // --- the card --------------------------------------------------------------------
 
+static void drain_log(uint64_t now, bool all);
+static void restart_into_update(void);
+
 // A boot that needs undated files numbers them once, past every undated file
 // in either directory (record_files.h).
 static void choose_undated_seq(void)
@@ -114,6 +127,12 @@ static void on_mounted(void)
     s_w.logged_state = ADP_SD_MOUNTED;
     s_w.logged_once = true;
     s_w.mounted_generation = s_w.deps.sd->generation;
+
+    // Every mount -- at boot, sd_mount, the minute's, after a USB disk
+    // session -- looks for firmware in the card's root (docs/adr/0037).
+    if (fw_update_from_card(ADP_SD_MOUNT_POINT) == FW_UPDATE_RESULT_INSTALLED) {
+        restart_into_update();
+    }
 }
 
 static hal_status_t try_mount(bool quiet, uint64_t now)
@@ -180,15 +199,16 @@ static void note_state(uint64_t now)
 
 // Lines from the ring to the card, each at the wall time it was logged --
 // worked back from the clock now, so the boot's lines logged before the RTC
-// set it get theirs too. Without a card the lines stay in the ring.
-static void drain_log(uint64_t now)
+// set it get theirs too. Without a card the lines stay in the ring. `all`:
+// now, without waiting for the clock -- the restart into an update.
+static void drain_log(uint64_t now, bool all)
 {
     log_ring_t *ring = log_tee_ring();
     if (ring == NULL || !adp_sd_mounted(s_w.deps.sd)) {
         return;
     }
     const uint64_t wall = s_w.deps.clock->wall_ms(s_w.deps.clock);
-    if (wall == 0u && now < CARD_WRITER_LOG_CLOCK_GRACE_MS &&
+    if (!all && wall == 0u && now < CARD_WRITER_LOG_CLOCK_GRACE_MS &&
         log_ring_used(ring) < ring->slot_count / 2u) {
         return;
     }
@@ -224,7 +244,7 @@ static hal_status_t prepare_lend(uint64_t now, const char *by)
     if (lent_or_pending()) {
         return HAL_ERR_BUSY;
     }
-    drain_log(now);
+    drain_log(now, false);
     recorder_close(s_w.deps.recorder, now);
     log_file_close(s_w.deps.log_file, now);
     const hal_status_t status = adp_sd_lend(s_w.deps.sd);
@@ -318,6 +338,25 @@ static void usb_step(uint64_t now)
         usb_disk_button_consume(&s_w.button);
         (void)prepare_lend(now, "button");
     }
+}
+
+// --- firmware from the card (docs/adr/0037) -------------------------------------------
+
+// The update installed: its lines onto the card, every file closed, the card
+// unmounted cleanly, then the restart into the new image.
+static void restart_into_update(void)
+{
+    const uint64_t now = now_ms();
+    log_ring_t *ring = log_tee_ring();
+    for (unsigned i = 0u; i < UPDATE_LOG_DRAIN_PASSES && ring != NULL && log_ring_used(ring) > 0u;
+         ++i) {
+        drain_log(now, true);
+    }
+    recorder_close(s_w.deps.recorder, now);
+    log_file_close(s_w.deps.log_file, now);
+    adp_sd_unmount(s_w.deps.sd, ADP_SD_EJECTED);
+    vTaskDelay(pdMS_TO_TICKS(UPDATE_RESTART_DELAY_MS));
+    esp_restart();
 }
 
 // --- the console's requests ----------------------------------------------------------
@@ -511,7 +550,7 @@ static void writer_task(void *arg)
             (void)try_mount(true, now);
         }
         note_state(now);
-        drain_log(now);
+        drain_log(now, false);
         recorder_tick(s_w.deps.recorder, now);
         s_w.published_rec_state = (uint32_t)s_w.deps.recorder->state;
         log_file_tick(s_w.deps.log_file, now);

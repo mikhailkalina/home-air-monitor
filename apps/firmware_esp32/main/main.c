@@ -49,7 +49,11 @@
 // console's usb_disk, or the button held two seconds, lends the card to the
 // PC -- the USB PHY taken from USB-Serial-JTAG for TinyUSB's mass storage,
 // run by the card's task -- until the disk is ejected; then the console
-// comes back and recording resumes.
+// comes back and recording resumes. Firmware from the card
+// (docs/adr/0037-firmware-from-the-card.md): home_air_monitor.bin in its root
+// is installed into the other OTA slot at the next mount, deleted, and booted;
+// the new image confirms itself at its first frame, or the bootloader rolls it
+// back.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -132,6 +136,7 @@
 #include "console.h"
 #include "epd_calibration.h"
 #include "event_loop.h"
+#include "fw_update.h"
 #include "log_tee.h"
 #include "net_time.h"
 #include "wall_clock.h"
@@ -727,6 +732,16 @@ static void start_radio(void *ctx)
     }
 }
 
+// event_loop.h's first-frame hook, whole: an image that got this far after an
+// update from the card is confirmed, so the bootloader keeps it
+// (docs/adr/0037-firmware-from-the-card.md) -- the boot, the rail, the
+// sensors' bring-up and a full refresh behind it -- and then the radio.
+static void after_first_frame(void *ctx)
+{
+    fw_update_confirm_running();
+    start_radio(ctx);
+}
+
 // The diagnostics screen's word for where the wall clock came from, short
 // enough for its line; NULL for none.
 static const char *clock_word(wall_clock_source_t source)
@@ -999,6 +1014,7 @@ void app_main(void)
                    NULL, 0u);
 
     log_reset_reason(log);
+    fw_update_boot(log);  // which slot runs; an update rolled back (docs/adr/0037)
     log_memory_budget(log);
     name_device(s_device_id, sizeof(s_device_id), log);
     if (tee != HAL_OK) {
@@ -1115,7 +1131,7 @@ void app_main(void)
         .facts_ctx = &s_wall_source,
         .reporter = reporter,  // NULL without a broker: no telemetry
         .link = &s_link,
-        .after_first_frame = start_radio,
+        .after_first_frame = after_first_frame,
         .after_first_frame_ctx = net,
         // The constant first, as in start_net_time(): without a network the
         // step is not referenced at all.

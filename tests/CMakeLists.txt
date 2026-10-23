@@ -102,6 +102,18 @@ target_link_libraries(test_log_ring PRIVATE hac_test_support)
 hac_apply_warnings(test_log_ring)
 add_test(NAME test_log_ring COMMAND test_log_ring)
 
+# A firmware file's header and whether the card's update installs it -- no
+# version compared (docs/adr/0037-firmware-from-the-card.md). fw_update.c, which
+# writes it into the other slot, needs ESP-IDF and is the board's to check.
+add_executable(test_fw_image
+    unit/test_fw_image.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/fw_image.c
+)
+target_include_directories(test_fw_image PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_fw_image PRIVATE hac_test_support)
+hac_apply_warnings(test_fw_image)
+add_test(NAME test_fw_image COMMAND test_fw_image)
+
 # The firmware's I2C bus scan, against the host's fake bus.
 add_executable(test_i2c_scan
     unit/test_i2c_scan.c

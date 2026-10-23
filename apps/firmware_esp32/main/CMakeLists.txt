@@ -32,6 +32,11 @@ idf_component_register(
         # on the host from this location (tests/unit/test_rtc_sync.c).
         net_time.c
         rtc_sync.c
+        # Firmware from the card (docs/adr/0037): the update into the other
+        # OTA slot, and the image's header, which is pure and tested on the
+        # host from this location (tests/unit/test_fw_image.c).
+        fw_update.c
+        fw_image.c
     INCLUDE_DIRS .
     REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console heap log
              # The console's vbat: GPIO14's ADC2 beside Wi-Fi (phase 4e).
@@ -41,6 +46,8 @@ idf_component_register(
              # main.c's MQTT discovery: the image's version, from its app
              # description (phase 4g).
              esp_app_format
+             # fw_update.c: the OTA slots, the image's header, the partitions.
+             app_update bootloader_support esp_partition
 )
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)

@@ -119,6 +119,9 @@ HAC_MQTT_PASSWORD=... ./build/host-debug/apps/simulator/simulator --headless --d
 # Firmware
 . $HOME/esp/esp-idf/export.sh
 cd apps/firmware_esp32 && idf.py build
+# Flash with everything flash_args names -- ota_data_initial.bin at 0xf000 above all: after an
+# update from the card (ADR 0037) the board boots ota_1, and an app alone at 0x20000 never boots.
+# Or copy build/home_air_monitor.bin to the card's root (the USB disk, ADR 0036) and eject.
 
 # Firmware with Wi-Fi (ADR 0032): the network in the gitignored overlay, layered last over
 # every build's defaults (the test app's too); it reaches only a fresh sdkconfig, and the
@@ -853,6 +856,22 @@ reading 2.8 MB, the PHY back and the card mounted, no reset; with YAT attached, 
 COM17 afterwards resets the chip (a host-asked USB reset the S3 cannot refuse), often followed
 by the known brownout at `PWR_EN`'s rise -- close YAT first (`board_notes.md`, open item "The
 card as a USB disk on the board", with what is still to see).
+
+On the same branch (ADR 0037), at the owner's request: firmware from the card. `home_air_monitor.bin`
+-- the build's own image -- in the card's root is found at every mount (boot, `sd_mount`, the
+minute's, after a USB disk session), written into the OTA slot not running
+(`apps/firmware_esp32/main/fw_update.c`, erased as it is written), verified by ESP-IDF, deleted,
+made the boot slot, and the board restarts into it. **No version check**: any image of this
+project for this chip that fits installs, older ones too; another project's, not an image, or one
+that fails verification is renamed `.rejected` (`fw_image.c`, pure, tested on the host). Rollback:
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, so a **new bootloader**; the new image confirms itself at
+its first frame, one that resets before that is rolled back. From now on every esptool flash
+carries `ota_data_initial.bin` at 0xf000 (as `flash_args` does): after an update the board boots
+`ota_1`, and an app written to 0x20000 alone would never boot. Versions stay `git describe` (no
+tags yet; ADR 0037 proposes `vMAJOR.MINOR.PATCH` tags at merges). Console `fw`. Measured in the
+build: image +18,436 bytes, static internal RAM +392, bootloader 21,024 bytes. Verified on the
+host; the firmware and its BSEC variant build from regenerated sdkconfigs. Nothing seen on the
+board yet (`board_notes.md`, open item "Firmware from the card on the board").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
