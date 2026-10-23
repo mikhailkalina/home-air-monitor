@@ -12,6 +12,10 @@ slideshow's image was refused (`docs/hardware/board_notes.md`, open item
 "Firmware from the card on the board", with what is still to see). Implements what ADR 0036's "For later: firmware through the disk"
 listed; the network's OTA (architecture 10, phase 6) stays to do.
 
+**Amended by ADR 0039**: updates now show a modal progress screen, with touch
+locked until restart or an error result. The pump acknowledges each display
+milestone before the next flash operation; the card starts after the pump.
+
 ## Context
 
 Since ADR 0036 the card is a USB disk a PC can write. The partition table has

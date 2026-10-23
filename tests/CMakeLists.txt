@@ -25,6 +25,7 @@ set(HAC_UNIT_TESTS
     test_link_hold
     test_tap
     test_screen_controller
+    test_firmware_update_progress
     test_sensor_manager
     test_view_model
     test_diagnostics_view

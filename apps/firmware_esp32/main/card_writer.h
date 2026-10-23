@@ -36,6 +36,7 @@
 
 #include "adp_sd.h"
 #include "domain/civil_time.h"
+#include "fw_update.h"
 #include "hal_status.h"
 #include "port_clock.h"
 #include "port_log.h"
@@ -77,6 +78,8 @@ typedef struct {
     adp_sd_t *sd;          // adp_sd_init()-ed
     recorder_t *recorder;  // recorder_init()-ed over adp_sd's port, sources added
     log_file_t *log_file;  // log_file_init()-ed over adp_sd's port
+    fw_update_progress_fn update_progress;
+    void *update_progress_ctx;
 } card_writer_deps_t;
 
 // Starts the task. `deps` is copied; what it points to is borrowed for the

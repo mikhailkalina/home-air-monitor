@@ -3086,6 +3086,16 @@ layout settles, not before.
       Hardware", the PC asleep, a charger (`no_host`), a cable pulled on the
       battery (`host_gone`), writes and throughput, a second session in a
       boot, `sd`'s `USB_DISK` line.
+- [ ] **Firmware update screen and touch lock (ADR 0039).** Added 2026-10-23,
+      verified on the host and built with BSEC. After installing this version,
+      copy an image to the card again: the first installation still runs the
+      old updater. Expect `Firmware update`, checking, writing with a byte
+      progress bar, verification, preparation and restart. Touch during the
+      update must neither change screens nor replay later. A rejected image
+      shows `Image rejected`, then goes home by tap or after ten seconds.
+      A display failure aborts before further writing; inspect `step=display`
+      in the log. Measure the new update duration: it includes display work
+      that the earlier 19.4 s did not. No board result for this UI yet.
 - [ ] **Firmware from the card on the board (ADR 0037).** Built 2026-10-23,
       verified on the host only (`docs/adr/0037-firmware-from-the-card.md`):
       `home_air_monitor.bin` in the card's root is installed into the other OTA

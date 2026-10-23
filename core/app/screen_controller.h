@@ -6,7 +6,7 @@
 // call it as they call sensor_manager_poll() and update_policy, and it says
 // when it next wants to be called.
 //
-// Two screens: home (core/ui/screen_home.h) and diagnostics
+// Two ordinary screens: home (core/ui/screen_home.h) and diagnostics
 // (core/ui/screen_diagnostics.h). A tap anywhere (core/app/tap.h) switches
 // between them; the diagnostics screen goes back home on its own once
 // nothing has touched the panel for diagnostics_timeout_ms -- a screen left
@@ -26,6 +26,10 @@
 // diagnostics screen compares the view it would draw with the one it drew
 // (diag_view_equal()) and asks update_policy_evaluate_partial_content().
 //
+// A firmware update is modal (ui/screen_firmware_update.h): milestones
+// redraw immediately, while touch and the diagnostics timeout are ignored.
+// Failure unlocks touch and returns home by tap or after a short timeout.
+//
 // Pure: no allocation, no I/O, every time from the events or the caller.
 
 #ifndef HAC_CORE_APP_SCREEN_CONTROLLER_H
@@ -42,6 +46,7 @@
 #include "port_input.h"
 #include "ui/diagnostics_view.h"
 #include "ui/framebuffer.h"
+#include "ui/screen_firmware_update.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,11 +61,15 @@ extern "C" {
 // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
 #define SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS 300000u
 
+// CHOICE: leave an update failure visible long enough to read, then go home.
+#define SCREEN_CONTROLLER_UPDATE_ERROR_TIMEOUT_MS 10000u
+
 #define SCREEN_CONTROLLER_NO_DEADLINE UINT64_MAX
 
 typedef enum {
     SCREEN_HOME = 0,
     SCREEN_DIAGNOSTICS,
+    SCREEN_FIRMWARE_UPDATE,
 } screen_id_t;
 
 typedef struct {
@@ -108,6 +117,11 @@ typedef struct {
     bool have_shown_diag;
     diag_view_t pending_diag;
 
+    firmware_update_progress_t update;
+    bool update_changed;
+    uint64_t update_error_since_ms;
+    uint64_t input_after_ms;  // discard queued touches from before an update ended
+
     uint32_t taps;
     uint32_t timeouts;
 } screen_controller_t;
@@ -116,6 +130,12 @@ screen_controller_config_t screen_controller_config_default(void);
 
 // The home screen, nothing pending.
 void screen_controller_init(screen_controller_t *sc, const screen_controller_config_t *cfg);
+
+// Reports a modal firmware update, resetting any in-flight gesture. Active
+// updates ignore touch and screen timeouts. A failure unlocks touch and goes
+// home by tap or after SCREEN_CONTROLLER_UPDATE_ERROR_TIMEOUT_MS.
+void screen_controller_firmware_update(screen_controller_t *sc, update_policy_t *policy,
+                                       const firmware_update_progress_t *progress, uint64_t now_ms);
 
 // One event from port_input. A tap switches the screen and asks `policy` for
 // the redraw; returns true when it did.
@@ -143,7 +163,7 @@ void screen_controller_committed(screen_controller_t *sc, uint64_t now_ms,
 
 screen_id_t screen_controller_screen(const screen_controller_t *sc);
 
-// "home", "diagnostics"; never NULL.
+// "home", "diagnostics", "firmware_update"; never NULL.
 const char *screen_controller_screen_name(screen_id_t screen);
 
 #ifdef __cplusplus

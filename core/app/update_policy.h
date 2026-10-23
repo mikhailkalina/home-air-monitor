@@ -264,6 +264,13 @@ void update_policy_evaluate_content(const update_policy_t *p, bool changed, upda
 void update_policy_evaluate_partial_content(const update_policy_t *p, bool changed,
                                             update_decision_t *out);
 
+// Update progress, reported at coarse milestones by the application: as
+// partial content, but without waiting for a sensor cycle. The first frame
+// and screen changes are full; a panel without partial mode stays full.
+// These milestone refreshes also bypass the minimum full-refresh interval.
+void update_policy_evaluate_progress(const update_policy_t *p, bool changed,
+                                     update_decision_t *out);
+
 // A person asked for a redraw: the screen they are looking at is to change.
 // The next evaluate() says it is due now, with UPDATE_REASON_REQUEST, without
 // waiting for min_redraw_interval_ms, and always as UPDATE_FULL -- neither

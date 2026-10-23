@@ -125,9 +125,16 @@ typedef struct {
 //
 // `deps` is copied into the task's own storage; the pointers it carries must
 // outlive the task, which never exits. The sensors are only ever touched from
-// that task.
-void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int priority,
+// that task. Returns false if the queues, framebuffer snapshot or task
+// cannot be created; the caller must not start the card task in that case.
+bool event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int priority,
                       int core_id);
+
+// The card's task reports an update milestone and waits for one display
+// attempt. The pump remains the only owner of the framebuffer and panel.
+// True only after the new frame reached the glass (or was already shown).
+// Never call from the pump itself. Start the card only after event_loop_start.
+bool event_loop_firmware_update(void *ctx, const firmware_update_progress_t *progress);
 
 // From another task: input is waiting -- the pump looks now rather than at
 // its next deadline. Never waits; a wake that does not fit the queue is

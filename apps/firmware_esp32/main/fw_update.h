@@ -27,6 +27,7 @@
 
 #include "fw_image.h"
 #include "port_log.h"
+#include "ui/screen_firmware_update.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,9 +49,9 @@ typedef enum {
 typedef struct {
     fw_update_result_t result;
     fw_update_verdict_t verdict;
-    int32_t err;  // of the step that failed: an esp_err_t, an errno for read and delete
-    const char
-        *step;  // "memory", "read", "judge", "begin", "write", "end", "delete", "boot", or ""
+    int32_t err;       // of the step that failed: an esp_err_t, an errno for read and delete
+    const char *step;  // "display", "memory", "read", "judge", "begin", "write", "end", "delete",
+                       // "boot", or ""
     uint64_t file_bytes;
     uint32_t took_ms;
     fw_image_info_t image;
@@ -61,10 +62,16 @@ typedef struct {
 // whether the other slot holds an image the bootloader rolled back.
 void fw_update_boot(const port_log_t *log);
 
+// Runs on the card's task. Returns after the progress reached the panel (or
+// a display failure). False aborts before writing further; the source file
+// stays for a later retry. Must not access the card from this callback.
+typedef bool (*fw_update_progress_fn)(void *ctx, const firmware_update_progress_t *progress);
+
 // The card's task, after each mount of `mount_point`: install the card's
 // image if there is one. Takes seconds when there is: the file read, the
 // slot erased and written as it goes.
-fw_update_result_t fw_update_from_card(const char *mount_point);
+fw_update_result_t fw_update_from_card(const char *mount_point, fw_update_progress_fn progress,
+                                       void *progress_ctx);
 
 // The first frame is on the glass: an image running for the first time
 // after an update is confirmed, and the bootloader will not roll it back.

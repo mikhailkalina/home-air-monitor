@@ -56,11 +56,23 @@ ESP_STATIC_ASSERT(offsetof(esp_app_desc_t, idf_ver) == FW_APP_DESC_IDF_VER_OFFSE
 // seconds; the SD driver and the flash writes block in between anyway.
 #define YIELD_EVERY_BYTES (64u * 1024u)
 
+// CHOICE: at most ten write-progress redraws, plus the actual stage changes.
+#define PROGRESS_STEP_PERCENT 10u
+
 #define PATH_MAX_BYTES 64u
 
 static const port_log_t *s_log;
 static fw_update_attempt_t s_last;
 static bool s_attempted;
+static fw_update_progress_fn s_progress;
+static void *s_progress_ctx;
+static firmware_update_progress_t s_ui;
+
+static bool show_progress(firmware_update_stage_t stage)
+{
+    s_ui.stage = stage;
+    return s_progress == NULL || s_progress(s_progress_ctx, &s_ui);
+}
 
 const char *fw_update_result_name(fw_update_result_t result)
 {
@@ -223,10 +235,18 @@ static fw_update_result_t finish(fw_update_result_t result, const char *step, es
         default:
             break;
     }
+    if (result != FW_UPDATE_RESULT_NONE) {
+        // Even a failure before writing is visible and unlocks touch. Once
+        // the boot slot is selected, a display failure must not stop restart.
+        (void)show_progress(result == FW_UPDATE_RESULT_INSTALLED ? FIRMWARE_UPDATE_RESTARTING
+                            : result == FW_UPDATE_RESULT_REFUSED ? FIRMWARE_UPDATE_REFUSED
+                                                                 : FIRMWARE_UPDATE_FAILED);
+    }
     return result;
 }
 
-fw_update_result_t fw_update_from_card(const char *mount_point)
+fw_update_result_t fw_update_from_card(const char *mount_point, fw_update_progress_fn progress,
+                                       void *progress_ctx)
 {
     char path[PATH_MAX_BYTES];
     (void)snprintf(path, sizeof(path), "%s/%s", mount_point, FW_UPDATE_FILE_NAME);
@@ -240,6 +260,14 @@ fw_update_result_t fw_update_from_card(const char *mount_point)
     s_attempted = true;
     s_last.step = "";
     s_last.file_bytes = (uint64_t)st.st_size;
+    s_progress = progress;
+    s_progress_ctx = progress_ctx;
+    memset(&s_ui, 0, sizeof(s_ui));
+    s_ui.total_bytes = s_last.file_bytes;
+    // The screen and touch lock are acknowledged before any flash erase.
+    if (!show_progress(FIRMWARE_UPDATE_CHECKING)) {
+        return finish(FW_UPDATE_RESULT_FAILED, "display", ESP_FAIL, start);
+    }
     const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
     if (slot != NULL) {
         (void)snprintf(s_last.slot, sizeof(s_last.slot), "%s", slot->label);
@@ -277,6 +305,12 @@ fw_update_result_t fw_update_from_card(const char *mount_point)
     port_log_write(s_log, LOG_LEVEL_INFO, TAG, "firmware on the card: installing", starting,
                    sizeof(starting) / sizeof(starting[0]));
 
+    if (!show_progress(FIRMWARE_UPDATE_WRITING)) {
+        (void)fclose(f);
+        heap_caps_free(buf);
+        return finish(FW_UPDATE_RESULT_FAILED, "display", ESP_FAIL, start);
+    }
+
     // Erased as it is written, a sector ahead, rather than in one stretch
     // of seconds before the first byte.
     esp_ota_handle_t ota = 0;
@@ -290,10 +324,21 @@ fw_update_result_t fw_update_from_card(const char *mount_point)
     }
     size_t since_yield = 0u;
     bool read_failed = false;
+    bool display_failed = false;
+    uint32_t next_percent = PROGRESS_STEP_PERCENT;
     while (n > 0u) {
         err = esp_ota_write(ota, buf, n);
         if (err != ESP_OK) {
             break;
+        }
+        s_ui.written_bytes += n;
+        const uint32_t percent = firmware_update_percent(&s_ui);
+        if (percent >= next_percent) {
+            if (!show_progress(FIRMWARE_UPDATE_WRITING)) {
+                display_failed = true;
+                break;
+            }
+            next_percent = (percent / PROGRESS_STEP_PERCENT + 1u) * PROGRESS_STEP_PERCENT;
         }
         since_yield += n;
         if (since_yield >= YIELD_EVERY_BYTES) {
@@ -307,10 +352,21 @@ fw_update_result_t fw_update_from_card(const char *mount_point)
     }
     (void)fclose(f);
     heap_caps_free(buf);
-    if (err != ESP_OK || read_failed) {
+    if (err != ESP_OK || read_failed || display_failed) {
         (void)esp_ota_abort(ota);
-        return finish(FW_UPDATE_RESULT_FAILED, read_failed ? "read" : "write",
-                      read_failed ? (esp_err_t)errno : err, start);
+        return finish(FW_UPDATE_RESULT_FAILED,
+                      display_failed ? "display"
+                      : read_failed  ? "read"
+                                     : "write",
+                      display_failed ? ESP_FAIL
+                      : read_failed  ? (esp_err_t)errno
+                                     : err,
+                      start);
+    }
+
+    if (!show_progress(FIRMWARE_UPDATE_VERIFYING)) {
+        (void)esp_ota_abort(ota);
+        return finish(FW_UPDATE_RESULT_FAILED, "display", ESP_FAIL, start);
     }
 
     // ESP-IDF verifies the whole image here: its checksum and appended hash.
@@ -322,6 +378,10 @@ fw_update_result_t fw_update_from_card(const char *mount_point)
     }
     if (err != ESP_OK) {
         return finish(FW_UPDATE_RESULT_FAILED, "end", err, start);
+    }
+
+    if (!show_progress(FIRMWARE_UPDATE_FINALIZING)) {
+        return finish(FW_UPDATE_RESULT_FAILED, "display", ESP_FAIL, start);
     }
 
     // Deleted before the switch: a file that stayed would install again at

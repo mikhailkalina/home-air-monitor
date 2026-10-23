@@ -144,6 +144,7 @@ home-air-monitor/
 │   │   ├── screen_home.c
 │   │   ├── diagnostics_view.h/.c   # the diagnostics screen's view model (ADR 0025)
 │   │   ├── screen_diagnostics.c    # sources, readings, network, clock, recorder; a tap away
+│   │   ├── screen_firmware_update.h/.c  # modal progress, stages and byte counts (ADR 0039)
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c
 │   │   └── screen_graphs.c
@@ -656,6 +657,14 @@ struct port_files_s {
 No medium is `HAL_ERR_NOT_READY`, a full one `HAL_ERR_NO_MEM`. There is no `read`: nothing in the core reads a file back yet, and the contract reads back through its runner, independently of the implementation under test. FAT on the card (`adp_sd.c`) and a directory on the PC (`adp_files_dir.c`) are the two implementations.
 
 **The card can be lent to a PC as a USB disk** (ADR 0036): the board's USB-C is the S3's own USB, whose one internal PHY serves USB-Serial-JTAG -- the console, the log, esptool -- or USB-OTG, never both. Asked for at the console (`usb_disk`) or by the button, the card's task closes the files, `adp_sd` lends the card's sectors, and `platform/esp32_t5s3/usb_disk.c` gives the PHY to TinyUSB's mass storage, which that task then runs; once the host ejects the disk, or is gone, the PHY goes back to USB-Serial-JTAG without a reset and the card is mounted again. No port: one implementation; to `port_files`' users the lent card is no card.
+
+**Firmware updates have a modal screen** (ADR 0039). The card's updater reports
+stages and written bytes through a one-entry queue and waits for the pump to
+acknowledge each display attempt. Only the pump renders or flushes. It starts
+before the card, including for the boot's mount. `screen_controller` ignores
+touch while the update is active, then lets an error return home by tap or
+timeout. `core/ui/screen_firmware_update` renders the byte progress and stages;
+its content refreshes are paced by update milestones rather than sensors.
 
 ---
 

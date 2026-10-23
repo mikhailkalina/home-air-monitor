@@ -890,6 +890,14 @@ the refusals -- all but the signal. Verified on the host (`test_update_policy`,
 `test_screen_controller`, `test_diagnostics_view`, `simulator_link_flapping`, `simulator_taps`);
 the owner confirmed the BSEC firmware works on the board on 2026-10-23, without a detailed log.
 
+Firmware updates now have a modal progress screen and touch lock (ADR 0039): the card's
+updater reports stages and byte counts, waiting for the pump's display acknowledgement
+before the next flash operation. The pump starts before the card. Entry is full; progress
+is partial at ten-percent milestones and stage changes. Errors unlock touch and return
+home by tap or after ten seconds. Host tests and the BSEC build pass; the new UI is still
+to see on the board. Its first installation uses the old updater; copy an image again
+after installing it to exercise the screen.
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

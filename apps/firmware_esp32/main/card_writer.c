@@ -130,7 +130,8 @@ static void on_mounted(void)
 
     // Every mount -- at boot, sd_mount, the minute's, after a USB disk
     // session -- looks for firmware in the card's root (docs/adr/0037).
-    if (fw_update_from_card(ADP_SD_MOUNT_POINT) == FW_UPDATE_RESULT_INSTALLED) {
+    if (fw_update_from_card(ADP_SD_MOUNT_POINT, s_w.deps.update_progress,
+                            s_w.deps.update_progress_ctx) == FW_UPDATE_RESULT_INSTALLED) {
         restart_into_update();
     }
 }
