@@ -124,11 +124,13 @@ static void a_tap_switches_the_screen_at_once_as_a_full_refresh(void)
     d = pass(0u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
 
-    // A tap goes home, the home screen drawn afresh -- fully again.
+    // A tap goes home, the home screen drawn afresh -- fully, the budget
+    // started over.
     tap_at(10u, 10u);
     d = pass(3300u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&g_policy), 0);
     HAC_CHECK_EQ_INT(note.screen, SCREEN_HOME);
     HAC_CHECK(note.by_tap);
     free(home);

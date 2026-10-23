@@ -95,7 +95,9 @@ void screen_controller_evaluate(screen_controller_t *sc, update_policy_t *policy
     diag_view_build(&sc->pending_diag, &facts);
     const bool changed =
         !sc->have_shown_diag || !diag_view_equal(&sc->pending_diag, &sc->shown_diag);
-    update_policy_evaluate_content(policy, changed, out);
+    // A developer's screen: content redraws stay partial without a count limit
+    // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    update_policy_evaluate_partial_content(policy, changed, out);
 }
 
 void screen_controller_render(screen_controller_t *sc, framebuffer_t *fb, const screen_inputs_t *in)

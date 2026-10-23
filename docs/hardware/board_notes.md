@@ -2224,7 +2224,12 @@ layout settles, not before.
       - *The diagnostics screen*: the SSID as configured, the signal, the
         address the router gave (`Wi-Fi up <ssid> -NN dBm a.b.c.d`), `MQTT
         online sent N refused 0 last HH:MM`; the counts as of the tap,
-        unchanged while the screen stays up.
+        unchanged while the screen stays up. **Since 2026-10-23** everything
+        on the MQTT and Wi-Fi lines but the signal redraws as it changes, the
+        screen up five minutes with partial content redraws (ADR 0038): an outage
+        watched on it shows `joining` and `offline` at the loss, `up` and
+        `online` at the return, a partial refresh each; `sent` and `last` a
+        minute or so apart while a session is up.
       - *The test app*: the `port_net` contract against the Wi-Fi adapter,
         `info()`'s checks included -- the name terminated and the same up and
         down, an address only while up -- with the cut and restore checks "not
@@ -2904,6 +2909,20 @@ layout settles, not before.
       the budget at 0 after each; BSEC late 1.62-3.30 s at each. With the
       vendor's full refresh (ADR 0035, the item "The vendor's full refresh")
       1,842-1,901 ms. The title and the readability by eye: not reported yet.
+      **The diagnostics screen a developer's, 2026-10-23** (ADR 0038,
+      verified on the host): entering and returning home full, content redraws
+      partial without a count limit; up five minutes untouched; its network
+      lines live but for the signal. To see: `screen changed
+      screen=diagnostics by=tap ... action=full`; `screen changed screen=home ...
+      action=full`; `by=timeout` 300 s after the last touch; with the access
+      point switched off while it is up, a `decision action=partial
+      reason=status` within a sensor cycle of `adp_net: link lost`, none for
+      the attempts after it, one to three at the return; `sent` and `last`
+      following the session; content still redrawing partially beyond 40
+      refreshes during a visit extended by touches. **Owner confirmation,
+      2026-10-23**: the BSEC firmware works on the board after copying
+      `build-bsec/home_air_monitor.bin` to `C:\hac-flash`. No detailed log or
+      separate count of partial refreshes accompanied the confirmation.
 - [ ] **The vendor's full refresh (ADR 0035).** Built 2026-10-22, verified on
       the host only: `REFRESH_FULL` and `REFRESH_CLEAR` start with the
       vendor's clear -- 4 cycles of 4 pushes towards black and 4 towards

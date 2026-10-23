@@ -880,6 +880,16 @@ a minute late, a WPA3 PMKID the restarted access point no longer knew cost a bac
 return, and the broker reset every CONNECT for two minutes after the first (open items "Wi-Fi on
 the board" and "MQTT on the board").
 
+On branch `diagnostics-live-network` (ADR 0038), at the owner's request after watching an outage:
+the diagnostics screen is a developer's. Its content redraws are partial without a count limit
+(`update_policy_evaluate_partial_content()`: past the budget and former bound too, one per
+sensor cycle); entering and returning home stay full and start the budget over (ADR 0034).
+It goes home after five minutes untouched, not one, and its network lines redraw as they
+change -- the Wi-Fi's and the session's states, the address, `sent`, `last`,
+the refusals -- all but the signal. Verified on the host (`test_update_policy`,
+`test_screen_controller`, `test_diagnostics_view`, `simulator_link_flapping`, `simulator_taps`);
+the owner confirmed the BSEC firmware works on the board on 2026-10-23, without a detailed log.
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

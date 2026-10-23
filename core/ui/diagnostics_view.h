@@ -32,14 +32,18 @@
 // MEASURING into "running" for the same reason: a forced-mode BME68x passes
 // through both every cycle.
 //
-// The network's words are the exception, and say so: the signal, the counts
-// and the time of the last message change in ordinary operation -- every
-// minute at least -- and the states with every reconnection attempt, so they
-// are drawn as they are when the screen is drawn and redraw nothing by
-// themselves. Only the network's name, and telemetry coming or going, redraw
-// the section; a flapping link costs this screen nothing. The link the status
-// bar shows (core/app/link_hold.h) is not on this screen: its word is the
-// MQTT line's state, said twice, and the screen is up for a minute at most.
+// The network redraws as it changes -- the Wi-Fi's state ("up", "joining",
+// "failed", "off") and its address, the MQTT session's ("online",
+// "offline"), the state messages sent, the time of the last and the
+// refusals -- so a developer can watch it live
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md; until 2026-10-23
+// it was drawn as of the drawing). "joining" covers a whole outage, every
+// attempt and the backoff between them, so an outage costs a redraw at its
+// start and one or two at its end, not one an attempt; the messages one a
+// minute or so while a session is up. The signal alone stays as it is when
+// the screen is drawn: it moves by a dB or two at every read, every 10 s,
+// and redraws nothing by itself. The link the status bar shows (core/app/link_hold.h) is not on
+// this screen: its word is the MQTT line's state, said twice, a minute late.
 // Neither is it compared: compared and not drawn, a change of it made a
 // redraw due whose picture was the one on the glass -- an empty diff, tried
 // again every second until the screen timed out
@@ -128,8 +132,8 @@ typedef struct {
     bool recorder_trouble;              // no medium, full, failed
     char recorder_text[DIAG_LINE_MAX];  // "Recording: on", ...
 
-    // The network (above). What redraws: whether there is telemetry and the
-    // network's name. The rest is as of the drawing.
+    // The network (above). Everything in it redraws but the signal, which
+    // is as of the drawing.
     bool network_present;    // a reporter: telemetry configured
     const char *wifi_state;  // "up", "joining", "failed", "off"; "-" without a network port
     bool wifi_trouble;       // telemetry, and the link not up
@@ -172,7 +176,7 @@ typedef struct {
 void diag_view_build(diag_view_t *v, const diag_facts_t *facts);
 
 // Whether the screen showing `b` has nothing to redraw for `a`: everything
-// either would draw is the same but the network's words that are as of the
+// either would draw is the same but the network's signal, which is as of the
 // drawing (above). Everything it compares is drawn.
 bool diag_view_equal(const diag_view_t *a, const diag_view_t *b);
 

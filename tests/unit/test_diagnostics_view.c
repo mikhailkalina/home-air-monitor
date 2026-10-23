@@ -4,8 +4,9 @@
 // source's state, failures and restarts; each reading's status, accuracy and
 // source; the clock and the recorder; the network -- and diag_view_equal(),
 // which decides whether the screen redraws, ignoring what changes at every
-// poll and the network's words that are as of the drawing
-// (docs/adr/0031-the-network-on-the-screen.md).
+// poll and the network's words that are as of the drawing -- the signal and
+// the messages, not the states (docs/adr/0031-the-network-on-the-screen.md,
+// docs/adr/0034-a-change-of-screen-is-a-full-refresh.md's amendment).
 
 #include <stdint.h>
 #include <string.h>
@@ -372,40 +373,80 @@ static void without_telemetry_both_say_off(void)
     HAC_CHECK(v.ssid[0] == '\0' && v.rssi[0] == '\0' && v.address[0] == '\0');
 }
 
-// What changes with every message or attempt is as of the drawing, and so is
-// the held link, which the screen does not draw (ADR 0034); the network's
-// name redraws.
-static void the_network_redraws_only_for_its_name(void)
+// The network redraws as it changes (ADR 0038): an outage's start and end,
+// the messages sent and the last. The signal alone is as of the drawing, and
+// so is the held link, which the screen does not draw (ADR 0034).
+static void the_network_redraws_live_but_for_its_signal(void)
 {
     setup();
     const reporter_status_t n = online();
     const diag_view_t a = build_net(&n, LINK_ONLINE);
 
-    // The link as it is now gone, an attempt under way, messages sent and
-    // refused, the signal moved: nothing to redraw.
+    // The signal moved, the bar's link changing: nothing to redraw.
     reporter_status_t m = online();
-    m.link = LINK_NO_WIFI;
+    m.rssi_dbm = -80;
+    const diag_view_t b = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(diag_view_equal(&a, &b));
+    const diag_view_t c = build_net(&m, LINK_NO_WIFI);
+    HAC_CHECK(diag_view_equal(&b, &c));
+    // A message sent: redraw -- its count and, a minute on, its time.
+    m = online();
+    m.state_messages = 413u;
+    const diag_view_t b2 = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &b2));
+    m = online();
+    m.last_published_ms = NOW_MS - 90000u;  // a minute before the 13:07 one
+    const diag_view_t b3 = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(strcmp(b3.last, "last 13:06") == 0);
+    HAC_CHECK(!diag_view_equal(&a, &b3));
+
+    // The Wi-Fi gone, the session with it: redraw.
+    m = online();
     m.net = NET_CONNECTING;
     m.rssi_dbm = PORT_NET_RSSI_NONE;
     memset(m.net_info.ipv4, 0, sizeof(m.net_info.ipv4));
     m.state = REPORTER_CONNECTING;
-    m.state_messages = 9000u;
-    m.refusals = 2u;
-    m.last_published_ms = NOW_MS - 1000u;
-    const diag_view_t b = build_net(&m, LINK_ONLINE);
-    HAC_CHECK(diag_view_equal(&a, &b));
+    const diag_view_t d = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &d));
+    // ... and nothing more for every attempt and the backoff between them:
+    // the reporter between attempts, the station still joining.
+    m.state = REPORTER_OFFLINE;
+    const diag_view_t e = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(diag_view_equal(&d, &e));
 
-    // Nor the bar's link changing: it is not on this screen, and a redraw due
-    // for it would be an empty diff.
-    const diag_view_t c = build_net(&m, LINK_NO_WIFI);
-    HAC_CHECK(diag_view_equal(&b, &c));
+    // The Wi-Fi back, the session not yet: redraw; then the session: redraw.
+    m = online();
+    m.state = REPORTER_CONNECTING;
+    const diag_view_t f = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&e, &f));
+    HAC_CHECK(!diag_view_equal(&f, &a));
+
+    // Back with another address: redraw.
+    m = online();
+    m.net_info.ipv4[3] = 109u;
+    const diag_view_t g = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &g));
+    // A refusal: redraw.
+    m = online();
+    m.refusals = 1u;
+    const diag_view_t h = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &h));
+    // The radio that will not start: redraw.
+    m = online();
+    m.net = NET_FAILED;
+    m.rssi_dbm = PORT_NET_RSSI_NONE;
+    memset(m.net_info.ipv4, 0, sizeof(m.net_info.ipv4));
+    m.state = REPORTER_CONNECTING;
+    const diag_view_t i = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&d, &i));
+
     // So does the network's name, and telemetry coming or going.
     m = online();
     strcpy(m.net_info.ssid, "other-ap");
-    const diag_view_t d = build_net(&m, LINK_ONLINE);
-    HAC_CHECK(!diag_view_equal(&a, &d));
-    const diag_view_t e = build_net(NULL, LINK_ONLINE);
-    HAC_CHECK(!diag_view_equal(&a, &e));
+    const diag_view_t j = build_net(&m, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &j));
+    const diag_view_t k = build_net(NULL, LINK_ONLINE);
+    HAC_CHECK(!diag_view_equal(&a, &k));
 }
 
 int main(void)
@@ -423,6 +464,6 @@ int main(void)
     HAC_RUN(messages_sent_in_thousands_past_four_digits);
     HAC_RUN(a_name_that_is_not_text_is_shown_with_question_marks);
     HAC_RUN(without_telemetry_both_say_off);
-    HAC_RUN(the_network_redraws_only_for_its_name);
+    HAC_RUN(the_network_redraws_live_but_for_its_signal);
     return hac_test_summary();
 }

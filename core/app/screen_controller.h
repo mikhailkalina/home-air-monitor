@@ -24,7 +24,7 @@
 // While a screen is up, what makes it redraw is that screen's own business:
 // the home screen's is update_policy_evaluate() over the reading; the
 // diagnostics screen compares the view it would draw with the one it drew
-// (diag_view_equal()) and asks update_policy_evaluate_content().
+// (diag_view_equal()) and asks update_policy_evaluate_partial_content().
 //
 // Pure: no allocation, no I/O, every time from the events or the caller.
 
@@ -48,8 +48,13 @@ extern "C" {
 #endif
 
 // CHOICE: the diagnostics screen goes home after this long untouched. Long
-// enough to read it, short enough that it is not what the room sees.
-#define SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS 60000u
+// enough to watch the network's states change on it while testing -- an
+// outage's loss and return take minutes -- short enough that it is not what
+// the room sees for long. The owner's, 2026-10-23: a minute before. The way
+// home is a full refresh, which starts the partial-refresh budget over, so
+// the redraws the screen makes while it is up cost the home screen nothing
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+#define SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS 300000u
 
 #define SCREEN_CONTROLLER_NO_DEADLINE UINT64_MAX
 
