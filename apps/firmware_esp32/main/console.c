@@ -921,7 +921,7 @@ static const char *slot_state(const esp_partition_t *part)
 {
     esp_ota_img_states_t state;
     if (part == NULL || esp_ota_get_state_partition(part, &state) != ESP_OK) {
-        return "flashed";  // no otadata entry: esptool's, booted as the first slot
+        return "flashed";  // no otadata entry readable (esptool's flash reads valid)
     }
     switch (state) {
         case ESP_OTA_IMG_NEW:

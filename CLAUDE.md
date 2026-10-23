@@ -870,8 +870,15 @@ carries `ota_data_initial.bin` at 0xf000 (as `flash_args` does): after an update
 `ota_1`, and an app written to 0x20000 alone would never boot. Versions stay `git describe` (no
 tags yet; ADR 0037 proposes `vMAJOR.MINOR.PATCH` tags at merges). Console `fw`. Measured in the
 build: image +18,436 bytes, static internal RAM +392, bootloader 21,024 bytes. Verified on the
-host; the firmware and its BSEC variant build from regenerated sdkconfigs. Nothing seen on the
-board yet (`board_notes.md`, open item "Firmware from the card on the board").
+host; the firmware and its BSEC variant build from regenerated sdkconfigs. On the board,
+2026-10-23: an update through the USB disk installed in 19.4 s (5-10 estimated), restarted and
+confirmed itself at its first frame; the slideshow's image was refused and renamed; an image from
+esptool reads `valid`, not `flashed` -- the bootloader writes `otadata` itself; the card's task
+fell to 1,304 bytes of stack after the refusal (`board_notes.md`, open item "Firmware from the
+card on the board"). The same day the access point went twice: the bar's word followed each change
+a minute late, a WPA3 PMKID the restarted access point no longer knew cost a backoff step at each
+return, and the broker reset every CONNECT for two minutes after the first (open items "Wi-Fi on
+the board" and "MQTT on the board").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable

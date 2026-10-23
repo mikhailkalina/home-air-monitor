@@ -2229,6 +2229,16 @@ layout settles, not before.
         `info()`'s checks included -- the name terminated and the same up and
         down, an address only while up -- with the cut and restore checks "not
         exercised".
+      **The Wi-Fi gone twice, 2026-10-23** (an image of `e44fbfc`, BSEC, from
+      the card's `log/`, the owner's test of 11:07-11:16Z; the access point came
+      back on another channel and gave new addresses, so it had restarted):
+      every change of the bar's word came a minute after the link's, to the
+      millisecond -- `no-wifi` 60.0 s after each loss (11:07:17, 11:12:31),
+      `no-broker` 60.0 s after the Wi-Fi's return (11:10:17) while the broker
+      refused every CONNECT, `online` 60.0 s after the session (11:14:59); six
+      `link on the screen` lines in all, the boot's two included. On the
+      diagnostics screen, where the owner kept tapping, the held link drew
+      nothing, as ADR 0034 has it; the next home screen showed it.
 - [ ] **Wi-Fi on the board (phase 4e).** Built 2026-10-21, verified on the
       host only (`docs/adr/0032-wifi-on-the-board.md`): the station behind
       `port_net` (`platform/esp32_t5s3/adp_net.c`), its decisions tested on
@@ -2403,6 +2413,33 @@ layout settles, not before.
       brownout, no watchdog in the three boots (five with Wi-Fi so far). EPDiy's
       draw times as before (322-323, 699-700, 910 ms); `vbat` 32 of 32 again,
       4,222-4,224 mV.
+      **The access point gone and back, twice, 2026-10-23** (an image of
+      `e44fbfc`, BSEC, from the card's `log/`, the owner's test, 11:07-11:15Z):
+      - *The loss*: `bcn_timeout`, ESP-IDF's probes for 2.5 s, then `link lost:
+        sought again at once reason=beacon_timeout`; then `no_ap_found`, and the
+        failures logged once while their reason held, as designed.
+      - *The return*: the first attempt that met the access point again was
+        refused with **reason 49, `WIFI_REASON_INVALID_PMKID`** in ESP-IDF's
+        enum (`attempt failed reason=other code=49`): the station offered the
+        WPA3-SAE PMK it had cached, and the restarted access point knew it no
+        more. The next attempt, 30 s later at the backoff's ceiling, failed as
+        `connection_fail` with no signal reported; the one after joined, with a
+        full SAE handshake. The same three steps both times: the link back 65 s
+        after the access point first answered (11:09:08 -> 11:10:13, 11:13:49
+        -> 11:14:55), against ADR 0032's "within about 30 s of its return";
+        `up ... failed_attempts=9 took_ms=179478`, then `failed_attempts=8
+        took_ms=147748`. A candidate, not made: an attempt that met the access
+        point -- reason 49 among them -- resets the backoff to its first step,
+        and `adp_net_pure.c` names 49 so the log says what it is. Whether it
+        gains the 30 s is not established: the `connection_fail` between may be
+        the access point's own start. The owner's to decide.
+      - *What else came back different*: the channel (11, then 6) and the
+        address (`.140`, then `.109`, then `.113`) -- the restarted access
+        point's DHCP had forgotten the lease. The broker's address is fixed in
+        the image (ADR 0033); reserving addresses in the router for the board
+        and the Pi would keep both.
+      - *Measuring went on*: the sensors' minute samples on time throughout,
+        taps answered, no reset.
 - [ ] **Time from the network on the board (phase 4f).** Built 2026-10-21
       (`docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`,
       "Amendment (phase 4f): time from the network"): SNTP from Wi-Fi's first
@@ -2645,6 +2682,10 @@ layout settles, not before.
       in the night: the server's answers, which lwIP takes without a round-trip
       correction, were tens of milliseconds noisier, not the RTC. One hour
       says little; a day's samples average it out.
+      **A second night, 2026-10-22 to 23** (an image of `8c73fdd`, BSEC, from
+      the card's `log/`, ten hourly syncs 22:37Z to 07:37Z): `drift_ppm` -17.2
+      to -23.4, **mean -20.6** -- the first night's -20.8 again; every write on
+      time (`rearms=0`), every landing within +-12 ms.
       Still to see: a day of hourly samples, and another temperature; the cold
       boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
       measured delay, about 995 ms, should replace the datasheet's 508 as the
@@ -2789,8 +2830,9 @@ layout settles, not before.
         cannot touch the simulator's topics or another device's. Mosquitto drops
         a denied QoS 0 publish without telling the client, so the check is the
         receiver's.
-      - *Not yet seen*: Wi-Fi gone for an hour; a full day's hourly lines and
-        Home Assistant's long-term statistics.
+      - *Not yet seen*: Wi-Fi gone for an hour (gone for three minutes, twice,
+        2026-10-23, below); a full day's hourly lines and Home Assistant's
+        long-term statistics.
       **The test app, 2026-10-22** (the non-BSEC variant with the overlay, the
       owner's YAT logs of 23:20 and 23:29 local):
       - *The first run, one failure*: `connected within
@@ -2814,6 +2856,27 @@ layout settles, not before.
         free (the adapter's) and 3,980 (esp-mqtt's). The broker, watched with
         `mosquitto_sub -t 'hac-contract/#'`, saw the messages in the contract's
         order and nothing left over.
+      **The Wi-Fi gone twice, 2026-10-23** (an image of `e44fbfc`, BSEC, from
+      the card's `log/`; the item "Wi-Fi on the board" has the link's side):
+      - *The loss*: the socket's read failed at the beacon timeout
+        (`tcp_read error, errno=Software caused connection abort`), so the
+        reporter saw the session drop a moment before `port_net` the link:
+        `session lost ... why=dropped`, not the `why=network` this item
+        expected. The same outcome -- no session, nothing queued -- only the
+        word differs.
+      - *The first return*: the link up at 11:10:17Z with a new address, and
+        the broker at `192.168.1.141:1883` **reset every CONNECT for two
+        minutes** (`no connection to the broker why=Connection reset by peer
+        code=104`; attempts at 11:10:18, :34, :54, 11:11:24, 11:12:14, the
+        reporter's backoff doubling) until the link went again. A reset is an
+        answer: something at that address was up with nothing listening on
+        1883 -- the Pi Zero W's mosquitto not yet back after its own
+        reconnect, or another host on the address after the router's restart.
+        The board's log cannot tell; the Pi's journal can.
+      - *The second return*: `session up session=2 attempts=8` 0.2 s after the
+        link, `online` and nine configs.
+      - The will and Home Assistant's "unavailable" are not in the board's
+        log: the broker's and Home Assistant's to show.
 - [ ] **A change of screen as a full refresh (ADR 0034).** Built 2026-10-22,
       verified on the host only: every change of screen -- a tap, and the
       diagnostics screen's timeout -- is a full refresh, whatever the budget
@@ -3014,7 +3077,8 @@ layout settles, not before.
       check is to show, and the lines that show it:
       - *The bootloader*: after the esptool flash, `fw` says `FW running ota_0
         ...: home_air_monitor <version> ..., flashed` and the boot log
-        `fw_update: running partition=ota_0 state=flashed`.
+        `fw_update: running partition=ota_0 state=flashed`. (**Corrected
+        2026-10-23**: `valid`, below.)
       - *An update through the USB disk*: copy a build's `home_air_monitor.bin`
         to the disk's root, eject. Then, in the card's `log/`: `firmware on the
         card: installing version=... from_version=... bytes=... slot=ota_1`,
@@ -3041,4 +3105,48 @@ layout settles, not before.
       - *esptool after an update*: the usual command, `ota_data_initial.bin`
         included, boots what it wrote (`fw`: `running ota_0 ... flashed`);
         without it, the board would stay on `ota_1`.
-
+      **On the board, 2026-10-23** (an image of `e44fbfc`, BSEC, flashed with
+      the new bootloader; from the card's `log/`, 10:39-11:16Z):
+      - *The bootloader*: the first boot read `running partition=ota_0
+        state=valid`, not `flashed`. With rollback on and no factory slot,
+        ESP-IDF's bootloader writes an `otadata` entry for `ota_0` itself when
+        it finds `otadata` empty (`bootloader_utility.c`, "No factory image,
+        trying OTA 0"), so an image from esptool reads `valid`; `flashed` is
+        left for an `otadata` that cannot be read. The comments say so now.
+      - *An update through the USB disk*: the disk lent from the console at
+        11:01:25Z, 1,443 KB written to it, back at 11:02:26 (`why=suspended`,
+        Windows' eject), mounted, and in the same second `firmware on the card:
+        installing version=e44fbfc from_version=e44fbfc bytes=1450048
+        slot=ota_1` -- the same image again, installed as designed. `installed:
+        restarting into it ... took_ms=19364`: **19.4 s**, against the ESTIMATE
+        of 5-10 s; ESP-IDF's two verifications of the slot (`esp_ota_end()`,
+        then `esp_ota_set_boot_partition()`, each an `esp_image` segment list)
+        took 0.4 s of it, and the log does not say how the rest divides between
+        the card's read, the erase and the write. The restart a software reset
+        (`reason=software`), no brownout; `running partition=ota_1
+        state=pending_verify`, and at 3.7 s of uptime `the update confirmed: it
+        reached its first frame partition=ota_1`. The file was gone: the next
+        mounts found nothing to install. Wi-Fi joined at its first attempt
+        after it, where every esptool or USB reset that morning cost two refused
+        attempts and 15 s -- the software reset's shutdown leaves the access
+        point nothing stale.
+      - *The update's cost to the rest*: two taps during it changed the screen,
+        each full refresh with **2.7-2.8 s of clear** (1.21 s otherwise) and a
+        diff of 270-320 ms (107) -- the flash's erases and writes stalling the
+        caches the clear's loop and EPDiy run from -- 3.7-3.9 s to the glass,
+        and BSEC late by 3.4-3.8 s. The glass by eye: not reported.
+      - *A refusal*: the slideshow's image (`hac_slideshow`, `c5c41db-dirty`,
+        1,574,880 bytes) under the name: `firmware on the card refused: renamed
+        .rejected ... verdict=project step=judge took_ms=29`; the next mount
+        found nothing to try.
+      - **The card's task's stack at 1,304 bytes free** of 6,144 right after
+        that refusal, its lowest yet (2,048 when a card was pulled,
+        2026-10-22): the open, the header's read, the rename through FatFs with
+        long names, and a log line of fourteen fields through the tee's
+        `vsnprintf`. The install's own low-water mark is not in the log -- the
+        restart comes before the next report. Enough today, with little margin:
+        the stack to 8 KB, or the update's log lines split, before anything
+        else lands on that task.
+      Still to see: a rollback; an older image back into the other slot; a copy
+      cut short (`verdict=invalid`); `fw` after an update; the version in Home
+      Assistant after one; the install's stack.

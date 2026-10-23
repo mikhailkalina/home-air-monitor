@@ -6,9 +6,10 @@ Date: 2026-10-23
 
 Accepted, at the owner's request. Built and verified on the host (the image's
 header and the verdict, `tests/unit/test_fw_image.c`); the firmware and its BSEC
-variant build, with a new bootloader. Nothing of it has run on the board yet
-(`docs/hardware/board_notes.md`, open item "Firmware from the card on the
-board"). Implements what ADR 0036's "For later: firmware through the disk"
+variant build, with a new bootloader. Seen on the board 2026-10-23: an update
+through the USB disk installed, restarted and confirmed itself, and the
+slideshow's image was refused (`docs/hardware/board_notes.md`, open item
+"Firmware from the card on the board", with what is still to see). Implements what ADR 0036's "For later: firmware through the disk"
 listed; the network's OTA (architecture 10, phase 6) stays to do.
 
 ## Context
@@ -80,7 +81,7 @@ write leaves the running image the boot one and the file on the card: the next
 boot starts over.
 
 The update takes seconds -- the file's read over SPI, the slot's erase and
-write; an estimate of 5-10 s for 1.4 MB, the board's `took_ms=` to replace it.
+write: 19.4 s for 1.45 MB on the board (2026-10-23), where 5-10 s was estimated.
 Meanwhile the card's task records nothing (the event loop's rows wait in its
 queue, the overflow counted) and each flash erase or write stalls the caches
 for milliseconds -- a panel refresh under way may take a glitch, which the
@@ -108,10 +109,12 @@ brownout in that first boot -- this board's known one, at `PWR_EN`'s rise
 software reset, which keeps `PWR_EN` up, so that brownout is not expected
 there.
 
-An image flashed by esptool with `ota_data_initial.bin` boots from `ota_0` with
-no OTA state at all ("flashed") and needs no confirmation: the test app, the
-slideshow and the calibration builds are unaffected though they share the
-defaults.
+An image flashed by esptool with `ota_data_initial.bin` boots from `ota_0` and
+needs no confirmation: the bootloader, finding `otadata` empty and no factory
+slot, writes an entry for `ota_0` itself, `valid` -- what the board's first boot
+reported (2026-10-23), where this ADR first expected no OTA state at all
+("flashed"). The test app, the slideshow and the calibration builds are
+unaffected though they share the defaults.
 
 ### esptool from now on
 
@@ -147,7 +150,8 @@ running by their tags -- the rule belongs in a pure function beside
 
 ### The console
 
-`fw`: each slot's project, version, build date and state (`flashed`, `new`,
+`fw`: each slot's project, version, build date and state (`flashed` -- no
+readable `otadata` entry -- `new`,
 `pending_verify`, `valid`, `invalid`, `aborted`), which boots next if that
 differs, an update rolled back, and the last attempt since boot -- its result,
 verdict, step, error, size and time.

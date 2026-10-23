@@ -82,8 +82,10 @@ static const char *state_name(const esp_partition_t *part)
 {
     esp_ota_img_states_t state;
     if (part == NULL || esp_ota_get_state_partition(part, &state) != ESP_OK) {
-        // No otadata entry for it: flashed by esptool with ota_data_initial,
-        // booted as if it were the factory image.
+        // No otadata entry readable for it. Not what esptool's flash leaves:
+        // with rollback on and no factory slot, the bootloader writes an
+        // entry for ota_0 at its first boot of an empty otadata, `valid`
+        // (seen 2026-10-23).
         return "flashed";
     }
     switch (state) {
