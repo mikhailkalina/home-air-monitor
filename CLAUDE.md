@@ -827,6 +827,33 @@ the millisecond, a change of screen 1,844-1,865 ms. Still to see: a day of it, g
 redraws often, ghosting against the budget (`board_notes.md`, open item "The vendor's full
 refresh").
 
+On branch `usb-msc-mode` (ADR 0036), at the owner's request: the card as a USB disk. The
+board's USB-C is the S3's own USB, whose one internal PHY serves USB-Serial-JTAG -- console,
+log, esptool's COM17 -- or USB-OTG, never both. `usb_disk` at the console, or the button (IO21,
+its first use) held 2 s, lends the card: the card's task writes the ring's log lines out, closes
+the files, `adp_sd_lend()` unmounts FATFS and brings the card up for its sectors alone, and 300
+ms after the console's answer `platform/esp32_t5s3/usb_disk.c` takes the PHY for USB-OTG
+(`usb_new_phy()`) and starts TinyUSB's mass storage over the whole card, writable; the card's
+task runs `tud_task_ext()` in place of its own wait, so the card keeps one owner. It ends --
+`usb_disk_pure.c`, tested on the host -- when the host ejects (SCSI START STOP UNIT, LoEj), the
+button is pressed, no host configures it in 30 s, a host is gone 3 s, the bus is suspended 10 s,
+or the card fails; then `tusb_deinit()`, the PHY back to USB-Serial-JTAG without a reset, the
+card mounted loudly, new `_N` files. Meanwhile rows are dropped and counted and the log stays in
+its ring; the screen says nothing. Not TinyUSB with a CDC port all the time: that would lose the
+ROM's and the panic handler's output, JTAG and esptool's reset. TinyUSB directly
+(`espressif/tinyusb` 0.21.0~2, MIT, pinned), not `esp_tinyusb`, whose mass storage owns FATFS
+and may format; this project's own `tusb_config.h`. The PHY's selection is in an RTC register
+a software reset keeps: a reboot while lent comes back with no early log on COM17 until the
+console starts; RST always recovers. Measured in the build against `main`: static internal RAM
++5,536 bytes, image +25,556. Firmware through the disk is not built: ADR 0036's "For later" has
+what it needs (the OTA slots exist; a rollback bootloader; `ota_data_initial.bin` in every
+esptool flash once an update ran). Verified on the host; the firmware, its BSEC variant, the
+test app and the slideshow build. On the board, 2026-10-23: a session by the button, the PC
+reading 2.8 MB, the PHY back and the card mounted, no reset; with YAT attached, YAT reopening
+COM17 afterwards resets the chip (a host-asked USB reset the S3 cannot refuse), often followed
+by the known brownout at `PWR_EN`'s rise -- close YAT first (`board_notes.md`, open item "The
+card as a USB disk on the board", with what is still to see).
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

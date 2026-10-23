@@ -45,6 +45,11 @@
 // and core/reporting/reporter.c on the event loop: the device announces
 // itself to Home Assistant, publishes what the screen shows, and the status
 // bar and the diagnostics screen show the link. The console's mqtt shows it.
+// The card as a USB disk (docs/adr/0036-the-card-as-a-usb-disk.md): the
+// console's usb_disk, or the button held two seconds, lends the card to the
+// PC -- the USB PHY taken from USB-Serial-JTAG for TinyUSB's mass storage,
+// run by the card's task -- until the disk is ejected; then the console
+// comes back and recording resumes.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -91,6 +96,7 @@
 #include "adp_mqtt.h"
 #include "adp_net.h"
 #include "adp_sd.h"
+#include "board_button.h"
 #include "board_config.h"
 #include "board_gpio_isr.h"
 #include "board_power.h"
@@ -924,6 +930,13 @@ static void start_card(adp_sd_t *sd, const port_clock_t *clock, const port_log_t
     (void)recorder_add_source(rec, SCD4X_SOURCE_ID, SCD4X_RECORDING_TAG, 0);
     (void)recorder_add_source(rec, BME68X_SOURCE_ID, BME68X_RECORDING_TAG, BME68X_ACCURACY_CAPS);
     log_file_init(log_file, adp_sd_port(sd), zone);
+    // The button the card's task samples for the USB disk mode (ADR 0036).
+    const esp_err_t button = board_button_init();
+    if (button != ESP_OK) {
+        const log_field_t fields[] = {log_i64("esp_err", (int64_t)button)};
+        port_log_write(log, LOG_LEVEL_WARN, "main",
+                       "button not set up: usb_disk at the console only", fields, 1u);
+    }
 
     const card_writer_deps_t deps = {
         .clock = clock,

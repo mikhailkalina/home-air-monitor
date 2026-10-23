@@ -16,6 +16,7 @@ whenever a dependency is added or removed.
 | Mbed TLS (inside ESP-IDF's `mbedtls` component) | 3.6.3 | Apache-2.0 OR GPL-2.0-or-later -- **used under Apache-2.0** | the same: the supplicant's cryptography; since phase 4g, in an image with a broker, also its TLS layer and X.509, linked by `esp-tls` and never run (see below) | No — part of ESP-IDF; see below |
 | esp-mqtt (ESP-IDF's `mqtt` component, `components/mqtt/esp-mqtt` at `cac1552e62b0474c162547b7cce345d7cd1aecfe`) | ESP-IDF 5.5's copy | Apache-2.0 | `platform/esp32_t5s3/adp_mqtt.c` (the MQTT client, phase 4g) -- only in an image built with a broker | No — part of ESP-IDF; see below |
 | http_parser (inside ESP-IDF's `http_parser` component, linked by esp-mqtt for broker URIs) | 2.7.0, ESP-IDF 5.5's copy | MIT (Joyent, Inc. and other Node contributors; based on NGINX's parser, Igor Sysoev) | the same | No — part of ESP-IDF; see below |
+| TinyUSB (`espressif/tinyusb` 0.21.0~2 from Espressif's component registry: `hathach/tinyusb` as packaged by Espressif, `espressif/tinyusb` at `894ea01409e0407a7dbe0ee29b2d58a4691f9046`) | 0.21.0~2 | MIT (Copyright (c) 2012-2026, hathach, tinyusb.org) | `platform/esp32_t5s3/usb_disk.c` (the card as a USB disk, ADR 0036) -- linked into the firmware only | No — fetched as a managed component; see below |
 | EPDiy (`AdaSzi/epdiy` fork, tag `2.1.3-t5s3.1`, commit `161de5275f615b58e4a4f614f24a10260430239c`) | 2.1.3 | **LGPL-3.0-or-later** | `platform/esp32_t5s3/adp_display.c` | No — fetched as a managed component (see below) |
 | FastEPD | — | Apache-2.0 — **no longer a dependency, removed** | nowhere | No — see below |
 | Xinyuan-LilyGO/LilyGo-EPD47 | — | **GPL-3.0 — not a dependency** | nowhere (read, never linked) | No — see below |
@@ -183,6 +184,34 @@ No copyleft term is involved. http_parser's MIT terms ask that its copyright
 and permission notice be included with copies of it: an image with a broker,
 if ever distributed, carries that notice beside the others ESP-IDF's
 third-party code already asks for. Nothing is vendored here.
+
+## Notes on TinyUSB, the card's USB disk
+
+ADR 0036 (`docs/adr/0036-the-card-as-a-usb-disk.md`) presents the microSD
+card to a PC as a USB mass-storage device through TinyUSB, Espressif's
+packaging of Ha Thach's `hathach/tinyusb` for ESP-IDF: the registry's
+`espressif/tinyusb` 0.21.0~2, built from `espressif/tinyusb` at commit
+`894ea01409e0407a7dbe0ee29b2d58a4691f9046` (the package's own
+`idf_component.yml`), pinned exactly in
+`apps/firmware_esp32/components/hac_platform/idf_component.yml` and fetched
+into the gitignored `managed_components/`. Nothing of it is vendored here.
+
+The licence was read in the package itself, 2026-10-22: **MIT**, "Copyright
+(c) 2012-2026, hathach (tinyusb.org)". The registry labels this version's
+licence "Custom" -- its file is the MIT text unchanged. Permissive: no
+copyleft term reaches the rest of the work. A firmware image given to someone
+else must carry the copyright notice and the permission notice, beside the
+ones ESP-IDF's third-party code already asks for. TinyUSB's library sources
+include the RNDIS reports under `lib/networking/` (the same MIT terms), which
+the component compiles and nothing here links.
+
+Not used: Espressif's `esp_tinyusb` (Apache-2.0), the layer above TinyUSB
+that the registry pairs with it -- the ADR says why. This project's
+`platform/esp32_t5s3/tinyusb/tusb_config.h` is its own, not esp_tinyusb's.
+
+The USB IDs are Espressif's: vendor 0x303A and the product ID esp_tinyusb
+gives a TinyUSB device with mass storage alone (ADR 0036, "Identity"),
+suitable for a device never sold.
 
 ## Notes on the EPDiy display backend, and its LGPL-3.0 obligations
 

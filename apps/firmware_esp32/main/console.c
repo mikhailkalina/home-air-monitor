@@ -31,6 +31,7 @@
 #include "pcf8563.h"
 #include "port_clock.h"
 #include "port_net.h"
+#include "usb_disk_limits.h"
 #include "wall_clock.h"
 
 // No trailing space: esp_console_setup_prompt() appends one itself.
@@ -406,6 +407,24 @@ static void print_card(void)
     }
 }
 
+// The last USB disk session (docs/adr/0036), if there was one since boot.
+static void print_usb_disk(void)
+{
+    const usb_disk_stats_t *u = &s_card.usb;
+    if (u->sessions == 0u) {
+        printf("USB_DISK none since boot\n");
+        return;
+    }
+    printf("USB_DISK last of %lu: ended %s after %llu s, %lu configurations, read %llu KB, "
+           "written %llu KB, %lu I/O errors, %lu refused, slowest read %lu us, write %lu us\n",
+           (unsigned long)u->sessions, usb_disk_verdict_name(u->verdict),
+           (unsigned long long)(u->lasted_ms / 1000u), (unsigned long)u->configurations,
+           (unsigned long long)(u->bytes_read / BYTES_PER_KB),
+           (unsigned long long)(u->bytes_written / BYTES_PER_KB), (unsigned long)u->io_errors,
+           (unsigned long)u->refused, (unsigned long)u->slowest_read_us,
+           (unsigned long)u->slowest_write_us);
+}
+
 static int cmd_sd(void *context, int argc, char **argv)
 {
     (void)context;
@@ -415,6 +434,7 @@ static int cmd_sd(void *context, int argc, char **argv)
         return 1;
     }
     print_card();
+    print_usb_disk();
     return 0;
 }
 
@@ -441,6 +461,28 @@ static int cmd_sd_eject(void *context, int argc, char **argv)
     }
     printf("SD_EJECT done: every file flushed and closed, the card unmounted -- safe to remove. "
            "sd_mount to use it again\n");
+    return 0;
+}
+
+static int cmd_usb_disk(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (!ask_card(CARD_WRITER_LEND, "USB_DISK")) {
+        return 1;
+    }
+    if (s_card.result != HAL_OK) {
+        printf("USB_DISK refused: %s -- %s\n", hal_status_text(s_card.result),
+               (s_card.result == HAL_ERR_BUSY) ? "lent already" : "no card answers");
+        return 1;
+    }
+    printf("USB_DISK lent: in %lu ms this port goes and a disk comes. Eject the disk on the PC "
+           "(or press the board's button) to have the card and this port back; the files are "
+           "closed, recording resumes in new ones. A disk no PC configures within %lu s comes "
+           "back by itself.\n",
+           (unsigned long)USB_DISK_SWITCH_DELAY_MS, (unsigned long)(USB_DISK_HOST_WAIT_MS / 1000u));
+    (void)fflush(stdout);
     return 0;
 }
 
@@ -933,6 +975,12 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .func_w_context = cmd_sd_mount,
         .context = NULL,
     };
+    const esp_console_cmd_t usb_disk_cmd = {
+        .command = "usb_disk",
+        .help = "Lend the card to the PC as a USB disk: this port goes until the disk is ejected",
+        .func_w_context = cmd_usb_disk,
+        .context = NULL,
+    };
     const esp_console_cmd_t sd_eject_cmd = {
         .command = "sd_eject",
         .help = "Flush and close every file and unmount the card: safe to remove",
@@ -1007,6 +1055,9 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         err = esp_console_cmd_register(&sd_eject_cmd);
     }
     if (err == ESP_OK) {
+        err = esp_console_cmd_register(&usb_disk_cmd);
+    }
+    if (err == ESP_OK) {
         err = esp_console_cmd_register(&rec_cmd);
     }
     if (err == ESP_OK) {
@@ -1055,8 +1106,9 @@ hal_status_t console_start(const console_deps_t *deps)
 
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
-        log_str("commands", "help i2c_scan i2c_recover restart time time_set rtc_stop sd "
-                            "sd_mount sd_eject rec touch touch_sleep touch_wake wifi vbat mqtt"),
+        log_str("commands",
+                "help i2c_scan i2c_recover restart time time_set rtc_stop sd "
+                "sd_mount sd_eject usb_disk rec touch touch_sleep touch_wake wifi vbat mqtt"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

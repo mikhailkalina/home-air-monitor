@@ -111,7 +111,8 @@ two never disagree. Carried forward as named constants in
 | I2C `SDA` / `SCL` (shared: RTC + touch + our sensors) | 18 / 17 | `src/utilities.h:39-40` |
 | Touch IRQ | 47 | `src/utilities.h:41` |
 | Touch I2C address | **`0x5D`** (GT911; `0x14` is its other latch address) | observed by the phase-2d bus scan; `examples/touch/touch.ino:109,113` |
-| Button | 21 | `src/utilities.h:30` |
+| Button | 21 -- since ADR 0036 the USB disk's: held 2 s asks for it, pressed ends it | `src/utilities.h:30` |
+| USB `D-` / `D+` (the USB-C) | 19 / 20 -- the S3's own USB pins, no bridge: USB-Serial-JTAG (the console, COM17) or USB-OTG (the USB disk, ADR 0036) on its one internal PHY, never both | ESP32-S3 datasheet; every console session since phase 2a |
 | Battery ADC | 14 | `src/utilities.h:32` |
 | microSD `MISO`/`MOSI`/`SCLK`/`CS` -- the card's since phase 3f ("The microSD slot") | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
 | Genuinely free | 45, 10 (analog-in only), 48, 39 | `README.MD` "GPIO List" |
@@ -2907,3 +2908,100 @@ layout settles, not before.
       twentieth partial as before; nothing in the log but BSEC's late calls.
       Still to see: a day of it -- greys a partial redraws often, the traces
       around vanished digits against the budget of twenty, residue in greys.
+- [ ] **The card as a USB disk on the board (ADR 0036).** Built 2026-10-22,
+      verified on the host only (`docs/adr/0036-the-card-as-a-usb-disk.md`):
+      `usb_disk` at the console, or the button (IO21) held for two seconds,
+      lends the card to the PC -- the PHY taken from USB-Serial-JTAG for
+      TinyUSB's mass storage -- until the disk is ejected; then the PHY goes
+      back and the card is mounted again, without a reset. Nothing of the
+      switch has run on this board: that the PHY moves between the two
+      controllers at all, and back, is read in ESP-IDF 5.5's source. What each
+      check is to show, and the lines that show it (the session's own lines
+      reach the card's `log/` after it, not the terminal):
+      - *The switch*: `usb_disk` with a card in: `USB_DISK lent: in 300 ms
+        this port goes`, COM17 gone, a removable disk "Home Air Monitor card"
+        with the card's files in Explorer, and Windows' device manager naming
+        it USB mass storage, VID 0x303A, PID 0x4002, serial the MAC. With no
+        card: `USB_DISK refused`, nothing switched.
+      - *The way back*: Explorer's "Eject": the disk goes, COM17 comes back
+        (the same number, by the serial), and `sd` shows the card mounted and
+        `USB_DISK last of 1: ended ejected`; the card's log has `lending the
+        card to USB`, `usb disk started`, `the card is back from USB
+        why=ejected ...`, `card mounted`; `rec` shows new files, the day's
+        next `_N`.
+      - *The other endings*: the button pressed (`why=button`); the cable
+        pulled with the battery in (`why=host_gone`, about 3 s after);
+        "Safely Remove Hardware" in the tray -- whether Windows sends the
+        eject or only suspends the device (`why=ejected`, or `suspended` 10 s
+        after); the PC put to sleep (`suspended`); a charger instead of a PC
+        (`why=no_host` after 30 s). Each followed by the card mounted.
+      - *Throughput*: a 100 MB file copied each way, timed on the PC, beside
+        `read_kb=`, `written_kb=`, `slowest_read_us=`, `slowest_write_us=` in
+        the `back from USB` line. Full speed's ceiling is about 1 MB/s; a lot
+        less says the 4 KB buffer (`USB_DISK_MSC_BUFFER_BYTES`) or the SD
+        clock is the limit.
+      - *Nothing else held up*: through a session the sensors' `sample`
+        lines, the redraws and MQTT go on; `rows_dropped` grows by the
+        session's rows and no more; the card's task's `stack low-water mark`
+        (of 6,144) with TinyUSB's callbacks and the SD driver on it; no
+        `BSEC called late` beyond the usual.
+      - *Twice in a boot*: a second `usb_disk` after the first came back --
+        the second session takes the PHY from the USB-Serial-JTAG handle the
+        first one made.
+      - *A reboot while lent*: `restart` cannot be typed then, so a panic or
+        the watchdog is the case; read, not seen: the next boot's early lines
+        do not reach COM17, which returns once the console starts. RST always
+        gives USB-Serial-JTAG back.
+      - *The cost*: `free_internal=` in the `card mounted` line after a
+        session against before (the build: +5,536 bytes of static internal
+        RAM, TinyUSB's 4,947 of them).
+      **First run 2026-10-23** (ELF `26000f158...`, the BSEC image, the
+      owner's YAT log of 11:07 local, three sessions of 21-74 s): each
+      `usb_disk` answered, the card was lent (`state=lent`), and the next
+      thing on COM17 was a new boot, `rst:0x15 (USB_UART_CHIP_RESET)` and
+      `previous reset reason=usb rom_code=21` -- a reset the USB host asked
+      for through USB-Serial-JTAG's CDC line state, not a panic or a watchdog
+      (none in the log). Each following boot mounted the card at once, so the
+      host left the filesystem readable. **The terminal, not the mode**
+      (confirmed the same day: no reboot with YAT closed, below): the
+      session's end gives COM17 back, YAT reopens it by itself, and opening
+      the port resets the chip -- as it does after a power cut (open item "The
+      RTC on the board", phase 3e) and, by the same log, at YAT's first open:
+      the file begins at the board's 3.9 s. The S3's USB-Serial-JTAG has no
+      bit to refuse that reset (ESP-IDF 5.5's `usb_serial_jtag_reg.h` for the
+      S3 has none; the C61's and later chips' `USB_UART_CHIP_RST_DIS` is
+      absent), and refusing it would cost esptool's reset anyway. Two of the
+      three resets were followed by a brownout at `PWR_EN`'s rise (open item
+      "A reboot loop when the switched 3V3 comes up"). So: close YAT, or turn
+      its automatic reopen off, before a session -- or accept a reboot after
+      it. Also seen: two
+      `sdspi_transaction: cmd=52 ... cmd=5, R1 response: command not
+      supported` lines at every lend -- `sdmmc_card_init()` probing for SDIO,
+      harmless.
+      **The card's log of the same morning** (`log/2026-10-23.log`, copied off
+      by the owner): the YAT sessions left nothing of themselves on the card --
+      their lines were in the ring, which a reset loses, and the `lending` line
+      comes after the files close -- and the boots after them read `previous
+      reset reason=BROWNOUT` three times (YAT's first open at 08:07:40Z, and
+      after the first two sessions) and `usb` once: a host reset, then a
+      brownout at `PWR_EN`'s rise in the boot it started, as before. One boot,
+      after a `usb` reset with no brownout, found the GT911 at `0x14` -- the
+      latch again (open item "The touch panel on the board"), taken as
+      designed. **Then a session with YAT closed, entered and ended by the
+      button** (08:16:09Z-08:16:17Z): `lending the card to USB ... by=button`,
+      `usb disk started ... status=0` 180 ms later, the PC configured the disk
+      once and read 2,832 KB -- Explorer opening it; no write -- `the card is
+      back from USB why=button lasted_ms=7232 io_errors=0 refused=0
+      slowest_read_us=94637`, `card mounted` 100 ms later, the day's sixth
+      files, **no reboot**; the log runs on as before. So both of the button's
+      uses work, the PHY goes to USB-OTG and back without a reset, and the
+      card mounts after the host. In passing: `free_internal=43715` at that
+      mount against 43,987 with the MQTT session up before it (one session,
+      no leak to speak of); the card's task's low-water mark 2,464 bytes free
+      of 6,144 with TinyUSB on it; temperature redraws for half a minute after
+      it, the BME680 at up to 28 C -- the hand at the button, beside the
+      sensor. Still to see: the eject (`why=ejected`), "Safely Remove
+      Hardware", the PC asleep, a charger (`no_host`), a cable pulled on the
+      battery (`host_gone`), writes and throughput, a second session in a
+      boot, `sd`'s `USB_DISK` line.
+

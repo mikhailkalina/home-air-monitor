@@ -338,6 +338,19 @@ target_link_libraries(test_adp_mqtt_pure PRIVATE hac_test_support)
 hac_apply_warnings(test_adp_mqtt_pure)
 add_test(NAME test_adp_mqtt_pure COMMAND test_adp_mqtt_pure)
 
+# The card's USB disk mode: when the card is given back to the recorder, and
+# the button that asks for it -- compiled from where the firmware compiles
+# them (docs/adr/0036-the-card-as-a-usb-disk.md). usb_disk.c itself needs
+# ESP-IDF and TinyUSB, and is the board's to check.
+add_executable(test_usb_disk_pure
+    unit/test_usb_disk_pure.c
+    ${HAC_ROOT}/platform/esp32_t5s3/usb_disk_pure.c
+)
+target_include_directories(test_usb_disk_pure PRIVATE ${HAC_ROOT}/platform/esp32_t5s3)
+target_link_libraries(test_usb_disk_pure PRIVATE hac_test_support)
+hac_apply_warnings(test_usb_disk_pure)
+add_test(NAME test_usb_disk_pure COMMAND test_usb_disk_pure)
+
 # The device's panel limits against the simulator's. Only board_config.h's
 # directory is added -- it is plain data -- not anything that builds for the
 # ESP32.

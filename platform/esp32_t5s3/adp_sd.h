@@ -18,6 +18,12 @@
 // succeeds again. A file open across that keeps answering
 // HAL_ERR_NOT_READY; close() releases it.
 //
+// The card can also be lent (docs/adr/0036-the-card-as-a-usb-disk.md): the
+// filesystem unmounted, the card brought up again for its sectors alone, and
+// those read and written for a USB host until adp_sd_end_lend(). While lent
+// the port answers HAL_ERR_NOT_READY, as without a card, and no mount is
+// made.
+//
 // Not thread-safe: one task owns the card and makes every call.
 
 #ifndef HAC_PLATFORM_ESP32_T5S3_ADP_SD_H
@@ -49,6 +55,7 @@ typedef enum {
     ADP_SD_UNREADABLE,  // a card answers, but holds no FAT filesystem this mounts
     ADP_SD_LOST,        // was mounted; the card stopped answering
     ADP_SD_EJECTED,     // unmounted on request
+    ADP_SD_LENT,        // its sectors lent to a USB host (adp_sd_lend())
 } adp_sd_state_t;
 
 struct port_file_s {
@@ -73,7 +80,8 @@ typedef struct {
 
     adp_sd_state_t state;
     bool bus_ready;
-    void *card;  // sdmmc_card_t *, owned by ESP-IDF while mounted
+    void *card;       // sdmmc_card_t *, owned by ESP-IDF while mounted, adp_sd.c's while lent
+    int lent_device;  // the SD-over-SPI device while lent, else -1
     esp_err_t last_mount_err;
     uint32_t generation;  // incremented by every successful mount
 
@@ -113,7 +121,31 @@ bool adp_sd_mounted(const adp_sd_t *sd);
 // a 16 GB card at 20 MHz (seen 2026-10-16). HAL_ERR_NOT_READY without a card.
 hal_status_t adp_sd_card_info(adp_sd_t *sd, bool with_free, adp_sd_card_info_t *out);
 
-// "not_tried", "mounted", "no_card", "unreadable", "lost", "ejected".
+// Lends the card: every file's handle kept as adp_sd_unmount() keeps them,
+// the filesystem unmounted, and the card initialised again for sector access
+// -- what a mount does, without FATFS. With nothing mounted it looks for a
+// card the same way. HAL_OK and the state ADP_SD_LENT; HAL_ERR_NOT_FOUND with
+// no card answering, the state ADP_SD_NO_CARD; HAL_ERR_BUSY when lent
+// already.
+hal_status_t adp_sd_lend(adp_sd_t *sd);
+
+// While lent: the card's sectors, and their size in bytes (512 for every SD
+// card this slot takes). HAL_ERR_NOT_READY when not lent.
+hal_status_t adp_sd_lent_geometry(const adp_sd_t *sd, uint32_t *sectors, uint32_t *sector_bytes);
+
+// While lent: `count` sectors from `lba`. `buf` in internal RAM, as SPI DMA
+// needs, 4-byte aligned. HAL_ERR_INVALID_ARG past the end; HAL_ERR_IO for a
+// card that answers and failed, HAL_ERR_NOT_READY for one that no longer
+// answers; HAL_ERR_NOT_READY when not lent.
+hal_status_t adp_sd_lent_read(adp_sd_t *sd, uint32_t lba, void *buf, uint32_t count);
+hal_status_t adp_sd_lent_write(adp_sd_t *sd, uint32_t lba, const void *buf, uint32_t count);
+
+// Takes the card back: the SD-over-SPI device released, the state
+// ADP_SD_NOT_TRIED, so the next adp_sd_mount() mounts what the host left.
+// Not lent: nothing done.
+void adp_sd_end_lend(adp_sd_t *sd);
+
+// "not_tried", "mounted", "no_card", "unreadable", "lost", "ejected", "lent".
 const char *adp_sd_state_name(adp_sd_state_t state);
 
 #ifdef __cplusplus

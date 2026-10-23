@@ -37,8 +37,19 @@ idf_component_register(
         # shares with the touch adapter, installed once.
         ${HAC_ROOT}/platform/esp32_t5s3/board_rtc_int.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_gpio_isr.c
+        # The card as a USB disk: TinyUSB's mass storage over the card's
+        # sectors, the USB PHY switched from USB-Serial-JTAG and back, its
+        # decisions -- tested on the host from this location -- and the button
+        # that asks for it (docs/adr/0036). Linked into the firmware, whose
+        # card task calls it; the other apps leave it and TinyUSB to the linker.
+        ${HAC_ROOT}/platform/esp32_t5s3/usb_disk.c
+        ${HAC_ROOT}/platform/esp32_t5s3/usb_disk_pure.c
+        ${HAC_ROOT}/platform/esp32_t5s3/board_button.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
+    PRIV_INCLUDE_DIRS
+        # tusb_config.h, TinyUSB's configuration, for usb_disk.c's tusb.h.
+        ${HAC_ROOT}/platform/esp32_t5s3/tinyusb
     REQUIRES
         hac_core
         hac_drivers
@@ -62,6 +73,11 @@ idf_component_register(
         # The MQTT client (adp_mqtt.c): esp-mqtt, bundled with ESP-IDF
         # (THIRD_PARTY_NOTICES.md).
         mqtt
+        # The USB disk (usb_disk.c): TinyUSB, a managed component (MIT,
+        # THIRD_PARTY_NOTICES.md, pinned in idf_component.yml), and ESP-IDF's
+        # usb component for the PHY's switch between its two controllers.
+        espressif__tinyusb
+        usb
         esp_psram
         esp_hw_support
         esp_rom
@@ -72,3 +88,11 @@ idf_component_register(
 
 include(${HAC_ROOT}/cmake/warnings_idf.cmake)
 hac_apply_warnings_idf(${COMPONENT_LIB})
+
+# TinyUSB includes its configuration by name, from the application: this
+# project's, beside usb_disk.c (as esp_tinyusb, which is not used, would give
+# its own). TinyUSB's sources are built with ESP-IDF's options, not this
+# project's -Werror set: third-party code, as the vendored drivers are.
+idf_component_get_property(hac_tinyusb_lib espressif__tinyusb COMPONENT_LIB)
+target_include_directories(${hac_tinyusb_lib} PRIVATE ${HAC_ROOT}/platform/esp32_t5s3/tinyusb
+                                                      ${HAC_ROOT}/platform/esp32_t5s3)

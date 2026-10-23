@@ -38,6 +38,13 @@
 //   sd_mount     mount now, with ESP-IDF's SD driver lines shown
 //   sd_eject     flush and close every file and unmount: safe to remove; no
 //                automatic mount until sd_mount
+//   usb_disk     (docs/adr/0036-the-card-as-a-usb-disk.md) lend the card to
+//                the PC as a USB disk: the files closed, the card unmounted,
+//                and this port gone -- the PHY is the USB-OTG controller's --
+//                until the disk is ejected on the PC, the PC is gone, or the
+//                board's button is pressed. Holding the button for two
+//                seconds does the same without the console. `sd` says how
+//                the last one ended ("USB_DISK" line).
 //   rec          recording on or off, the file each source is written to,
 //                rows and bytes since boot and what was dropped, the log
 //                file's, and what the card costs the event loop

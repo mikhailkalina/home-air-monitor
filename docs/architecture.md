@@ -211,7 +211,13 @@ home-air-monitor/
 │   │   ├── adp_storage.c           # NVS + LittleFS
 │   │   ├── adp_power.c             # deep sleep, RTC memory, BQ25896/BQ27220
 │   │   ├── adp_log.c               # ESP_LOG
-│   │   ├── adp_sd.c                # the microSD card: SD over SPI + FATFS behind port_files (ADR 0024)
+│   │   ├── adp_sd.c                # the microSD card: SD over SPI + FATFS behind port_files (ADR 0024);
+│   │   │                           #   lent, its sectors alone, for the USB disk
+│   │   ├── usb_disk.c              # the card as a USB disk: the PHY from USB-Serial-JTAG to
+│   │   │                           #   TinyUSB's mass storage and back (ADR 0036)
+│   │   ├── usb_disk_pure.c         # ... when the host is done, and the button: tested on the host
+│   │   ├── tinyusb/tusb_config.h   # ... TinyUSB's configuration: one mass-storage interface
+│   │   ├── board_button.c          # the user button on IO21
 │   │   ├── board_power.c           # PWR_EN without EPDiy: the sensors' rail (null display, test app)
 │   │   ├── board_rtc_int.c         # the RTC's INT on IO9: each falling edge stamped in an interrupt
 │   │   └── board_gpio_isr.c        # ESP-IDF's shared GPIO ISR service, installed once
@@ -646,6 +652,8 @@ struct port_files_s {
 ```
 
 No medium is `HAL_ERR_NOT_READY`, a full one `HAL_ERR_NO_MEM`. There is no `read`: nothing in the core reads a file back yet, and the contract reads back through its runner, independently of the implementation under test. FAT on the card (`adp_sd.c`) and a directory on the PC (`adp_files_dir.c`) are the two implementations.
+
+**The card can be lent to a PC as a USB disk** (ADR 0036): the board's USB-C is the S3's own USB, whose one internal PHY serves USB-Serial-JTAG -- the console, the log, esptool -- or USB-OTG, never both. Asked for at the console (`usb_disk`) or by the button, the card's task closes the files, `adp_sd` lends the card's sectors, and `platform/esp32_t5s3/usb_disk.c` gives the PHY to TinyUSB's mass storage, which that task then runs; once the host ejects the disk, or is gone, the PHY goes back to USB-Serial-JTAG without a reset and the card is mounted again. No port: one implementation; to `port_files`' users the lent card is no card.
 
 ---
 
