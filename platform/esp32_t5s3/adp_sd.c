@@ -98,6 +98,8 @@ const char *adp_sd_state_name(adp_sd_state_t state)
             return "lost";
         case ADP_SD_EJECTED:
             return "ejected";
+        case ADP_SD_LENT:
+            return "lent";
         default:
             return "?";
     }
@@ -378,6 +380,7 @@ hal_status_t adp_sd_init(adp_sd_t *sd, const port_log_t *log)
         release(&sd->files[i]);
     }
     sd->log = log;
+    sd->lent_device = -1;
     sd->port.open_append = sd_open_append;
     sd->port.append = sd_append;
     sd->port.flush = sd_flush;
@@ -432,10 +435,26 @@ static hal_status_t mount_status(esp_err_t err)
     }
 }
 
+// The card's host and its SPI device, as both a mount and a lend bring it up.
+static void card_config(sdmmc_host_t *host, sdspi_device_config_t *slot)
+{
+    const sdmmc_host_t host_default = SDSPI_HOST_DEFAULT();
+    *host = host_default;
+    host->slot = BOARD_SD_SPI_HOST;
+    host->max_freq_khz = BOARD_SD_SPI_MAX_KHZ;
+    const sdspi_device_config_t slot_default = SDSPI_DEVICE_CONFIG_DEFAULT();
+    *slot = slot_default;
+    slot->gpio_cs = BOARD_SD_CS_GPIO;
+    slot->host_id = BOARD_SD_SPI_HOST;
+}
+
 hal_status_t adp_sd_mount(adp_sd_t *sd, bool quiet)
 {
     if (adp_sd_mounted(sd)) {
         return HAL_OK;
+    }
+    if (sd->state == ADP_SD_LENT) {
+        return HAL_ERR_BUSY;  // the host's until adp_sd_end_lend()
     }
     if (!sd->bus_ready) {
         return HAL_ERR_IO;
@@ -449,12 +468,9 @@ hal_status_t adp_sd_mount(adp_sd_t *sd, bool quiet)
         }
     }
 
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = BOARD_SD_SPI_HOST;
-    host.max_freq_khz = BOARD_SD_SPI_MAX_KHZ;
-    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot.gpio_cs = BOARD_SD_CS_GPIO;
-    slot.host_id = BOARD_SD_SPI_HOST;
+    sdmmc_host_t host;
+    sdspi_device_config_t slot;
+    card_config(&host, &slot);
     const esp_vfs_fat_mount_config_t mount = {
         .format_if_mount_failed = false,  // never: the card may hold someone's files
         .max_files = (int)ADP_SD_MAX_OPEN,
@@ -490,7 +506,7 @@ hal_status_t adp_sd_mount(adp_sd_t *sd, bool quiet)
 void adp_sd_unmount(adp_sd_t *sd, adp_sd_state_t why)
 {
     if (!adp_sd_mounted(sd)) {
-        if (why == ADP_SD_EJECTED) {
+        if (why == ADP_SD_EJECTED && sd->state != ADP_SD_LENT) {
             sd->state = why;  // and no automatic mount until asked
         }
         return;
@@ -524,4 +540,117 @@ hal_status_t adp_sd_card_info(adp_sd_t *sd, bool with_free, adp_sd_card_info_t *
         out->free_bytes = free_bytes;
     }
     return HAL_OK;
+}
+
+// --- the card lent to a USB host (docs/adr/0036) ------------------------------------
+
+// The card while lent: what esp_vfs_fat_sdspi_mount() keeps for a mounted
+// one, kept here since nothing of FATFS holds it.
+static sdmmc_card_t s_lent_card;
+
+hal_status_t adp_sd_lend(adp_sd_t *sd)
+{
+    if (sd->state == ADP_SD_LENT) {
+        return HAL_ERR_BUSY;
+    }
+    if (!sd->bus_ready) {
+        return HAL_ERR_IO;
+    }
+    // The files' handles stay, answering HAL_ERR_NOT_READY, as for an eject;
+    // the unmount releases the SPI device the mount had made.
+    adp_sd_unmount(sd, ADP_SD_EJECTED);
+
+    sdmmc_host_t host;
+    sdspi_device_config_t slot;
+    card_config(&host, &slot);
+    sdspi_dev_handle_t device = -1;
+    // What esp_vfs_fat_sdspi_mount() does before FATFS: the host's init (a
+    // no-op for SD over SPI), the card's device on the bus, the card's
+    // identification and initialisation.
+    esp_err_t err = (*host.init)();
+    if (err == ESP_OK) {
+        err = sdspi_host_init_device(&slot, &device);
+    }
+    if (err == ESP_OK) {
+        host.slot = device;
+        memset(&s_lent_card, 0, sizeof(s_lent_card));
+        err = sdmmc_card_init(&host, &s_lent_card);
+        if (err != ESP_OK) {
+            (void)sdspi_host_remove_device(device);
+        }
+    }
+    sd->last_mount_err = err;
+    if (err != ESP_OK) {
+        sd->state = ADP_SD_NO_CARD;
+        return HAL_ERR_NOT_FOUND;
+    }
+    sd->card = &s_lent_card;
+    sd->lent_device = device;
+    sd->state = ADP_SD_LENT;
+    return HAL_OK;
+}
+
+hal_status_t adp_sd_lent_geometry(const adp_sd_t *sd, uint32_t *sectors, uint32_t *sector_bytes)
+{
+    if (sd->state != ADP_SD_LENT) {
+        return HAL_ERR_NOT_READY;
+    }
+    const sdmmc_card_t *card = card_of(sd);
+    *sectors = (uint32_t)card->csd.capacity;
+    *sector_bytes = (uint32_t)card->csd.sector_size;
+    return HAL_OK;
+}
+
+static hal_status_t lent_range(const adp_sd_t *sd, uint32_t lba, uint32_t count)
+{
+    if (sd->state != ADP_SD_LENT) {
+        return HAL_ERR_NOT_READY;
+    }
+    const uint32_t sectors = (uint32_t)card_of(sd)->csd.capacity;
+    if (count == 0u || lba >= sectors || count > sectors - lba) {
+        return HAL_ERR_INVALID_ARG;
+    }
+    return HAL_OK;
+}
+
+// A transfer the card failed: an error if it still answers its status
+// command, gone if not -- as card_trouble() says of a mounted one.
+static hal_status_t lent_trouble(const adp_sd_t *sd)
+{
+    return (sdmmc_get_status(card_of(sd)) == ESP_OK) ? HAL_ERR_IO : HAL_ERR_NOT_READY;
+}
+
+hal_status_t adp_sd_lent_read(adp_sd_t *sd, uint32_t lba, void *buf, uint32_t count)
+{
+    const hal_status_t range = lent_range(sd, lba, count);
+    if (range != HAL_OK) {
+        return range;
+    }
+    if (sdmmc_read_sectors(card_of(sd), buf, (size_t)lba, (size_t)count) != ESP_OK) {
+        return lent_trouble(sd);
+    }
+    return HAL_OK;
+}
+
+hal_status_t adp_sd_lent_write(adp_sd_t *sd, uint32_t lba, const void *buf, uint32_t count)
+{
+    const hal_status_t range = lent_range(sd, lba, count);
+    if (range != HAL_OK) {
+        return range;
+    }
+    if (sdmmc_write_sectors(card_of(sd), buf, (size_t)lba, (size_t)count) != ESP_OK) {
+        return lent_trouble(sd);
+    }
+    return HAL_OK;
+}
+
+void adp_sd_end_lend(adp_sd_t *sd)
+{
+    if (sd->state != ADP_SD_LENT) {
+        return;
+    }
+    (void)sdspi_host_remove_device(sd->lent_device);
+    sd->lent_device = -1;
+    sd->card = NULL;
+    sd->state = ADP_SD_NOT_TRIED;
 }

@@ -45,6 +45,15 @@
 // and core/reporting/reporter.c on the event loop: the device announces
 // itself to Home Assistant, publishes what the screen shows, and the status
 // bar and the diagnostics screen show the link. The console's mqtt shows it.
+// The card as a USB disk (docs/adr/0036-the-card-as-a-usb-disk.md): the
+// console's usb_disk, or the button held two seconds, lends the card to the
+// PC -- the USB PHY taken from USB-Serial-JTAG for TinyUSB's mass storage,
+// run by the card's task -- until the disk is ejected; then the console
+// comes back and recording resumes. Firmware from the card
+// (docs/adr/0037-firmware-from-the-card.md): home_air_monitor.bin in its root
+// is installed into the other OTA slot at the next mount, deleted, and booted;
+// the new image confirms itself at its first frame, or the bootloader rolls it
+// back.
 //
 // What runs, in this order: the log's tee into a ring for the card
 // (log_tee.c, first, so the boot's own lines reach the file), adp_log and
@@ -53,9 +62,8 @@
 // CONFIG_HAC_DISPLAY_NULL -- see main/Kconfig.projbuild), adp_i2c and the
 // boot-time bus scan -- after the display, whose init powers the sensors (see
 // bring_up_i2c()) -- then the system time from the RTC (set_clock_from_rtc()),
-// then the card's SPI bus and its task, which mounts the card -- after the
-// rail as well (see start_card()) -- then the touch controller and its task
-// (start_touch()), the Wi-Fi station with its radio off (start_network())
+// then the touch controller and its task (start_touch()), the Wi-Fi
+// station with its radio off (start_network())
 // and the wait for its first address, the RTC's INT interrupting
 // (start_net_time()), the MQTT client's task and the reporter
 // (start_telemetry()), which connect once the radio's link is up,
@@ -64,7 +72,9 @@
 // (CONFIG_HAC_EPD_TEST_PATTERN, which costs the panel's minimum
 // full-refresh interval before the first rendered frame -- see
 // run_epd_test_pattern below), and the FreeRTOS pump from event_loop.c
-// driving the sensor manager and update_policy, and last the serial console
+// driving the sensor manager and update_policy, the card's SPI bus and
+// task (start_card(), after the pump so a boot update can report progress),
+// and last the serial console
 // (see start_console() for why last).
 //
 // CONFIG_HAC_EPD_CALIBRATION (phase 2c, off by default) replaces the pump
@@ -91,6 +101,7 @@
 #include "adp_mqtt.h"
 #include "adp_net.h"
 #include "adp_sd.h"
+#include "board_button.h"
 #include "board_config.h"
 #include "board_gpio_isr.h"
 #include "board_power.h"
@@ -126,6 +137,7 @@
 #include "console.h"
 #include "epd_calibration.h"
 #include "event_loop.h"
+#include "fw_update.h"
 #include "log_tee.h"
 #include "net_time.h"
 #include "wall_clock.h"
@@ -721,6 +733,16 @@ static void start_radio(void *ctx)
     }
 }
 
+// event_loop.h's first-frame hook, whole: an image that got this far after an
+// update from the card is confirmed, so the bootloader keeps it
+// (docs/adr/0037-firmware-from-the-card.md) -- the boot, the rail, the
+// sensors' bring-up and a full refresh behind it -- and then the radio.
+static void after_first_frame(void *ctx)
+{
+    fw_update_confirm_running();
+    start_radio(ctx);
+}
+
 // The diagnostics screen's word for where the wall clock came from, short
 // enough for its line; NULL for none.
 static const char *clock_word(wall_clock_source_t source)
@@ -924,6 +946,13 @@ static void start_card(adp_sd_t *sd, const port_clock_t *clock, const port_log_t
     (void)recorder_add_source(rec, SCD4X_SOURCE_ID, SCD4X_RECORDING_TAG, 0);
     (void)recorder_add_source(rec, BME68X_SOURCE_ID, BME68X_RECORDING_TAG, BME68X_ACCURACY_CAPS);
     log_file_init(log_file, adp_sd_port(sd), zone);
+    // The button the card's task samples for the USB disk mode (ADR 0036).
+    const esp_err_t button = board_button_init();
+    if (button != ESP_OK) {
+        const log_field_t fields[] = {log_i64("esp_err", (int64_t)button)};
+        port_log_write(log, LOG_LEVEL_WARN, "main",
+                       "button not set up: usb_disk at the console only", fields, 1u);
+    }
 
     const card_writer_deps_t deps = {
         .clock = clock,
@@ -931,6 +960,7 @@ static void start_card(adp_sd_t *sd, const port_clock_t *clock, const port_log_t
         .sd = sd,
         .recorder = rec,
         .log_file = log_file,
+        .update_progress = event_loop_firmware_update,
     };
     (void)card_writer_start(&deps, CARD_WRITER_TASK_STACK_BYTES, CARD_WRITER_TASK_PRIORITY,
                             CARD_WRITER_TASK_CORE);
@@ -986,6 +1016,7 @@ void app_main(void)
                    NULL, 0u);
 
     log_reset_reason(log);
+    fw_update_boot(log);  // which slot runs; an update rolled back (docs/adr/0037)
     log_memory_budget(log);
     name_device(s_device_id, sizeof(s_device_id), log);
     if (tee != HAL_OK) {
@@ -1002,7 +1033,6 @@ void app_main(void)
     bring_up_i2c(&s_i2c, clock, log);  // after the rail: see bring_up_i2c()
     log_tee_hold(false);
     s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
-    start_card(&s_sd, clock, log, &s_zone);  // after the rail too: see start_card()
     start_touch(&s_touch, &s_i2c, clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
@@ -1020,7 +1050,6 @@ void app_main(void)
     bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
     log_tee_hold(false);
     s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
-    start_card(&s_sd, clock, log, &s_zone);  // after the rail too: see start_card()
     start_touch(&s_touch, &s_i2c, clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
@@ -1050,7 +1079,7 @@ void app_main(void)
 #endif
 #endif
 
-    // After the rail, the log's release, the card and touch; the radio itself
+    // After the rail, the log's release and touch; the radio itself
     // waits for the first frame (start_radio()).
     port_net_t *net = start_network(&s_net, s_device_id, clock, log);
     const bool net_time = start_net_time(net, &s_i2c, clock, log, &s_wall_source);
@@ -1102,15 +1131,20 @@ void app_main(void)
         .facts_ctx = &s_wall_source,
         .reporter = reporter,  // NULL without a broker: no telemetry
         .link = &s_link,
-        .after_first_frame = start_radio,
+        .after_first_frame = after_first_frame,
         .after_first_frame_ctx = net,
         // The constant first, as in start_net_time(): without a network the
         // step is not referenced at all.
         .step = (CONFIG_HAC_WIFI_SSID[0] != '\0' && net_time) ? net_time_step : NULL,
         .step_ctx = NULL,
     };
-    event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
-                     EVENT_LOOP_TASK_CORE);
+    if (!event_loop_start(&deps, EVENT_LOOP_TASK_STACK_BYTES, EVENT_LOOP_TASK_PRIORITY,
+                          EVENT_LOOP_TASK_CORE)) {
+        return;
+    }
+    // The pump must exist before the card can find an image: update progress
+    // waits for its display acknowledgement, including at the boot's mount.
+    start_card(&s_sd, clock, log, &s_zone);
     const console_deps_t console = {
         .bus = &s_i2c,
         .clock = &s_clock,

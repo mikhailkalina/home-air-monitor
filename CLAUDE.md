@@ -119,6 +119,9 @@ HAC_MQTT_PASSWORD=... ./build/host-debug/apps/simulator/simulator --headless --d
 # Firmware
 . $HOME/esp/esp-idf/export.sh
 cd apps/firmware_esp32 && idf.py build
+# Flash with everything flash_args names -- ota_data_initial.bin at 0xf000 above all: after an
+# update from the card (ADR 0037) the board boots ota_1, and an app alone at 0x20000 never boots.
+# Or copy build/home_air_monitor.bin to the card's root (the USB disk, ADR 0036) and eject.
 
 # Firmware with Wi-Fi (ADR 0032): the network in the gitignored overlay, layered last over
 # every build's defaults (the test app's too); it reaches only a fresh sdkconfig, and the
@@ -826,6 +829,75 @@ artifact, only the expected trace around a vanished black digit; partial draws a
 the millisecond, a change of screen 1,844-1,865 ms. Still to see: a day of it, greys a partial
 redraws often, ghosting against the budget (`board_notes.md`, open item "The vendor's full
 refresh").
+
+On branch `usb-msc-mode` (ADR 0036), at the owner's request: the card as a USB disk. The
+board's USB-C is the S3's own USB, whose one internal PHY serves USB-Serial-JTAG -- console,
+log, esptool's COM17 -- or USB-OTG, never both. `usb_disk` at the console, or the button (IO21,
+its first use) held 2 s, lends the card: the card's task writes the ring's log lines out, closes
+the files, `adp_sd_lend()` unmounts FATFS and brings the card up for its sectors alone, and 300
+ms after the console's answer `platform/esp32_t5s3/usb_disk.c` takes the PHY for USB-OTG
+(`usb_new_phy()`) and starts TinyUSB's mass storage over the whole card, writable; the card's
+task runs `tud_task_ext()` in place of its own wait, so the card keeps one owner. It ends --
+`usb_disk_pure.c`, tested on the host -- when the host ejects (SCSI START STOP UNIT, LoEj), the
+button is pressed, no host configures it in 30 s, a host is gone 3 s, the bus is suspended 10 s,
+or the card fails; then `tusb_deinit()`, the PHY back to USB-Serial-JTAG without a reset, the
+card mounted loudly, new `_N` files. Meanwhile rows are dropped and counted and the log stays in
+its ring; the screen says nothing. Not TinyUSB with a CDC port all the time: that would lose the
+ROM's and the panic handler's output, JTAG and esptool's reset. TinyUSB directly
+(`espressif/tinyusb` 0.21.0~2, MIT, pinned), not `esp_tinyusb`, whose mass storage owns FATFS
+and may format; this project's own `tusb_config.h`. The PHY's selection is in an RTC register
+a software reset keeps: a reboot while lent comes back with no early log on COM17 until the
+console starts; RST always recovers. Measured in the build against `main`: static internal RAM
++5,536 bytes, image +25,556. Firmware through the disk is not built: ADR 0036's "For later" has
+what it needs (the OTA slots exist; a rollback bootloader; `ota_data_initial.bin` in every
+esptool flash once an update ran). Verified on the host; the firmware, its BSEC variant, the
+test app and the slideshow build. On the board, 2026-10-23: a session by the button, the PC
+reading 2.8 MB, the PHY back and the card mounted, no reset; with YAT attached, YAT reopening
+COM17 afterwards resets the chip (a host-asked USB reset the S3 cannot refuse), often followed
+by the known brownout at `PWR_EN`'s rise -- close YAT first (`board_notes.md`, open item "The
+card as a USB disk on the board", with what is still to see).
+
+On the same branch (ADR 0037), at the owner's request: firmware from the card. `home_air_monitor.bin`
+-- the build's own image -- in the card's root is found at every mount (boot, `sd_mount`, the
+minute's, after a USB disk session), written into the OTA slot not running
+(`apps/firmware_esp32/main/fw_update.c`, erased as it is written), verified by ESP-IDF, deleted,
+made the boot slot, and the board restarts into it. **No version check**: any image of this
+project for this chip that fits installs, older ones too; another project's, not an image, or one
+that fails verification is renamed `.rejected` (`fw_image.c`, pure, tested on the host). Rollback:
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, so a **new bootloader**; the new image confirms itself at
+its first frame, one that resets before that is rolled back. From now on every esptool flash
+carries `ota_data_initial.bin` at 0xf000 (as `flash_args` does): after an update the board boots
+`ota_1`, and an app written to 0x20000 alone would never boot. Versions stay `git describe` (no
+tags yet; ADR 0037 proposes `vMAJOR.MINOR.PATCH` tags at merges). Console `fw`. Measured in the
+build: image +18,436 bytes, static internal RAM +392, bootloader 21,024 bytes. Verified on the
+host; the firmware and its BSEC variant build from regenerated sdkconfigs. On the board,
+2026-10-23: an update through the USB disk installed in 19.4 s (5-10 estimated), restarted and
+confirmed itself at its first frame; the slideshow's image was refused and renamed; an image from
+esptool reads `valid`, not `flashed` -- the bootloader writes `otadata` itself; the card's task
+fell to 1,304 bytes of stack after the refusal (`board_notes.md`, open item "Firmware from the
+card on the board"). The same day the access point went twice: the bar's word followed each change
+a minute late, a WPA3 PMKID the restarted access point no longer knew cost a backoff step at each
+return, and the broker reset every CONNECT for two minutes after the first (open items "Wi-Fi on
+the board" and "MQTT on the board").
+
+On branch `usb-card-updates-and-live-diagnostics` (ADR 0038), at the owner's request after watching an outage:
+the diagnostics screen is a developer's. Its content redraws are partial without a count limit
+(`update_policy_evaluate_partial_content()`: past the budget and former bound too, one per
+sensor cycle); entering and returning home stay full and start the budget over (ADR 0034).
+It goes home after five minutes untouched, not one, and its network lines redraw as they
+change -- the Wi-Fi's and the session's states, the address, `sent`, `last`,
+the refusals -- all but the signal. Verified on the host (`test_update_policy`,
+`test_screen_controller`, `test_diagnostics_view`, `simulator_link_flapping`, `simulator_taps`);
+the owner confirmed the BSEC firmware works on the board on 2026-10-23, without a detailed log.
+
+Firmware updates now have a modal progress screen and touch lock (ADR 0039): the card's
+updater reports stages and byte counts, waiting for the pump's display acknowledgement
+before the next flash operation. The pump starts before the card. Entry is full; progress
+is partial at ten-percent milestones and stage changes. Errors unlock touch and return
+home by tap or after ten seconds. Host tests and the BSEC build pass; the owner confirmed
+the update screen and touch lock work on the board with build `b358b13` on 2026-10-23.
+No detailed log or timing accompanied that confirmation. Its first installation uses
+the old updater; copy an image again after installing it to exercise the screen.
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable

@@ -15,7 +15,10 @@ a full refresh").
 
 **Amended the same day by ADR 0035**: the full refresh itself is now the
 vendor's, about 1.9 s by estimate rather than 3.3 s, so "about 3.3 s" below
-reads about 2 s.
+reads about 2 s. **Amended 2026-10-23 by ADR 0038** for the diagnostics
+screen: its content redraws are partial without a count limit; it stays up
+five minutes and redraws for its network lines. Both changes of screen stay
+full.
 
 ## Context
 

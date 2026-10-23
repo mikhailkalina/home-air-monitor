@@ -6,6 +6,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "esp_heap_caps.h"
@@ -57,6 +58,7 @@ typedef struct {
 #define PUMP_EVENT_INPUT 1u
 #define PUMP_EVENT_NETWORK 2u
 #define PUMP_EVENT_TIME 3u
+#define PUMP_EVENT_UPDATE 4u
 
 // What the hourly line counts, as the reporter had it at the last one.
 typedef struct {
@@ -71,6 +73,9 @@ typedef struct {
 typedef struct {
     event_loop_deps_t deps;
     QueueHandle_t queue;
+    QueueHandle_t update_queue;  // one producer: the card's task
+    SemaphoreHandle_t update_done;
+    bool update_ok;  // published before giving update_done
     air_reading_t reading;
     bool deferral_logged;
 
@@ -164,7 +169,9 @@ static void log_screen_change(const event_loop_state_t *s, const screen_redraw_n
     }
     const log_field_t fields[] = {
         log_str("screen", screen_controller_screen_name(note->screen)),
-        log_str("by", note->by_tap ? "tap" : "timeout"),
+        log_str("by", note->screen == SCREEN_FIRMWARE_UPDATE ? "firmware"
+                      : note->by_tap                         ? "tap"
+                                                             : "timeout"),
         log_u64("latency_ms", note->by_tap ? note->latency_ms : 0u),
         log_str("action", update_policy_action_name(d->action)),
         log_u64("partials", update_policy_partials_since_full(s->deps.policy)),
@@ -424,8 +431,22 @@ static void pump_task(void *arg)
     s->stack_free_min_bytes = UINT32_MAX;
 
     for (;;) {
-        // Touch first: a tap is a redraw due now, whatever else is.
+        // Progress arrives before touch: queued taps from the old screen
+        // must not switch screens while an update is starting or ending.
+        firmware_update_progress_t progress;
+        const bool update_pending = xQueueReceive(s->update_queue, &progress, 0) == pdTRUE;
+        if (update_pending) {
+            if (s->deps.input != NULL) {
+                input_event_t ignored;
+                while (s->deps.input->poll(s->deps.input, &ignored)) {
+                    // Discard, including a gesture begun before the update.
+                }
+            }
+            screen_controller_firmware_update(s->deps.screens, s->deps.policy, &progress,
+                                              clock->now_ms(clock));
+        }
         drain_input(s);
+        bool update_ok = true;
 
         const uint64_t sensors_due = sensor_manager_poll(s->deps.sensors, &s->reading);
 
@@ -465,9 +486,10 @@ static void pump_task(void *arg)
         screen_controller_evaluate(s->deps.screens, s->deps.policy, &in, &decision);
 
         if (decision.action != UPDATE_NONE) {
-            if (now_ms >= s->redraw_not_before_ms) {
+            if (update_pending || now_ms >= s->redraw_not_before_ms) {
                 log_decision(s, &decision, now_ms);
-                if (redraw(s, &decision, now_ms)) {
+                update_ok = redraw(s, &decision, now_ms);
+                if (update_ok) {
                     s->consecutive_no_progress = 0u;
                     s->redraw_not_before_ms = 0u;
                 } else {
@@ -502,6 +524,14 @@ static void pump_task(void *arg)
                            "deferred: panel minimum full-refresh interval not elapsed", fields,
                            sizeof(fields) / sizeof(fields[0]));
             s->deferral_logged = true;
+        }
+
+        if (update_pending) {
+            // The updater cannot erase/write the next portion until the
+            // panel is idle. A failure is acknowledged too: it aborts the
+            // update rather than leaving the card's task waiting forever.
+            s->update_ok = update_ok;
+            (void)xSemaphoreGive(s->update_done);
         }
 
         // The earliest of the deadlines; a redraw still due waits out its
@@ -548,7 +578,7 @@ static void pump_task(void *arg)
     }
 }
 
-void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int priority,
+bool event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int priority,
                       int core_id)
 {
     memset(&s_state, 0, sizeof(s_state));
@@ -561,7 +591,15 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
         // first pass through the loop.
         port_log_write(s_state.deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG, "xQueueCreate failed",
                        NULL, 0u);
-        return;
+        return false;
+    }
+
+    s_state.update_queue = xQueueCreate(1u, sizeof(firmware_update_progress_t));
+    s_state.update_done = xSemaphoreCreateBinary();
+    if (s_state.update_queue == NULL || s_state.update_done == NULL) {
+        port_log_write(deps->log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG,
+                       "could not create update progress handshake", NULL, 0u);
+        return false;
     }
 
     const size_t previous_fb_size = framebuffer_required_size(
@@ -574,7 +612,7 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
         // would silently skip every partial redraw from its first tick.
         port_log_write(s_state.deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG,
                        "heap_caps_malloc failed for the previous-frame diff buffer", NULL, 0u);
-        return;
+        return false;
     }
     framebuffer_init(&s_state.previous_fb, previous_fb_pixels, previous_fb_size,
                      deps->display->width, deps->display->height, deps->display->format);
@@ -594,7 +632,9 @@ void event_loop_start(const event_loop_deps_t *deps, uint32_t stack_bytes, int p
         const log_field_t fields[] = {log_i64("result", (int64_t)created)};
         port_log_write(s_state.deps.log, LOG_LEVEL_ERROR, EVENT_LOOP_TAG,
                        "xTaskCreatePinnedToCore failed", fields, 1u);
+        return false;
     }
+    return true;
 }
 
 static void post(uint8_t kind)
@@ -619,4 +659,15 @@ void event_loop_post_network(void)
 void event_loop_post_time(void)
 {
     post(PUMP_EVENT_TIME);
+}
+
+// The card is the sole caller, synchronously, so each acknowledgement belongs
+// to exactly this milestone; there is no shared framebuffer or borrowed data.
+bool event_loop_firmware_update(void *ctx, const firmware_update_progress_t *progress)
+{
+    (void)ctx;
+    (void)xQueueSend(s_state.update_queue, progress, portMAX_DELAY);
+    post(PUMP_EVENT_UPDATE);
+    (void)xSemaphoreTake(s_state.update_done, portMAX_DELAY);
+    return s_state.update_ok;
 }

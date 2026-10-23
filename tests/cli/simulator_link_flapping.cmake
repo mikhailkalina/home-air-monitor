@@ -19,7 +19,11 @@
 #     compared the held link without drawing it, and the redraw due came out
 #     an empty diff, skipped and tried again every second until the screen
 #     timed out -- seen by the owner in the window. No run here may skip a
-#     redraw so.
+#     redraw so;
+#   * the diagnostics screen up while the network itself goes and comes back:
+#     its states are drawn and compared with partial content redraws (ADR 0038):
+#     it redraws at once for the loss and for the return, partially, and for
+#     nothing between them.
 #
 #   cmake -DSIMULATOR=<path> -DSCENARIOS=<dir> -P simulator_link_flapping.cmake
 
@@ -149,7 +153,8 @@ message(STATUS "slow: ${changes} changes of the link, ${n_policy_slow} redraws "
 # --- the diagnostics screen up while the held link changes ------------------------------
 
 # A tap at 130 s brings the diagnostics screen; the network went at 100 s, so
-# the bar's link changes at 160 s while it is up, and it goes home at 190 s.
+# the bar's link changes at 160 s while it is up; the check ends at 190 s, the
+# screen still up. Its own states -- "joining", "offline" -- hold throughout.
 execute_process(
     COMMAND ${SIMULATOR} --headless --duration 230 --wall-time 2026-10-16T12:00:00Z
             --scenario-env ${SCENARIOS}/normal_day.csv --telemetry loopback
@@ -176,3 +181,63 @@ if(NOT n_while_up EQUAL 0 OR out MATCHES "partial refresh skipped")
                         "\"${while_up}\", where nothing it draws changed:\n${out}")
 endif()
 message(STATUS "diagnostics: no redraw for the link's change, none skipped")
+
+# --- the diagnostics screen up while the network goes and comes back --------------------
+
+# A tap at 130 s brings the screen; the network goes at 150 s and is back at
+# 200 s (the simulated link associating for a few seconds), both while it is
+# up -- for five minutes since 2026-10-23. Its Wi-Fi and MQTT states are
+# drawn, so each change is a redraw, partial, in the sensor cycle it happens
+# in; nothing between them, however many attempts the reporter makes -- and no
+# message goes out meanwhile to change the MQTT line's counts. Before the loss
+# the counts may redraw it; that is not this check's business.
+execute_process(
+    COMMAND ${SIMULATOR} --headless --duration 260 --wall-time 2026-10-16T12:00:00Z
+            --scenario-env ${SCENARIOS}/normal_day.csv --telemetry loopback
+            --net-script "150:down;200:up" --taps "130:480,270"
+    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "the outage run failed (${result}):\n${out}")
+endif()
+if(out MATCHES "partial refresh skipped" OR out MATCHES "diagnostics screen's timeout")
+    message(FATAL_ERROR "a redraw skipped, or the screen went home early:\n${out}")
+endif()
+string(REGEX MATCHALL "\\[policy\\] [a-z]+ +reason=[a-z0-9-]+ +partials=[0-9]+ now_ms=[0-9]+"
+       decisions "${out}")
+set(at_loss 0)
+set(between 0)
+set(at_return 0)
+foreach(d IN LISTS decisions)
+    string(REGEX REPLACE ".*now_ms=([0-9]+)" "\\1" t "${d}")
+    if(t LESS 130100)
+        continue()
+    endif()
+    if(d MATCHES "reason=request")
+        if(NOT d MATCHES "^\\[policy\\] full")
+            message(FATAL_ERROR "entering diagnostics was not full: \"${d}\"\n${out}")
+        endif()
+        continue()
+    endif()
+    if(NOT d MATCHES "^\\[policy\\] partial")
+        message(FATAL_ERROR "the diagnostics screen refreshed fully: \"${d}\"\n${out}")
+    endif()
+    if(NOT d MATCHES "reason=status")
+        message(FATAL_ERROR "the screen redrew for something else: \"${d}\"\n${out}")
+    endif()
+    if(t GREATER_EQUAL 150000 AND t LESS 155000)
+        math(EXPR at_loss "${at_loss} + 1")
+        if(NOT d MATCHES "^\\[policy\\] partial")
+            message(FATAL_ERROR "the loss's redraw was not partial: \"${d}\"\n${out}")
+        endif()
+    elseif(t GREATER_EQUAL 155000 AND t LESS 200000)
+        math(EXPR between "${between} + 1")
+    elseif(t GREATER_EQUAL 200000 AND t LESS 215000)
+        math(EXPR at_return "${at_return} + 1")
+    endif()
+endforeach()
+if(NOT at_loss EQUAL 1 OR NOT between EQUAL 0 OR at_return LESS 1 OR at_return GREATER 3)
+    message(FATAL_ERROR "the diagnostics screen's redraws through the outage: "
+                        "${at_loss} at the loss, ${between} between, ${at_return} at the "
+                        "return; expected 1, 0, 1-3:\n${out}")
+endif()
+message(STATUS "diagnostics: the outage redrawn at its loss and its return, nothing between")

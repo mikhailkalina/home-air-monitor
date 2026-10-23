@@ -37,16 +37,19 @@
 // A redraw a person asked for -- a tap that changes the screen
 // (core/app/screen_controller.h) -- goes out at once: update_policy_request()
 // makes it due without waiting out min_redraw_interval_ms. It is a full
-// refresh, always: neither the budget nor the panel's minimum full-refresh
-// interval holds it, and it resets the budget as any full refresh does. A
-// whole new screen drawn partially kept the old one's outlines and read
-// badly (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md, superseding
+// refresh: neither the budget nor the panel's minimum full-refresh interval
+// holds it, and it resets the budget as any full refresh does. A whole new
+// screen drawn partially kept the old one's outlines and read badly
+// (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md, superseding
 // docs/adr/0025-touch-input-gt911.md's "A person's redraw").
 //
 // The thresholds above are the home screen's. A screen that decides itself
-// whether what it would draw has changed -- the diagnostics screen -- says so
-// through update_policy_evaluate_content(), and the panel's rules are the
-// same.
+// whether what it would draw has changed says so through
+// update_policy_evaluate_content(), and the panel's rules are the same -- or
+// through update_policy_evaluate_partial_content(), whose content redraws
+// stay partial without a count limit: the diagnostics screen's, a developer's
+// screen. Its first frame and screen changes still go out full
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
 //
 // The module is pure. It performs no I/O, allocates nothing, and takes every
 // notion of "now" from the port_clock handed to update_policy_init(), which is
@@ -95,7 +98,8 @@ extern "C" {
 // (docs/adr/0025-touch-input-gt911.md, "A person's redraw"). Taps are full
 // refreshes since ADR 0034, so it is a bound for a redraw source faster
 // than the sensors' cycle, should one come. Derived from the budget the
-// panel reports, never a number of its own.
+// panel reports, never a number of its own. Diagnostics content redraws
+// bypass this bound (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
 #define UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET 2u
 
 // CHOICE, the owner's (2026-10-20): a reading more than this fraction of its
@@ -179,7 +183,8 @@ typedef struct {
     // is not allowed yet -- the panel's minimum full-refresh interval has not
     // elapsed -- and the screen is kept current meanwhile. The first redraw
     // due after the interval is full; none is made only because the interval
-    // elapsed (docs/adr/0019-partials-past-the-budget.md).
+    // elapsed (docs/adr/0019-partials-past-the-budget.md). Diagnostics content
+    // stays partial regardless of this interval or the count (ADR 0038).
     bool partial_past_budget;
 
     // action is UPDATE_NONE only because the last redraw was less than
@@ -250,6 +255,21 @@ void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
 // the same interval, budget and panel rules -- or none. A request and the
 // first frame are due as in update_policy_evaluate().
 void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out);
+
+// The same for a screen whose content redraws stay partial, without a count
+// limit or budget-forced full refreshes. Content is held to
+// min_redraw_interval_ms as usual. Requests (screen changes) and the first
+// frame are full. On a panel with no partial mode the normal full-refresh
+// rules apply, as in update_policy_evaluate_content().
+void update_policy_evaluate_partial_content(const update_policy_t *p, bool changed,
+                                            update_decision_t *out);
+
+// Update progress, reported at coarse milestones by the application: as
+// partial content, but without waiting for a sensor cycle. The first frame
+// and screen changes are full; a panel without partial mode stays full.
+// These milestone refreshes also bypass the minimum full-refresh interval.
+void update_policy_evaluate_progress(const update_policy_t *p, bool changed,
+                                     update_decision_t *out);
 
 // A person asked for a redraw: the screen they are looking at is to change.
 // The next evaluate() says it is due now, with UPDATE_REASON_REQUEST, without

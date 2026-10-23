@@ -34,9 +34,28 @@ static void switch_to(screen_controller_t *sc, update_policy_t *policy, screen_i
     update_policy_request(policy);
 }
 
+void screen_controller_firmware_update(screen_controller_t *sc, update_policy_t *policy,
+                                       const firmware_update_progress_t *progress, uint64_t now_ms)
+{
+    tap_init(&sc->tap, &sc->cfg.tap);
+    sc->input_after_ms = now_ms;
+    if (sc->screen != SCREEN_FIRMWARE_UPDATE) {
+        switch_to(sc, policy, SCREEN_FIRMWARE_UPDATE, false, now_ms);
+    }
+    sc->update_changed = sc->update_changed || sc->update.stage != progress->stage ||
+                         sc->update.written_bytes != progress->written_bytes ||
+                         sc->update.total_bytes != progress->total_bytes;
+    sc->update = *progress;
+    sc->update_error_since_ms = now_ms;
+}
+
 bool screen_controller_input(screen_controller_t *sc, update_policy_t *policy,
                              const input_event_t *ev)
 {
+    if ((sc->input_after_ms > 0u && ev->ts_ms <= sc->input_after_ms) ||
+        (sc->screen == SCREEN_FIRMWARE_UPDATE && firmware_update_active(&sc->update))) {
+        return false;
+    }
     if (ev->kind != INPUT_BUTTON) {
         sc->last_touch_ms = ev->ts_ms;
     }
@@ -53,6 +72,18 @@ bool screen_controller_input(screen_controller_t *sc, update_policy_t *policy,
 
 uint64_t screen_controller_tick(screen_controller_t *sc, update_policy_t *policy, uint64_t now_ms)
 {
+    if (sc->screen == SCREEN_FIRMWARE_UPDATE) {
+        if (firmware_update_active(&sc->update)) {
+            return SCREEN_CONTROLLER_NO_DEADLINE;
+        }
+        const uint64_t home_at =
+            sc->update_error_since_ms + SCREEN_CONTROLLER_UPDATE_ERROR_TIMEOUT_MS;
+        if (now_ms < home_at) {
+            return home_at;
+        }
+        switch_to(sc, policy, SCREEN_HOME, false, now_ms);
+        return SCREEN_CONTROLLER_NO_DEADLINE;
+    }
     if (sc->screen != SCREEN_DIAGNOSTICS) {
         return SCREEN_CONTROLLER_NO_DEADLINE;
     }
@@ -87,6 +118,10 @@ static diag_facts_t facts_of(const screen_inputs_t *in)
 void screen_controller_evaluate(screen_controller_t *sc, update_policy_t *policy,
                                 const screen_inputs_t *in, update_decision_t *out)
 {
+    if (sc->screen == SCREEN_FIRMWARE_UPDATE) {
+        update_policy_evaluate_progress(policy, sc->update_changed, out);
+        return;
+    }
     if (sc->screen == SCREEN_HOME) {
         update_policy_evaluate(policy, in->reading, out);
         return;
@@ -95,11 +130,17 @@ void screen_controller_evaluate(screen_controller_t *sc, update_policy_t *policy
     diag_view_build(&sc->pending_diag, &facts);
     const bool changed =
         !sc->have_shown_diag || !diag_view_equal(&sc->pending_diag, &sc->shown_diag);
-    update_policy_evaluate_content(policy, changed, out);
+    // A developer's screen: content redraws stay partial without a count limit
+    // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    update_policy_evaluate_partial_content(policy, changed, out);
 }
 
 void screen_controller_render(screen_controller_t *sc, framebuffer_t *fb, const screen_inputs_t *in)
 {
+    if (sc->screen == SCREEN_FIRMWARE_UPDATE) {
+        screen_firmware_update_render(fb, &sc->update);
+        return;
+    }
     if (sc->screen == SCREEN_HOME) {
         view_model_t vm;
         view_model_build(&vm, in->reading, in->now_ms, in->zone);
@@ -116,6 +157,7 @@ void screen_controller_committed(screen_controller_t *sc, uint64_t now_ms,
 {
     memset(note, 0, sizeof(*note));
     note->screen = sc->screen;
+    sc->update_changed = false;
     if (sc->screen == SCREEN_DIAGNOSTICS) {
         sc->shown_diag = sc->pending_diag;
         sc->have_shown_diag = true;
@@ -143,6 +185,8 @@ const char *screen_controller_screen_name(screen_id_t screen)
             return "home";
         case SCREEN_DIAGNOSTICS:
             return "diagnostics";
+        case SCREEN_FIRMWARE_UPDATE:
+            return "firmware_update";
     }
     return "?";
 }

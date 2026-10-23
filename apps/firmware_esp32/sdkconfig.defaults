@@ -22,6 +22,14 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
+# Firmware from the card (docs/adr/0037-firmware-from-the-card.md): an image
+# installed into the other OTA slot boots once as "pending verify" and
+# confirms itself at its first frame; the bootloader rolls back one that
+# resets before that. A bootloader setting -- it reaches the board only with
+# a new bootloader.bin, which the usual esptool command flashes at 0x0 -- and
+# the app's: main/fw_update.c refuses an sdkconfig without it.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # This board's USB-C is the S3's native USB-Serial-JTAG (README.MD FAQ 4), not
 # a separate UART bridge chip. If idf.py monitor shows nothing, the one-line
 # fallback is CONFIG_ESP_CONSOLE_UART_DEFAULT=y in place of this.

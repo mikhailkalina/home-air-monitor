@@ -12,8 +12,11 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_app_desc.h"
 #include "esp_console.h"
 #include "esp_err.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 
@@ -25,12 +28,14 @@
 #include "board_config.h"
 #include "card_writer.h"
 #include "domain/civil_time.h"
+#include "fw_update.h"
 #include "gt911_touch.h"
 #include "i2c_scan.h"
 #include "net_time.h"
 #include "pcf8563.h"
 #include "port_clock.h"
 #include "port_net.h"
+#include "usb_disk_limits.h"
 #include "wall_clock.h"
 
 // No trailing space: esp_console_setup_prompt() appends one itself.
@@ -406,6 +411,24 @@ static void print_card(void)
     }
 }
 
+// The last USB disk session (docs/adr/0036), if there was one since boot.
+static void print_usb_disk(void)
+{
+    const usb_disk_stats_t *u = &s_card.usb;
+    if (u->sessions == 0u) {
+        printf("USB_DISK none since boot\n");
+        return;
+    }
+    printf("USB_DISK last of %lu: ended %s after %llu s, %lu configurations, read %llu KB, "
+           "written %llu KB, %lu I/O errors, %lu refused, slowest read %lu us, write %lu us\n",
+           (unsigned long)u->sessions, usb_disk_verdict_name(u->verdict),
+           (unsigned long long)(u->lasted_ms / 1000u), (unsigned long)u->configurations,
+           (unsigned long long)(u->bytes_read / BYTES_PER_KB),
+           (unsigned long long)(u->bytes_written / BYTES_PER_KB), (unsigned long)u->io_errors,
+           (unsigned long)u->refused, (unsigned long)u->slowest_read_us,
+           (unsigned long)u->slowest_write_us);
+}
+
 static int cmd_sd(void *context, int argc, char **argv)
 {
     (void)context;
@@ -415,6 +438,7 @@ static int cmd_sd(void *context, int argc, char **argv)
         return 1;
     }
     print_card();
+    print_usb_disk();
     return 0;
 }
 
@@ -441,6 +465,28 @@ static int cmd_sd_eject(void *context, int argc, char **argv)
     }
     printf("SD_EJECT done: every file flushed and closed, the card unmounted -- safe to remove. "
            "sd_mount to use it again\n");
+    return 0;
+}
+
+static int cmd_usb_disk(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    if (!ask_card(CARD_WRITER_LEND, "USB_DISK")) {
+        return 1;
+    }
+    if (s_card.result != HAL_OK) {
+        printf("USB_DISK refused: %s -- %s\n", hal_status_text(s_card.result),
+               (s_card.result == HAL_ERR_BUSY) ? "lent already" : "no card answers");
+        return 1;
+    }
+    printf("USB_DISK lent: in %lu ms this port goes and a disk comes. Eject the disk on the PC "
+           "(or press the board's button) to have the card and this port back; the files are "
+           "closed, recording resumes in new ones. A disk no PC configures within %lu s comes "
+           "back by itself.\n",
+           (unsigned long)USB_DISK_SWITCH_DELAY_MS, (unsigned long)(USB_DISK_HOST_WAIT_MS / 1000u));
+    (void)fflush(stdout);
     return 0;
 }
 
@@ -869,6 +915,77 @@ static int cmd_i2c_recover(void *context, int argc, char **argv)
 // and connectors"). It does not: the LED stayed lit (2026-10-16), so after
 // such a reboot the SCD41 is found still measuring. Kept for checking
 // exactly that path once the sensor drivers run.
+// --- firmware (docs/adr/0037) ----------------------------------------------------------
+
+static const char *slot_state(const esp_partition_t *part)
+{
+    esp_ota_img_states_t state;
+    if (part == NULL || esp_ota_get_state_partition(part, &state) != ESP_OK) {
+        return "flashed";  // no otadata entry readable (esptool's flash reads valid)
+    }
+    switch (state) {
+        case ESP_OTA_IMG_NEW:
+            return "new";
+        case ESP_OTA_IMG_PENDING_VERIFY:
+            return "pending_verify";
+        case ESP_OTA_IMG_VALID:
+            return "valid";
+        case ESP_OTA_IMG_INVALID:
+            return "invalid";
+        case ESP_OTA_IMG_ABORTED:
+            return "aborted";
+        default:
+            return "undefined";
+    }
+}
+
+static void print_slot(const char *role, const esp_partition_t *part)
+{
+    if (part == NULL) {
+        printf("FW %s none\n", role);
+        return;
+    }
+    esp_app_desc_t desc;
+    if (esp_ota_get_partition_description(part, &desc) != ESP_OK) {
+        printf("FW %s %s at 0x%lx: no image, %s\n", role, part->label, (unsigned long)part->address,
+               slot_state(part));
+        return;
+    }
+    printf("FW %s %s at 0x%lx: %s %s, built %s %s, ESP-IDF %s, %s\n", role, part->label,
+           (unsigned long)part->address, desc.project_name, desc.version, desc.date, desc.time,
+           desc.idf_ver, slot_state(part));
+}
+
+static int cmd_fw(void *context, int argc, char **argv)
+{
+    (void)context;
+    (void)argc;
+    (void)argv;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    print_slot("running", running);
+    print_slot("other", esp_ota_get_next_update_partition(NULL));
+    if (boot != running) {
+        printf("FW next boot from %s\n", boot != NULL ? boot->label : "?");
+    }
+    const esp_partition_t *invalid = esp_ota_get_last_invalid_partition();
+    if (invalid != NULL) {
+        printf("FW %s holds an update that did not start: rolled back\n", invalid->label);
+    }
+    fw_update_attempt_t a;
+    if (!fw_update_last_attempt(&a)) {
+        printf("FW no update from the card since boot; put %s in the card's root\n",
+               FW_UPDATE_FILE_NAME);
+        return 0;
+    }
+    printf("FW last from the card: %s (%s) at step \"%s\" err=%ld, %s %s, %llu bytes into %s, "
+           "%lu ms\n",
+           fw_update_result_name(a.result), fw_update_verdict_name(a.verdict), a.step, (long)a.err,
+           a.image.project, a.image.version, (unsigned long long)a.file_bytes, a.slot,
+           (unsigned long)a.took_ms);
+    return 0;
+}
+
 static int cmd_restart(void *context, int argc, char **argv)
 {
     (void)context;
@@ -931,6 +1048,18 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         .command = "sd_mount",
         .help = "Mount the card now, showing ESP-IDF's SD lines if it fails",
         .func_w_context = cmd_sd_mount,
+        .context = NULL,
+    };
+    const esp_console_cmd_t fw_cmd = {
+        .command = "fw",
+        .help = "The firmware in each OTA slot, which runs, and the last update from the card",
+        .func_w_context = cmd_fw,
+        .context = NULL,
+    };
+    const esp_console_cmd_t usb_disk_cmd = {
+        .command = "usb_disk",
+        .help = "Lend the card to the PC as a USB disk: this port goes until the disk is ejected",
+        .func_w_context = cmd_usb_disk,
         .context = NULL,
     };
     const esp_console_cmd_t sd_eject_cmd = {
@@ -1007,6 +1136,12 @@ static esp_err_t register_commands(adp_i2c_t *bus)
         err = esp_console_cmd_register(&sd_eject_cmd);
     }
     if (err == ESP_OK) {
+        err = esp_console_cmd_register(&usb_disk_cmd);
+    }
+    if (err == ESP_OK) {
+        err = esp_console_cmd_register(&fw_cmd);
+    }
+    if (err == ESP_OK) {
         err = esp_console_cmd_register(&rec_cmd);
     }
     if (err == ESP_OK) {
@@ -1055,8 +1190,9 @@ hal_status_t console_start(const console_deps_t *deps)
 
     const log_field_t fields[] = {
         log_str("prompt", CONSOLE_PROMPT),
-        log_str("commands", "help i2c_scan i2c_recover restart time time_set rtc_stop sd "
-                            "sd_mount sd_eject rec touch touch_sleep touch_wake wifi vbat mqtt"),
+        log_str("commands",
+                "help i2c_scan i2c_recover restart time time_set rtc_stop sd "
+                "sd_mount sd_eject usb_disk fw rec touch touch_sleep touch_wake wifi vbat mqtt"),
         log_i64("esp_err", (int64_t)err),
     };
     port_log_write(log, err == ESP_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "console",

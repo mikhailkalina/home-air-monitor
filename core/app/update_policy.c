@@ -245,7 +245,8 @@ static uint64_t full_allowed_at(const update_policy_t *p, uint64_t now_ms)
 // --- evaluation ------------------------------------------------------------
 
 // What the panel allows for a redraw due for `reason`, at the clock's time.
-static void decide(const update_policy_t *p, update_reason_t reason, update_decision_t *out)
+static void decide(const update_policy_t *p, update_reason_t reason, bool partial_only,
+                   bool immediate, update_decision_t *out)
 {
     const uint64_t now_ms = p->clock->now_ms(p->clock);
 
@@ -263,7 +264,7 @@ static void decide(const update_policy_t *p, update_reason_t reason, update_deci
     // and takes whatever else changes meanwhile with it. Not the first frame,
     // not a redraw a person asked for, and not across a clock restart, where
     // the old stamp means nothing.
-    if (reason != UPDATE_REASON_FIRST_FRAME && reason != UPDATE_REASON_REQUEST &&
+    if (!immediate && reason != UPDATE_REASON_FIRST_FRAME && reason != UPDATE_REASON_REQUEST &&
         now_ms >= p->last_refresh_ms) {
         const uint64_t redraw_at = p->last_refresh_ms + (uint64_t)p->cfg.min_redraw_interval_ms;
         if (now_ms < redraw_at) {
@@ -287,6 +288,17 @@ static void decide(const update_policy_t *p, update_reason_t reason, update_deci
         return;
     }
 
+    // The diagnostics screen's own content stays live with partial refreshes,
+    // without a count limit. Screen changes above and the first frame stay
+    // full (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    if (partial_only && reason != UPDATE_REASON_FIRST_FRAME &&
+        p->limits.max_partial_refreshes_before_full > 0u) {
+        out->action = UPDATE_PARTIAL;
+        out->partial_past_budget = !partial_allowed(p);
+        out->next_deadline_ms = now_ms;
+        return;
+    }
+
     // A due redraw is partial unless the panel says otherwise. The first frame
     // is always full: there is no previous image for a partial refresh to
     // build on.
@@ -297,7 +309,7 @@ static void decide(const update_policy_t *p, update_reason_t reason, update_deci
     }
 
     if (want_full) {
-        const uint64_t allowed_at = full_allowed_at(p, now_ms);
+        const uint64_t allowed_at = immediate ? now_ms : full_allowed_at(p, now_ms);
         const uint64_t most_partials = (uint64_t)p->limits.max_partial_refreshes_before_full *
                                        UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET;
         if (now_ms < allowed_at) {
@@ -336,7 +348,7 @@ void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
 {
     const uint64_t now_ms = p->clock->now_ms(p->clock);
     observe_offsets(p, reading, now_ms);
-    decide(p, due_reason(p, reading, now_ms), out);
+    decide(p, due_reason(p, reading, now_ms), false, false, out);
 
     // Nothing due: the next thing that can change the answer without new data
     // is an offset reaching settle_after_ms.
@@ -345,17 +357,33 @@ void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
     }
 }
 
+static update_reason_t content_reason(const update_policy_t *p, bool changed)
+{
+    if (!p->have_last_rendered) {
+        return UPDATE_REASON_FIRST_FRAME;
+    }
+    if (p->requested) {
+        return UPDATE_REASON_REQUEST;
+    }
+    return changed ? UPDATE_REASON_STATUS : UPDATE_REASON_NONE;
+}
+
 void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out)
 {
-    update_reason_t reason = UPDATE_REASON_NONE;
-    if (!p->have_last_rendered) {
-        reason = UPDATE_REASON_FIRST_FRAME;
-    } else if (p->requested) {
-        reason = UPDATE_REASON_REQUEST;
-    } else if (changed) {
-        reason = UPDATE_REASON_STATUS;
-    }
-    decide(p, reason, out);
+    decide(p, content_reason(p, changed), false, false, out);
+}
+
+void update_policy_evaluate_partial_content(const update_policy_t *p, bool changed,
+                                            update_decision_t *out)
+{
+    decide(p, content_reason(p, changed), true, false, out);
+}
+
+void update_policy_evaluate_progress(const update_policy_t *p, bool changed, update_decision_t *out)
+{
+    // Progress is paced by the updater and the synchronous panel flush, not
+    // the sensor cycle. It must be visible before the next update stage.
+    decide(p, content_reason(p, changed), true, true, out);
 }
 
 void update_policy_request(update_policy_t *p)

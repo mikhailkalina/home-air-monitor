@@ -33,3 +33,14 @@ dependencies:
   epdiy:
     git: https://github.com/AdaSzi/epdiy.git
     version: "161de5275f615b58e4a4f614f24a10260430239c"
+
+  # TinyUSB, Espressif's packaging of hathach/tinyusb, for the card as a USB
+  # disk (docs/adr/0036-the-card-as-a-usb-disk.md). MIT (THIRD_PARTY_NOTICES.md).
+  # Its own, without Espressif's esp_tinyusb layer: that one mounts FATFS
+  # itself and may format the medium, where adp_sd owns the card and never
+  # formats it. Pinned to the exact version: the registry's packages are
+  # immutable once published, and dependencies.lock is gitignored, so this is
+  # the pin. 0.21.0~2 is upstream's commit 894ea01409e0407a7dbe0ee29b2d58a4691f9046
+  # in espressif/tinyusb (its idf_component.yml, repository_info).
+  espressif/tinyusb:
+    version: "==0.21.0~2"

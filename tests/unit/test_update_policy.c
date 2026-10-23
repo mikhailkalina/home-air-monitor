@@ -1348,6 +1348,86 @@ static void past_the_budget_by_the_budget_again_a_redraw_waits(void)
     HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 0);
 }
 
+// Diagnostics content stays partial beyond the budget and the former bound,
+// even after the minimum full-refresh interval. Entering and leaving are full.
+static void diagnostics_content_stays_partial_without_a_count_limit(void)
+{
+    fixture_t f;
+    fixture_init_with_cycle(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    update_decision_t d;
+    update_policy_evaluate_partial_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_FIRST_FRAME);
+    const air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    update_policy_commit(&f.policy, &r, &d);
+
+    // Entering a second later: full at once, even with unchanged content.
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_request(&f.policy);
+    update_policy_evaluate_partial_content(&f.policy, false, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK(!d.full_forced_by_budget);
+    update_policy_commit(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 0);
+
+    // Content within the cycle waits for its deadline.
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_evaluate_partial_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK(d.held_for_redraw_interval);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms,
+                     f.policy.last_refresh_ms + UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
+
+    // Far beyond the old bound, with enough time for full refreshes: every
+    // content change still goes out partially, without a frozen screen.
+    const uint32_t redraws = TEST_MAX_PARTIALS * UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET * 10u;
+    for (uint32_t i = 0u; i < redraws; ++i) {
+        fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
+        update_policy_evaluate_partial_content(&f.policy, true, &d);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+        HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+        HAC_CHECK(!d.full_forced_by_budget);
+        HAC_CHECK(!d.deferred_by_min_interval);
+        HAC_CHECK(d.partial_past_budget == (i >= TEST_MAX_PARTIALS));
+        HAC_CHECK_EQ_U64(d.next_deadline_ms, f.clock.now_ms);
+        update_policy_commit(&f.policy, &r, &d);
+    }
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), (int)redraws);
+
+    // No change means no redraw, even beyond the budget and interval.
+    fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
+    update_policy_evaluate_partial_content(&f.policy, false, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, UPDATE_POLICY_NO_DEADLINE);
+
+    // A screen change still goes out full and resets the count. Another
+    // request immediately afterwards also stays full, inside both intervals.
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        update_policy_request(&f.policy);
+        update_policy_evaluate_partial_content(&f.policy, false, &d);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+        HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+        update_policy_commit(&f.policy, &r, &d);
+        HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 0);
+    }
+}
+
+// On a panel with no partial mode, partial-only means nothing: full, as
+// update_policy_evaluate_content() would say.
+static void partial_only_on_a_panel_without_partials_is_full(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, 0u);
+    const air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
+    (void)r;
+    update_decision_t d;
+    update_policy_request(&f.policy);
+    update_policy_evaluate_partial_content(&f.policy, false, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+}
+
 static void limits_come_from_the_display_port(void)
 {
     static port_display_t display;  // static: the unread members start zeroed
@@ -1428,6 +1508,8 @@ int main(void)
     HAC_RUN(a_request_before_the_first_frame_is_the_first_frame);
     HAC_RUN(a_screen_that_compares_its_own_content_follows_the_same_rules);
     HAC_RUN(past_the_budget_by_the_budget_again_a_redraw_waits);
+    HAC_RUN(diagnostics_content_stays_partial_without_a_count_limit);
+    HAC_RUN(partial_only_on_a_panel_without_partials_is_full);
     HAC_RUN(limits_come_from_the_display_port);
     HAC_RUN(the_defaults_are_the_thresholds_from_the_requirements);
     return hac_test_summary();

@@ -5,8 +5,9 @@
 # taps, then to diagnostics again and home by the screen's own timeout --
 # and says, for each change a tap made, how long it took to reach the glass;
 # each change is a redraw a person asked for, so it goes out at once as a
-# full refresh (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md). A
-# malformed --taps is refused before anything runs.
+# full refresh (docs/adr/0034-a-change-of-screen-is-a-full-refresh.md).
+# Content redraws within diagnostics stay partial (ADR 0038). A malformed
+# --taps is refused before anything runs.
 #
 #   cmake -DSIMULATOR=<path> -DSCENARIOS=<dir> -P simulator_taps.cmake
 
@@ -17,7 +18,7 @@ foreach(var SIMULATOR SCENARIOS)
 endforeach()
 
 execute_process(
-    COMMAND ${SIMULATOR} --headless --duration 200 --wall-time 2026-10-16T12:00:00Z
+    COMMAND ${SIMULATOR} --headless --duration 420 --wall-time 2026-10-16T12:00:00Z
             --scenario-co2 ${SCENARIOS}/co2_spike_meeting.csv
             --scenario-env ${SCENARIOS}/normal_day.csv
             --taps "30:480,270;45:100,100;100:480,270"
@@ -26,14 +27,17 @@ if(NOT result EQUAL 0)
     message(FATAL_ERROR "the run with taps failed (${result}):\n${out}")
 endif()
 
-# In this order: each a tap's, the last the timeout's, 60 s after the last tap.
+# In this order: each a tap's, the last the timeout's, 300 s after the last tap.
 set(expected
     "\\[screen\\] tap at 480,270: diagnostics next"
     "\\[policy\\] full     reason=request"
     "\\[screen\\] diagnostics \\(tap\\) latency_ms=[0-9]+"
     "\\[screen\\] tap at 100,100: home next"
+    "\\[policy\\] full     reason=request"
     "\\[screen\\] home \\(tap\\) latency_ms=[0-9]+"
     "\\[screen\\] tap at 480,270: diagnostics next"
+    "\\[policy\\] full     reason=request"
+    "\\[policy\\] full     reason=request"
     "\\[screen\\] home \\(the diagnostics screen's timeout\\)")
 set(rest "${out}")
 foreach(line IN LISTS expected)
@@ -55,12 +59,13 @@ foreach(w IN LISTS waits)
     endif()
 endforeach()
 
-# Every change of screen full, none partial: the 45 s tap comes 15 s after
-# the 30 s tap's full refresh, inside the panel's minimum interval.
+# Every change of screen is full: both taps and the timeout.
 string(REGEX MATCHALL "\\[policy\\] [a-z]+ +reason=request" requests "${out}")
-list(LENGTH requests n_requests)
-if(NOT n_requests EQUAL 4 OR requests MATCHES "partial")
-    message(FATAL_ERROR "the changes of screen were \"${requests}\", not four full ones:\n${out}")
+string(REGEX REPLACE " +reason=request" "" requests "${requests}")
+string(REPLACE "[policy] " "" requests "${requests}")
+if(NOT requests STREQUAL "full;full;full;full")
+    message(FATAL_ERROR "the changes of screen were \"${requests}\", not "
+                        "full, full, full, full:\n${out}")
 endif()
 
 execute_process(

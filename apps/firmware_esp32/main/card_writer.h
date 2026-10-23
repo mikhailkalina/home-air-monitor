@@ -13,6 +13,17 @@
 // CARD_WRITER_MOUNT_RETRY_MS, quietly, and a change of state -- no card,
 // mounted, lost, ejected -- is logged once. While no card is mounted the log
 // stays in the ring, its oldest lines kept, for a card inserted later.
+//
+// The card can also be lent to a PC as a USB disk (docs/adr/0036-the-card-
+// as-a-usb-disk.md): CARD_WRITER_LEND, or the board's button held for
+// USB_DISK_BUTTON_HOLD_MS. The files are closed and the filesystem
+// unmounted, the USB PHY leaves USB-Serial-JTAG -- the console and the log go
+// with it -- and this task runs TinyUSB in place of its own wait, the host's
+// reads and writes with it, until the host ejects the disk or is gone, or the
+// button is pressed (usb_disk_pure.h). Then the PHY goes back to
+// USB-Serial-JTAG and the card is mounted again. Meanwhile the recorder's
+// rows are dropped and counted, as with no card, and the log stays in the
+// ring.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_CARD_WRITER_H
 #define HAC_APPS_FIRMWARE_ESP32_CARD_WRITER_H
@@ -25,11 +36,13 @@
 
 #include "adp_sd.h"
 #include "domain/civil_time.h"
+#include "fw_update.h"
 #include "hal_status.h"
 #include "port_clock.h"
 #include "port_log.h"
 #include "recording/log_file.h"
 #include "recording/recorder.h"
+#include "usb_disk.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,6 +78,8 @@ typedef struct {
     adp_sd_t *sd;          // adp_sd_init()-ed
     recorder_t *recorder;  // recorder_init()-ed over adp_sd's port, sources added
     log_file_t *log_file;  // log_file_init()-ed over adp_sd's port
+    fw_update_progress_fn update_progress;
+    void *update_progress_ctx;
 } card_writer_deps_t;
 
 // Starts the task. `deps` is copied; what it points to is borrowed for the
@@ -83,6 +98,12 @@ typedef enum {
     CARD_WRITER_SPACE,
     CARD_WRITER_MOUNT,  // mount now, with ESP-IDF's SD lines on the console
     CARD_WRITER_EJECT,  // flush, close, unmount: safe to remove; no automatic mount until MOUNT
+    // Lend the card as a USB disk: answered once the card is ready for it,
+    // the PHY switched USB_DISK_SWITCH_DELAY_MS later. HAL_ERR_NOT_FOUND with
+    // no card, HAL_ERR_BUSY when lent already. While lent every command but
+    // STATUS and SPACE is refused HAL_ERR_BUSY -- not that the console, gone
+    // with USB-Serial-JTAG, can ask.
+    CARD_WRITER_LEND,
 } card_writer_cmd_t;
 
 #define CARD_WRITER_DIRS 2u
@@ -130,6 +151,8 @@ typedef struct {
     uint32_t slowest_write_us;
     uint32_t slowest_flush_us;
     uint32_t stack_free_min_bytes;
+
+    usb_disk_stats_t usb;  // the last USB disk session, or none (usb.sessions 0)
 } card_writer_status_t;
 
 // From another task (the console): runs `cmd` on the card's task and fills

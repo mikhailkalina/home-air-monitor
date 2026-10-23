@@ -11,11 +11,17 @@
 #include "freertos/task.h"
 
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 
+#include "board_button.h"
+#include "fw_update.h"
 #include "log_tee.h"
 #include "recording/record_files.h"
 #include "recording/record_limits.h"
+#include "usb_disk.h"
+#include "usb_disk_limits.h"
+#include "usb_disk_pure.h"
 
 #define TAG "card_writer"
 
@@ -26,6 +32,14 @@
 #define LOG_LINES_PER_WAKE 64u
 
 #define REQUEST_QUEUE_DEPTH 2u
+
+// CHOICE: from an installed update's last log line to the restart, so the
+// console's terminal shows it too.
+#define UPDATE_RESTART_DELAY_MS 200u
+
+// The most passes over the log's ring before an update's restart, each
+// LOG_LINES_PER_WAKE lines: the whole ring, 1024 lines, and then some.
+#define UPDATE_LOG_DRAIN_PASSES 32u
 
 typedef struct {
     card_writer_cmd_t cmd;
@@ -45,6 +59,11 @@ typedef struct {
     uint64_t next_mount_ms;
     uint64_t next_stats_ms;
     uint32_t stack_free_min;
+
+    // The USB disk (docs/adr/0036): lent, the PHY's switch due at lend_at_ms.
+    bool lend_pending;
+    uint64_t lend_at_ms;
+    usb_disk_button_t button;
 
     // Written by the event loop's task only; read here for the status.
     volatile uint32_t events_posted;
@@ -70,6 +89,9 @@ static port_files_t *files(void)
 }
 
 // --- the card --------------------------------------------------------------------
+
+static void drain_log(uint64_t now, bool all);
+static void restart_into_update(void);
 
 // A boot that needs undated files numbers them once, past every undated file
 // in either directory (record_files.h).
@@ -105,6 +127,13 @@ static void on_mounted(void)
     s_w.logged_state = ADP_SD_MOUNTED;
     s_w.logged_once = true;
     s_w.mounted_generation = s_w.deps.sd->generation;
+
+    // Every mount -- at boot, sd_mount, the minute's, after a USB disk
+    // session -- looks for firmware in the card's root (docs/adr/0037).
+    if (fw_update_from_card(ADP_SD_MOUNT_POINT, s_w.deps.update_progress,
+                            s_w.deps.update_progress_ctx) == FW_UPDATE_RESULT_INSTALLED) {
+        restart_into_update();
+    }
 }
 
 static hal_status_t try_mount(bool quiet, uint64_t now)
@@ -152,6 +181,9 @@ static void note_state(uint64_t now)
         case ADP_SD_EJECTED:
             msg = "card ejected: safe to remove; sd_mount to use it again";
             break;
+        case ADP_SD_LENT:
+            msg = "the card is lent to USB: recording and the log file are off until it is back";
+            break;
         case ADP_SD_MOUNTED:  // on_mounted() says it
         case ADP_SD_NOT_TRIED:
         default:
@@ -168,15 +200,16 @@ static void note_state(uint64_t now)
 
 // Lines from the ring to the card, each at the wall time it was logged --
 // worked back from the clock now, so the boot's lines logged before the RTC
-// set it get theirs too. Without a card the lines stay in the ring.
-static void drain_log(uint64_t now)
+// set it get theirs too. Without a card the lines stay in the ring. `all`:
+// now, without waiting for the clock -- the restart into an update.
+static void drain_log(uint64_t now, bool all)
 {
     log_ring_t *ring = log_tee_ring();
     if (ring == NULL || !adp_sd_mounted(s_w.deps.sd)) {
         return;
     }
     const uint64_t wall = s_w.deps.clock->wall_ms(s_w.deps.clock);
-    if (wall == 0u && now < CARD_WRITER_LOG_CLOCK_GRACE_MS &&
+    if (!all && wall == 0u && now < CARD_WRITER_LOG_CLOCK_GRACE_MS &&
         log_ring_used(ring) < ring->slot_count / 2u) {
         return;
     }
@@ -194,6 +227,137 @@ static void drain_log(uint64_t now)
                        "the log's buffer in RAM was full");
     log_file_note_lost(s_w.deps.log_file, now, wall, log_tee_take_held(),
                        "held off PSRAM while the panel's rail came up");
+}
+
+// --- the card as a USB disk (docs/adr/0036) -------------------------------------------
+
+static bool lent_or_pending(void)
+{
+    return s_w.lend_pending || usb_disk_active();
+}
+
+// The card made ready for a host: the log's lines onto it first, every file
+// closed, the filesystem unmounted, the card brought up for its sectors. The
+// PHY's switch comes USB_DISK_SWITCH_DELAY_MS later, so that the console's
+// answer still reaches the terminal.
+static hal_status_t prepare_lend(uint64_t now, const char *by)
+{
+    if (lent_or_pending()) {
+        return HAL_ERR_BUSY;
+    }
+    drain_log(now, false);
+    recorder_close(s_w.deps.recorder, now);
+    log_file_close(s_w.deps.log_file, now);
+    const hal_status_t status = adp_sd_lend(s_w.deps.sd);
+    if (status != HAL_OK) {
+        const log_field_t fields[] = {
+            log_str("by", by),
+            log_i64("status", (int64_t)status),
+            log_i64("esp_err", (int64_t)s_w.deps.sd->last_mount_err),
+        };
+        port_log_write(s_w.deps.log, LOG_LEVEL_WARN, TAG, "the card could not be lent to USB",
+                       fields, sizeof(fields) / sizeof(fields[0]));
+        s_w.next_mount_ms = now;  // the attempt unmounted it: mount it again at once
+        return status;
+    }
+    uint32_t sectors = 0u;
+    uint32_t sector_bytes = 0u;
+    (void)adp_sd_lent_geometry(s_w.deps.sd, &sectors, &sector_bytes);
+    const log_field_t fields[] = {
+        log_str("by", by),
+        log_u64("capacity_mb", (uint64_t)sectors * sector_bytes / BYTES_PER_MB),
+        log_u64("switch_in_ms", USB_DISK_SWITCH_DELAY_MS),
+    };
+    port_log_write(s_w.deps.log, LOG_LEVEL_INFO, TAG,
+                   "lending the card to USB: the serial port goes, a disk comes; eject the disk "
+                   "or press the button to end it",
+                   fields, sizeof(fields) / sizeof(fields[0]));
+    s_w.lend_pending = true;
+    s_w.lend_at_ms = now + USB_DISK_SWITCH_DELAY_MS;
+    return HAL_OK;
+}
+
+// The card back from the host, and mounted again -- loudly, since the host
+// may have left it unreadable.
+static void take_back(uint64_t now, const char *why)
+{
+    adp_sd_end_lend(s_w.deps.sd);
+    s_w.auto_mount = true;
+    usb_disk_stats_t st;
+    usb_disk_stats(&st);
+    const log_field_t fields[] = {
+        log_str("why", why),
+        log_u64("lasted_ms", st.lasted_ms),
+        log_u64("configurations", st.configurations),
+        log_u64("read_kb", st.bytes_read / 1024u),
+        log_u64("written_kb", st.bytes_written / 1024u),
+        log_u64("io_errors", st.io_errors),
+        log_u64("refused", st.refused),
+        log_u64("slowest_read_us", st.slowest_read_us),
+        log_u64("slowest_write_us", st.slowest_write_us),
+    };
+    port_log_write(s_w.deps.log, LOG_LEVEL_INFO, TAG, "the card is back from USB", fields,
+                   sizeof(fields) / sizeof(fields[0]));
+    (void)try_mount(false, now);
+    note_state(now);
+}
+
+// Each pass: the PHY's switch when it is due, the button, and the session's
+// verdict while lent.
+static void usb_step(uint64_t now)
+{
+    const usb_disk_button_event_t button =
+        usb_disk_button_sample(&s_w.button, board_button_pressed(), now);
+
+    if (s_w.lend_pending && now >= s_w.lend_at_ms) {
+        s_w.lend_pending = false;
+        const hal_status_t status = usb_disk_start(s_w.deps.sd, now);
+        const log_field_t fields[] = {log_i64("status", (int64_t)status)};
+        port_log_write(s_w.deps.log, status == HAL_OK ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, TAG,
+                       status == HAL_OK ? "usb disk started: the PHY is the USB-OTG controller's"
+                                        : "usb disk not started: USB-Serial-JTAG kept the PHY",
+                       fields, 1u);
+        if (status != HAL_OK) {
+            take_back(now, "not_started");
+            return;
+        }
+    }
+
+    if (usb_disk_active()) {
+        if (button == USB_DISK_BUTTON_PRESS) {
+            usb_disk_button_consume(&s_w.button);
+            usb_disk_press();
+        }
+        const usb_disk_verdict_t verdict = usb_disk_verdict(now);
+        if (verdict != USB_DISK_KEEP) {
+            usb_disk_stop(now);
+            take_back(now, usb_disk_verdict_name(verdict));
+        }
+        return;
+    }
+    if (button == USB_DISK_BUTTON_HOLD && !s_w.lend_pending) {
+        usb_disk_button_consume(&s_w.button);
+        (void)prepare_lend(now, "button");
+    }
+}
+
+// --- firmware from the card (docs/adr/0037) -------------------------------------------
+
+// The update installed: its lines onto the card, every file closed, the card
+// unmounted cleanly, then the restart into the new image.
+static void restart_into_update(void)
+{
+    const uint64_t now = now_ms();
+    log_ring_t *ring = log_tee_ring();
+    for (unsigned i = 0u; i < UPDATE_LOG_DRAIN_PASSES && ring != NULL && log_ring_used(ring) > 0u;
+         ++i) {
+        drain_log(now, true);
+    }
+    recorder_close(s_w.deps.recorder, now);
+    log_file_close(s_w.deps.log_file, now);
+    adp_sd_unmount(s_w.deps.sd, ADP_SD_EJECTED);
+    vTaskDelay(pdMS_TO_TICKS(UPDATE_RESTART_DELAY_MS));
+    esp_restart();
 }
 
 // --- the console's requests ----------------------------------------------------------
@@ -269,6 +433,7 @@ static void fill_status(card_writer_status_t *out, bool with_free)
     out->slowest_write_us = sd->slowest_write_us;
     out->slowest_flush_us = sd->slowest_flush_us;
     out->stack_free_min_bytes = s_w.stack_free_min;
+    usb_disk_stats(&out->usb);
 }
 
 static void handle_request(const request_t *req, uint64_t now)
@@ -276,15 +441,26 @@ static void handle_request(const request_t *req, uint64_t now)
     hal_status_t result = HAL_OK;
     switch (req->cmd) {
         case CARD_WRITER_MOUNT:
+            if (lent_or_pending()) {
+                result = HAL_ERR_BUSY;
+                break;
+            }
             s_w.auto_mount = true;
             // Not quiet: whoever typed sd_mount wants to see why it failed.
             result = try_mount(false, now);
             break;
         case CARD_WRITER_EJECT:
+            if (lent_or_pending()) {
+                result = HAL_ERR_BUSY;
+                break;
+            }
             recorder_close(s_w.deps.recorder, now);
             log_file_close(s_w.deps.log_file, now);
             adp_sd_unmount(s_w.deps.sd, ADP_SD_EJECTED);
             s_w.auto_mount = false;
+            break;
+        case CARD_WRITER_LEND:
+            result = prepare_lend(now, "console");
             break;
         case CARD_WRITER_STATUS:
         case CARD_WRITER_SPACE:
@@ -326,6 +502,21 @@ static void track_stack(void)
     }
 }
 
+// How long the queue is waited on: not at all while lent (TinyUSB waited),
+// until the PHY's switch while one is due, a tick otherwise.
+static TickType_t wait_ticks(uint64_t now)
+{
+    if (usb_disk_active()) {
+        return 0;
+    }
+    uint64_t ms = CARD_WRITER_TICK_MS;
+    if (s_w.lend_pending) {
+        const uint64_t due = (s_w.lend_at_ms > now) ? s_w.lend_at_ms - now : 0u;
+        ms = (due < ms) ? due : ms;
+    }
+    return pdMS_TO_TICKS(ms);
+}
+
 static void writer_task(void *arg)
 {
     (void)arg;
@@ -337,8 +528,13 @@ static void writer_task(void *arg)
     s_w.running = 1u;
 
     for (;;) {
+        // Lent, TinyUSB's wait takes this task's: the host's reads and
+        // writes run inside it, and the queue is looked at between them.
+        if (usb_disk_active()) {
+            usb_disk_step(USB_DISK_STEP_MS, now_ms());
+        }
         recorder_event_t ev;
-        if (xQueueReceive(s_w.events, &ev, pdMS_TO_TICKS(CARD_WRITER_TICK_MS)) == pdTRUE) {
+        if (xQueueReceive(s_w.events, &ev, wait_ticks(now_ms())) == pdTRUE) {
             do {
                 recorder_record(s_w.deps.recorder, &ev);
             } while (xQueueReceive(s_w.events, &ev, 0) == pdTRUE);
@@ -349,11 +545,13 @@ static void writer_task(void *arg)
         while (xQueueReceive(s_w.requests, &req, 0) == pdTRUE) {
             handle_request(&req, now);
         }
-        if (!adp_sd_mounted(s_w.deps.sd) && s_w.auto_mount && now >= s_w.next_mount_ms) {
+        usb_step(now);
+        if (!adp_sd_mounted(s_w.deps.sd) && !lent_or_pending() && s_w.auto_mount &&
+            now >= s_w.next_mount_ms) {
             (void)try_mount(true, now);
         }
         note_state(now);
-        drain_log(now);
+        drain_log(now, false);
         recorder_tick(s_w.deps.recorder, now);
         s_w.published_rec_state = (uint32_t)s_w.deps.recorder->state;
         log_file_tick(s_w.deps.log_file, now);
@@ -372,6 +570,7 @@ bool card_writer_start(const card_writer_deps_t *deps, uint32_t stack_bytes, int
     s_w.deps = *deps;
     s_w.auto_mount = true;
     s_w.stack_free_min = UINT32_MAX;
+    usb_disk_button_init(&s_w.button, USB_DISK_BUTTON_DEBOUNCE_MS, USB_DISK_BUTTON_HOLD_MS);
     // The events are copies of sensor samples, ~200 bytes each: in PSRAM.
     s_w.events =
         xQueueCreateWithCaps(CARD_WRITER_QUEUE_DEPTH, sizeof(recorder_event_t), MALLOC_CAP_SPIRAM);

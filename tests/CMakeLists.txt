@@ -25,6 +25,7 @@ set(HAC_UNIT_TESTS
     test_link_hold
     test_tap
     test_screen_controller
+    test_firmware_update_progress
     test_sensor_manager
     test_view_model
     test_diagnostics_view
@@ -101,6 +102,18 @@ target_include_directories(test_log_ring PRIVATE ${HAC_ROOT}/apps/firmware_esp32
 target_link_libraries(test_log_ring PRIVATE hac_test_support)
 hac_apply_warnings(test_log_ring)
 add_test(NAME test_log_ring COMMAND test_log_ring)
+
+# A firmware file's header and whether the card's update installs it -- no
+# version compared (docs/adr/0037-firmware-from-the-card.md). fw_update.c, which
+# writes it into the other slot, needs ESP-IDF and is the board's to check.
+add_executable(test_fw_image
+    unit/test_fw_image.c
+    ${HAC_ROOT}/apps/firmware_esp32/main/fw_image.c
+)
+target_include_directories(test_fw_image PRIVATE ${HAC_ROOT}/apps/firmware_esp32/main)
+target_link_libraries(test_fw_image PRIVATE hac_test_support)
+hac_apply_warnings(test_fw_image)
+add_test(NAME test_fw_image COMMAND test_fw_image)
 
 # The firmware's I2C bus scan, against the host's fake bus.
 add_executable(test_i2c_scan
@@ -337,6 +350,19 @@ target_include_directories(test_adp_mqtt_pure PRIVATE
 target_link_libraries(test_adp_mqtt_pure PRIVATE hac_test_support)
 hac_apply_warnings(test_adp_mqtt_pure)
 add_test(NAME test_adp_mqtt_pure COMMAND test_adp_mqtt_pure)
+
+# The card's USB disk mode: when the card is given back to the recorder, and
+# the button that asks for it -- compiled from where the firmware compiles
+# them (docs/adr/0036-the-card-as-a-usb-disk.md). usb_disk.c itself needs
+# ESP-IDF and TinyUSB, and is the board's to check.
+add_executable(test_usb_disk_pure
+    unit/test_usb_disk_pure.c
+    ${HAC_ROOT}/platform/esp32_t5s3/usb_disk_pure.c
+)
+target_include_directories(test_usb_disk_pure PRIVATE ${HAC_ROOT}/platform/esp32_t5s3)
+target_link_libraries(test_usb_disk_pure PRIVATE hac_test_support)
+hac_apply_warnings(test_usb_disk_pure)
+add_test(NAME test_usb_disk_pure COMMAND test_usb_disk_pure)
 
 # The device's panel limits against the simulator's. Only board_config.h's
 # directory is added -- it is plain data -- not anything that builds for the

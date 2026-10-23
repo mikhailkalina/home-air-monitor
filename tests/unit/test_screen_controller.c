@@ -124,11 +124,13 @@ static void a_tap_switches_the_screen_at_once_as_a_full_refresh(void)
     d = pass(0u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
 
-    // A tap goes home, the home screen drawn afresh -- fully again.
+    // A tap goes home, the home screen drawn afresh -- fully, the budget
+    // started over.
     tap_at(10u, 10u);
     d = pass(3300u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&g_policy), 0);
     HAC_CHECK_EQ_INT(note.screen, SCREEN_HOME);
     HAC_CHECK(note.by_tap);
     free(home);
@@ -215,8 +217,122 @@ static void taps_before_the_first_frame_are_part_of_it(void)
     HAC_CHECK(strcmp(screen_controller_screen_name(SCREEN_DIAGNOSTICS), "diagnostics") == 0);
 }
 
+static void firmware_update_locks_touch_and_shows_each_stage_without_waiting_for_a_cycle(void)
+{
+    setup();
+    screen_redraw_note_t note;
+    (void)pass(3300u, &note);
+    tap_at(480u, 270u);
+    (void)pass(3300u, &note);
+    HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_DIAGNOSTICS);
+    const uint32_t taps_before = g_sc.taps;
+
+    // A gesture began on diagnostics before the update took over.
+    const input_event_t down = {
+        .kind = INPUT_TOUCH_DOWN, .x = 10u, .y = 10u, .ts_ms = g_clock.now_ms};
+    (void)screen_controller_input(&g_sc, &g_policy, &down);
+    firmware_update_progress_t progress = {.stage = FIRMWARE_UPDATE_CHECKING,
+                                           .total_bytes = 1000000u};
+    screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+    update_decision_t d = pass(0u, &note);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_FIRMWARE_UPDATE);
+    HAC_CHECK(note.screen_changed);
+
+    // Both a queued lift and fresh complete taps are ignored. The ordinary
+    // diagnostics timeout cannot replace the update, however long it takes.
+    input_event_t up = {.kind = INPUT_TOUCH_UP, .x = 10u, .y = 10u, .ts_ms = g_clock.now_ms + 1u};
+    HAC_CHECK(!screen_controller_input(&g_sc, &g_policy, &up));
+    fake_clock_advance(&g_clock, SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS + 1u);
+    HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms),
+                     SCREEN_CONTROLLER_NO_DEADLINE);
+
+    const firmware_update_stage_t stages[] = {FIRMWARE_UPDATE_WRITING, FIRMWARE_UPDATE_VERIFYING,
+                                              FIRMWARE_UPDATE_FINALIZING,
+                                              FIRMWARE_UPDATE_RESTARTING};
+    for (size_t i = 0u; i < sizeof(stages) / sizeof(stages[0]); ++i) {
+        progress.stage = stages[i];
+        progress.written_bytes = i == 0u ? 500000u : progress.total_bytes;
+        screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+        d = pass(0u, &note);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+        HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+        tap_at(10u, 10u);
+        HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_FIRMWARE_UPDATE);
+        HAC_CHECK_EQ_INT((int)g_sc.taps, (int)taps_before);
+        d = pass(0u, &note);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    }
+}
+
+static void firmware_update_errors_unlock_touch_without_replaying_old_gestures(void)
+{
+    const firmware_update_stage_t errors[] = {FIRMWARE_UPDATE_FAILED, FIRMWARE_UPDATE_REFUSED};
+    for (size_t i = 0u; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        setup();
+        screen_redraw_note_t note;
+        firmware_update_progress_t progress = {.stage = FIRMWARE_UPDATE_CHECKING};
+        screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+        // An update screen can itself be the boot's very first full frame.
+        update_decision_t d = pass(0u, &note);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+        HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_FIRST_FRAME);
+        tap_at(10u, 10u);
+        const uint64_t old_touch_ms = g_clock.now_ms;
+        fake_clock_advance(&g_clock, 1u);
+        progress.stage = errors[i];
+        screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+        d = pass(0u, &note);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+
+        // A whole queued tap from while the update was active, and an orphan
+        // lift after it, must not dismiss the failure or switch to diagnostics.
+        input_event_t ev = {.kind = INPUT_TOUCH_DOWN, .ts_ms = old_touch_ms - 50u};
+        HAC_CHECK(!screen_controller_input(&g_sc, &g_policy, &ev));
+        ev.kind = INPUT_TOUCH_UP;
+        ev.ts_ms = old_touch_ms;
+        HAC_CHECK(!screen_controller_input(&g_sc, &g_policy, &ev));
+        ev.ts_ms = g_clock.now_ms + 1u;
+        HAC_CHECK(!screen_controller_input(&g_sc, &g_policy, &ev));
+        HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_FIRMWARE_UPDATE);
+        fake_clock_advance(&g_clock, 2u);
+        tap_at(10u, 10u);
+        d = pass(0u, &note);
+        HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+        HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_HOME);
+    }
+}
+
+static void firmware_update_failure_times_out_and_full_only_panels_show_progress(void)
+{
+    setup();
+    g_policy.limits.max_partial_refreshes_before_full = 0u;
+    screen_redraw_note_t note;
+    firmware_update_progress_t progress = {.stage = FIRMWARE_UPDATE_CHECKING, .total_bytes = 100u};
+    screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+    HAC_CHECK_EQ_INT(pass(0u, &note).action, UPDATE_FULL);
+    progress.stage = FIRMWARE_UPDATE_WRITING;
+    progress.written_bytes = 50u;
+    screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+    HAC_CHECK_EQ_INT(pass(0u, &note).action, UPDATE_FULL);
+    progress.stage = FIRMWARE_UPDATE_FAILED;
+    screen_controller_firmware_update(&g_sc, &g_policy, &progress, g_clock.now_ms);
+    HAC_CHECK_EQ_INT(pass(0u, &note).action, UPDATE_FULL);
+    const uint64_t due = g_clock.now_ms + SCREEN_CONTROLLER_UPDATE_ERROR_TIMEOUT_MS;
+    fake_clock_advance(&g_clock, SCREEN_CONTROLLER_UPDATE_ERROR_TIMEOUT_MS - 1u);
+    HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms), due);
+    fake_clock_advance(&g_clock, 1u);
+    HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms),
+                     SCREEN_CONTROLLER_NO_DEADLINE);
+    HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_HOME);
+    HAC_CHECK_EQ_INT(pass(0u, &note).action, UPDATE_FULL);
+}
+
 int main(void)
 {
+    HAC_RUN(firmware_update_locks_touch_and_shows_each_stage_without_waiting_for_a_cycle);
+    HAC_RUN(firmware_update_errors_unlock_touch_without_replaying_old_gestures);
+    HAC_RUN(firmware_update_failure_times_out_and_full_only_panels_show_progress);
     HAC_RUN(a_tap_switches_the_screen_at_once_as_a_full_refresh);
     HAC_RUN(the_diagnostics_screen_redraws_when_what_it_says_changes);
     HAC_RUN(the_diagnostics_screen_goes_home_untouched_and_touches_keep_it);

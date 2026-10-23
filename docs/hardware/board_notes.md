@@ -111,7 +111,8 @@ two never disagree. Carried forward as named constants in
 | I2C `SDA` / `SCL` (shared: RTC + touch + our sensors) | 18 / 17 | `src/utilities.h:39-40` |
 | Touch IRQ | 47 | `src/utilities.h:41` |
 | Touch I2C address | **`0x5D`** (GT911; `0x14` is its other latch address) | observed by the phase-2d bus scan; `examples/touch/touch.ino:109,113` |
-| Button | 21 | `src/utilities.h:30` |
+| Button | 21 -- since ADR 0036 the USB disk's: held 2 s asks for it, pressed ends it | `src/utilities.h:30` |
+| USB `D-` / `D+` (the USB-C) | 19 / 20 -- the S3's own USB pins, no bridge: USB-Serial-JTAG (the console, COM17) or USB-OTG (the USB disk, ADR 0036) on its one internal PHY, never both | ESP32-S3 datasheet; every console session since phase 2a |
 | Battery ADC | 14 | `src/utilities.h:32` |
 | microSD `MISO`/`MOSI`/`SCLK`/`CS` -- the card's since phase 3f ("The microSD slot") | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
 | Genuinely free | 45, 10 (analog-in only), 48, 39 | `README.MD` "GPIO List" |
@@ -2233,11 +2234,26 @@ layout settles, not before.
       - *The diagnostics screen*: the SSID as configured, the signal, the
         address the router gave (`Wi-Fi up <ssid> -NN dBm a.b.c.d`), `MQTT
         online sent N refused 0 last HH:MM`; the counts as of the tap,
-        unchanged while the screen stays up.
+        unchanged while the screen stays up. **Since 2026-10-23** everything
+        on the MQTT and Wi-Fi lines but the signal redraws as it changes, the
+        screen up five minutes with partial content redraws (ADR 0038): an outage
+        watched on it shows `joining` and `offline` at the loss, `up` and
+        `online` at the return, a partial refresh each; `sent` and `last` a
+        minute or so apart while a session is up.
       - *The test app*: the `port_net` contract against the Wi-Fi adapter,
         `info()`'s checks included -- the name terminated and the same up and
         down, an address only while up -- with the cut and restore checks "not
         exercised".
+      **The Wi-Fi gone twice, 2026-10-23** (an image of `e44fbfc`, BSEC, from
+      the card's `log/`, the owner's test of 11:07-11:16Z; the access point came
+      back on another channel and gave new addresses, so it had restarted):
+      every change of the bar's word came a minute after the link's, to the
+      millisecond -- `no-wifi` 60.0 s after each loss (11:07:17, 11:12:31),
+      `no-broker` 60.0 s after the Wi-Fi's return (11:10:17) while the broker
+      refused every CONNECT, `online` 60.0 s after the session (11:14:59); six
+      `link on the screen` lines in all, the boot's two included. On the
+      diagnostics screen, where the owner kept tapping, the held link drew
+      nothing, as ADR 0034 has it; the next home screen showed it.
 - [ ] **Wi-Fi on the board (phase 4e).** Built 2026-10-21, verified on the
       host only (`docs/adr/0032-wifi-on-the-board.md`): the station behind
       `port_net` (`platform/esp32_t5s3/adp_net.c`), its decisions tested on
@@ -2412,6 +2428,33 @@ layout settles, not before.
       brownout, no watchdog in the three boots (five with Wi-Fi so far). EPDiy's
       draw times as before (322-323, 699-700, 910 ms); `vbat` 32 of 32 again,
       4,222-4,224 mV.
+      **The access point gone and back, twice, 2026-10-23** (an image of
+      `e44fbfc`, BSEC, from the card's `log/`, the owner's test, 11:07-11:15Z):
+      - *The loss*: `bcn_timeout`, ESP-IDF's probes for 2.5 s, then `link lost:
+        sought again at once reason=beacon_timeout`; then `no_ap_found`, and the
+        failures logged once while their reason held, as designed.
+      - *The return*: the first attempt that met the access point again was
+        refused with **reason 49, `WIFI_REASON_INVALID_PMKID`** in ESP-IDF's
+        enum (`attempt failed reason=other code=49`): the station offered the
+        WPA3-SAE PMK it had cached, and the restarted access point knew it no
+        more. The next attempt, 30 s later at the backoff's ceiling, failed as
+        `connection_fail` with no signal reported; the one after joined, with a
+        full SAE handshake. The same three steps both times: the link back 65 s
+        after the access point first answered (11:09:08 -> 11:10:13, 11:13:49
+        -> 11:14:55), against ADR 0032's "within about 30 s of its return";
+        `up ... failed_attempts=9 took_ms=179478`, then `failed_attempts=8
+        took_ms=147748`. A candidate, not made: an attempt that met the access
+        point -- reason 49 among them -- resets the backoff to its first step,
+        and `adp_net_pure.c` names 49 so the log says what it is. Whether it
+        gains the 30 s is not established: the `connection_fail` between may be
+        the access point's own start. The owner's to decide.
+      - *What else came back different*: the channel (11, then 6) and the
+        address (`.140`, then `.109`, then `.113`) -- the restarted access
+        point's DHCP had forgotten the lease. The broker's address is fixed in
+        the image (ADR 0033); reserving addresses in the router for the board
+        and the Pi would keep both.
+      - *Measuring went on*: the sensors' minute samples on time throughout,
+        taps answered, no reset.
 - [ ] **Time from the network on the board (phase 4f).** Built 2026-10-21
       (`docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`,
       "Amendment (phase 4f): time from the network"): SNTP from Wi-Fi's first
@@ -2654,6 +2697,10 @@ layout settles, not before.
       in the night: the server's answers, which lwIP takes without a round-trip
       correction, were tens of milliseconds noisier, not the RTC. One hour
       says little; a day's samples average it out.
+      **A second night, 2026-10-22 to 23** (an image of `8c73fdd`, BSEC, from
+      the card's `log/`, ten hourly syncs 22:37Z to 07:37Z): `drift_ppm` -17.2
+      to -23.4, **mean -20.6** -- the first night's -20.8 again; every write on
+      time (`rearms=0`), every landing within +-12 ms.
       Still to see: a day of hourly samples, and another temperature; the cold
       boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
       measured delay, about 995 ms, should replace the datasheet's 508 as the
@@ -2798,8 +2845,9 @@ layout settles, not before.
         cannot touch the simulator's topics or another device's. Mosquitto drops
         a denied QoS 0 publish without telling the client, so the check is the
         receiver's.
-      - *Not yet seen*: Wi-Fi gone for an hour; a full day's hourly lines and
-        Home Assistant's long-term statistics.
+      - *Not yet seen*: Wi-Fi gone for an hour (gone for three minutes, twice,
+        2026-10-23, below); a full day's hourly lines and Home Assistant's
+        long-term statistics.
       **The test app, 2026-10-22** (the non-BSEC variant with the overlay, the
       owner's YAT logs of 23:20 and 23:29 local):
       - *The first run, one failure*: `connected within
@@ -2823,6 +2871,27 @@ layout settles, not before.
         free (the adapter's) and 3,980 (esp-mqtt's). The broker, watched with
         `mosquitto_sub -t 'hac-contract/#'`, saw the messages in the contract's
         order and nothing left over.
+      **The Wi-Fi gone twice, 2026-10-23** (an image of `e44fbfc`, BSEC, from
+      the card's `log/`; the item "Wi-Fi on the board" has the link's side):
+      - *The loss*: the socket's read failed at the beacon timeout
+        (`tcp_read error, errno=Software caused connection abort`), so the
+        reporter saw the session drop a moment before `port_net` the link:
+        `session lost ... why=dropped`, not the `why=network` this item
+        expected. The same outcome -- no session, nothing queued -- only the
+        word differs.
+      - *The first return*: the link up at 11:10:17Z with a new address, and
+        the broker at `192.168.1.141:1883` **reset every CONNECT for two
+        minutes** (`no connection to the broker why=Connection reset by peer
+        code=104`; attempts at 11:10:18, :34, :54, 11:11:24, 11:12:14, the
+        reporter's backoff doubling) until the link went again. A reset is an
+        answer: something at that address was up with nothing listening on
+        1883 -- the Pi Zero W's mosquitto not yet back after its own
+        reconnect, or another host on the address after the router's restart.
+        The board's log cannot tell; the Pi's journal can.
+      - *The second return*: `session up session=2 attempts=8` 0.2 s after the
+        link, `online` and nine configs.
+      - The will and Home Assistant's "unavailable" are not in the board's
+        log: the broker's and Home Assistant's to show.
 - [ ] **A change of screen as a full refresh (ADR 0034).** Built 2026-10-22,
       verified on the host only: every change of screen -- a tap, and the
       diagnostics screen's timeout -- is a full refresh, whatever the budget
@@ -2850,6 +2919,20 @@ layout settles, not before.
       the budget at 0 after each; BSEC late 1.62-3.30 s at each. With the
       vendor's full refresh (ADR 0035, the item "The vendor's full refresh")
       1,842-1,901 ms. The title and the readability by eye: not reported yet.
+      **The diagnostics screen a developer's, 2026-10-23** (ADR 0038,
+      verified on the host): entering and returning home full, content redraws
+      partial without a count limit; up five minutes untouched; its network
+      lines live but for the signal. To see: `screen changed
+      screen=diagnostics by=tap ... action=full`; `screen changed screen=home ...
+      action=full`; `by=timeout` 300 s after the last touch; with the access
+      point switched off while it is up, a `decision action=partial
+      reason=status` within a sensor cycle of `adp_net: link lost`, none for
+      the attempts after it, one to three at the return; `sent` and `last`
+      following the session; content still redrawing partially beyond 40
+      refreshes during a visit extended by touches. **Owner confirmation,
+      2026-10-23**: the BSEC firmware works on the board after copying
+      `build-bsec/home_air_monitor.bin` to `C:\hac-flash`. No detailed log or
+      separate count of partial refreshes accompanied the confirmation.
 - [ ] **The vendor's full refresh (ADR 0035).** Built 2026-10-22, verified on
       the host only: `REFRESH_FULL` and `REFRESH_CLEAR` start with the
       vendor's clear -- 4 cycles of 4 pushes towards black and 4 towards
@@ -2917,3 +3000,195 @@ layout settles, not before.
       twentieth partial as before; nothing in the log but BSEC's late calls.
       Still to see: a day of it -- greys a partial redraws often, the traces
       around vanished digits against the budget of twenty, residue in greys.
+- [ ] **The card as a USB disk on the board (ADR 0036).** Built 2026-10-22,
+      verified on the host only (`docs/adr/0036-the-card-as-a-usb-disk.md`):
+      `usb_disk` at the console, or the button (IO21) held for two seconds,
+      lends the card to the PC -- the PHY taken from USB-Serial-JTAG for
+      TinyUSB's mass storage -- until the disk is ejected; then the PHY goes
+      back and the card is mounted again, without a reset. Nothing of the
+      switch has run on this board: that the PHY moves between the two
+      controllers at all, and back, is read in ESP-IDF 5.5's source. What each
+      check is to show, and the lines that show it (the session's own lines
+      reach the card's `log/` after it, not the terminal):
+      - *The switch*: `usb_disk` with a card in: `USB_DISK lent: in 300 ms
+        this port goes`, COM17 gone, a removable disk "Home Air Monitor card"
+        with the card's files in Explorer, and Windows' device manager naming
+        it USB mass storage, VID 0x303A, PID 0x4002, serial the MAC. With no
+        card: `USB_DISK refused`, nothing switched.
+      - *The way back*: Explorer's "Eject": the disk goes, COM17 comes back
+        (the same number, by the serial), and `sd` shows the card mounted and
+        `USB_DISK last of 1: ended ejected`; the card's log has `lending the
+        card to USB`, `usb disk started`, `the card is back from USB
+        why=ejected ...`, `card mounted`; `rec` shows new files, the day's
+        next `_N`.
+      - *The other endings*: the button pressed (`why=button`); the cable
+        pulled with the battery in (`why=host_gone`, about 3 s after);
+        "Safely Remove Hardware" in the tray -- whether Windows sends the
+        eject or only suspends the device (`why=ejected`, or `suspended` 10 s
+        after); the PC put to sleep (`suspended`); a charger instead of a PC
+        (`why=no_host` after 30 s). Each followed by the card mounted.
+      - *Throughput*: a 100 MB file copied each way, timed on the PC, beside
+        `read_kb=`, `written_kb=`, `slowest_read_us=`, `slowest_write_us=` in
+        the `back from USB` line. Full speed's ceiling is about 1 MB/s; a lot
+        less says the 4 KB buffer (`USB_DISK_MSC_BUFFER_BYTES`) or the SD
+        clock is the limit.
+      - *Nothing else held up*: through a session the sensors' `sample`
+        lines, the redraws and MQTT go on; `rows_dropped` grows by the
+        session's rows and no more; the card's task's `stack low-water mark`
+        (of 6,144) with TinyUSB's callbacks and the SD driver on it; no
+        `BSEC called late` beyond the usual.
+      - *Twice in a boot*: a second `usb_disk` after the first came back --
+        the second session takes the PHY from the USB-Serial-JTAG handle the
+        first one made.
+      - *A reboot while lent*: `restart` cannot be typed then, so a panic or
+        the watchdog is the case; read, not seen: the next boot's early lines
+        do not reach COM17, which returns once the console starts. RST always
+        gives USB-Serial-JTAG back.
+      - *The cost*: `free_internal=` in the `card mounted` line after a
+        session against before (the build: +5,536 bytes of static internal
+        RAM, TinyUSB's 4,947 of them).
+      **First run 2026-10-23** (ELF `26000f158...`, the BSEC image, the
+      owner's YAT log of 11:07 local, three sessions of 21-74 s): each
+      `usb_disk` answered, the card was lent (`state=lent`), and the next
+      thing on COM17 was a new boot, `rst:0x15 (USB_UART_CHIP_RESET)` and
+      `previous reset reason=usb rom_code=21` -- a reset the USB host asked
+      for through USB-Serial-JTAG's CDC line state, not a panic or a watchdog
+      (none in the log). Each following boot mounted the card at once, so the
+      host left the filesystem readable. **The terminal, not the mode**
+      (confirmed the same day: no reboot with YAT closed, below): the
+      session's end gives COM17 back, YAT reopens it by itself, and opening
+      the port resets the chip -- as it does after a power cut (open item "The
+      RTC on the board", phase 3e) and, by the same log, at YAT's first open:
+      the file begins at the board's 3.9 s. The S3's USB-Serial-JTAG has no
+      bit to refuse that reset (ESP-IDF 5.5's `usb_serial_jtag_reg.h` for the
+      S3 has none; the C61's and later chips' `USB_UART_CHIP_RST_DIS` is
+      absent), and refusing it would cost esptool's reset anyway. Two of the
+      three resets were followed by a brownout at `PWR_EN`'s rise (open item
+      "A reboot loop when the switched 3V3 comes up"). So: close YAT, or turn
+      its automatic reopen off, before a session -- or accept a reboot after
+      it. Also seen: two
+      `sdspi_transaction: cmd=52 ... cmd=5, R1 response: command not
+      supported` lines at every lend -- `sdmmc_card_init()` probing for SDIO,
+      harmless.
+      **The card's log of the same morning** (`log/2026-10-23.log`, copied off
+      by the owner): the YAT sessions left nothing of themselves on the card --
+      their lines were in the ring, which a reset loses, and the `lending` line
+      comes after the files close -- and the boots after them read `previous
+      reset reason=BROWNOUT` three times (YAT's first open at 08:07:40Z, and
+      after the first two sessions) and `usb` once: a host reset, then a
+      brownout at `PWR_EN`'s rise in the boot it started, as before. One boot,
+      after a `usb` reset with no brownout, found the GT911 at `0x14` -- the
+      latch again (open item "The touch panel on the board"), taken as
+      designed. **Then a session with YAT closed, entered and ended by the
+      button** (08:16:09Z-08:16:17Z): `lending the card to USB ... by=button`,
+      `usb disk started ... status=0` 180 ms later, the PC configured the disk
+      once and read 2,832 KB -- Explorer opening it; no write -- `the card is
+      back from USB why=button lasted_ms=7232 io_errors=0 refused=0
+      slowest_read_us=94637`, `card mounted` 100 ms later, the day's sixth
+      files, **no reboot**; the log runs on as before. So both of the button's
+      uses work, the PHY goes to USB-OTG and back without a reset, and the
+      card mounts after the host. In passing: `free_internal=43715` at that
+      mount against 43,987 with the MQTT session up before it (one session,
+      no leak to speak of); the card's task's low-water mark 2,464 bytes free
+      of 6,144 with TinyUSB on it; temperature redraws for half a minute after
+      it, the BME680 at up to 28 C -- the hand at the button, beside the
+      sensor. Still to see: the eject (`why=ejected`), "Safely Remove
+      Hardware", the PC asleep, a charger (`no_host`), a cable pulled on the
+      battery (`host_gone`), writes and throughput, a second session in a
+      boot, `sd`'s `USB_DISK` line.
+- [ ] **Firmware update screen and touch lock (ADR 0039).** Added 2026-10-23,
+      verified on the host and built with BSEC. After installing this version,
+      copy an image to the card again: the first installation still runs the
+      old updater. Expect `Firmware update`, checking, writing with a byte
+      progress bar, verification, preparation and restart. Touch during the
+      update must neither change screens nor replay later. A rejected image
+      shows `Image rejected`, then goes home by tap or after ten seconds.
+      A display failure aborts before further writing; inspect `step=display`
+      in the log. Measure the new update duration: it includes display work
+      that the earlier 19.4 s did not. **Owner confirmation, 2026-10-23**:
+      the update screen and touch lock work with build `b358b13`. No detailed
+      log or elapsed time accompanied the confirmation; the duration and
+      individual failure paths remain to check.
+- [ ] **Firmware from the card on the board (ADR 0037).** Built 2026-10-23,
+      verified on the host only (`docs/adr/0037-firmware-from-the-card.md`):
+      `home_air_monitor.bin` in the card's root is installed into the other OTA
+      slot at the next mount, deleted, and booted; the new image confirms itself
+      at its first frame, or the bootloader -- new, with rollback -- returns to
+      the old one. **Needs the new bootloader once**: the usual esptool command,
+      bootloader at 0x0 and `ota_data_initial.bin` at 0xf000 included. What each
+      check is to show, and the lines that show it:
+      - *The bootloader*: after the esptool flash, `fw` says `FW running ota_0
+        ...: home_air_monitor <version> ..., flashed` and the boot log
+        `fw_update: running partition=ota_0 state=flashed`. (**Corrected
+        2026-10-23**: `valid`, below.)
+      - *An update through the USB disk*: copy a build's `home_air_monitor.bin`
+        to the disk's root, eject. Then, in the card's `log/`: `firmware on the
+        card: installing version=... from_version=... bytes=... slot=ota_1`,
+        `firmware from the card installed: restarting into it ... took_ms=`
+        (an ESTIMATE of 5-10 s); the panel's boot; `fw_update: running
+        partition=ota_1 state=pending_verify`, about four seconds later `the
+        update confirmed: it reached its first frame`; `fw` says `valid`; the
+        file is gone from the card. The version in Home Assistant's device
+        page follows.
+      - *Back again*: the older image copied the same way installs into
+        `ota_0` -- no version check, by design.
+      - *Refusals*: the slideshow's image (another project), a bootloader or any
+        other file under that name, an empty file: `firmware on the card
+        refused: renamed .rejected verdict=project` (`not_an_image`, `empty`),
+        the file now `home_air_monitor.bin.rejected`, nothing installed. A copy
+        cut short (the cable pulled mid-copy): `verdict=invalid step=end`.
+      - *A rollback*: hard to provoke on purpose -- an image that panics before
+        its first frame, or RST held during the first boot of an update. The
+        boot after: `the other slot holds an update that did not start: rolled
+        back`, and `fw` says so.
+      - *The update's cost to the rest*: `took_ms=`, a `BSEC called late` at
+        it, whether a panel refresh under way showed a glitch, the card task's
+        `stack low-water mark`.
+      - *esptool after an update*: the usual command, `ota_data_initial.bin`
+        included, boots what it wrote (`fw`: `running ota_0 ... flashed`);
+        without it, the board would stay on `ota_1`.
+      **On the board, 2026-10-23** (an image of `e44fbfc`, BSEC, flashed with
+      the new bootloader; from the card's `log/`, 10:39-11:16Z):
+      - *The bootloader*: the first boot read `running partition=ota_0
+        state=valid`, not `flashed`. With rollback on and no factory slot,
+        ESP-IDF's bootloader writes an `otadata` entry for `ota_0` itself when
+        it finds `otadata` empty (`bootloader_utility.c`, "No factory image,
+        trying OTA 0"), so an image from esptool reads `valid`; `flashed` is
+        left for an `otadata` that cannot be read. The comments say so now.
+      - *An update through the USB disk*: the disk lent from the console at
+        11:01:25Z, 1,443 KB written to it, back at 11:02:26 (`why=suspended`,
+        Windows' eject), mounted, and in the same second `firmware on the card:
+        installing version=e44fbfc from_version=e44fbfc bytes=1450048
+        slot=ota_1` -- the same image again, installed as designed. `installed:
+        restarting into it ... took_ms=19364`: **19.4 s**, against the ESTIMATE
+        of 5-10 s; ESP-IDF's two verifications of the slot (`esp_ota_end()`,
+        then `esp_ota_set_boot_partition()`, each an `esp_image` segment list)
+        took 0.4 s of it, and the log does not say how the rest divides between
+        the card's read, the erase and the write. The restart a software reset
+        (`reason=software`), no brownout; `running partition=ota_1
+        state=pending_verify`, and at 3.7 s of uptime `the update confirmed: it
+        reached its first frame partition=ota_1`. The file was gone: the next
+        mounts found nothing to install. Wi-Fi joined at its first attempt
+        after it, where every esptool or USB reset that morning cost two refused
+        attempts and 15 s -- the software reset's shutdown leaves the access
+        point nothing stale.
+      - *The update's cost to the rest*: two taps during it changed the screen,
+        each full refresh with **2.7-2.8 s of clear** (1.21 s otherwise) and a
+        diff of 270-320 ms (107) -- the flash's erases and writes stalling the
+        caches the clear's loop and EPDiy run from -- 3.7-3.9 s to the glass,
+        and BSEC late by 3.4-3.8 s. The glass by eye: not reported.
+      - *A refusal*: the slideshow's image (`hac_slideshow`, `c5c41db-dirty`,
+        1,574,880 bytes) under the name: `firmware on the card refused: renamed
+        .rejected ... verdict=project step=judge took_ms=29`; the next mount
+        found nothing to try.
+      - **The card's task's stack at 1,304 bytes free** of 6,144 right after
+        that refusal, its lowest yet (2,048 when a card was pulled,
+        2026-10-22): the open, the header's read, the rename through FatFs with
+        long names, and a log line of fourteen fields through the tee's
+        `vsnprintf`. The install's own low-water mark is not in the log -- the
+        restart comes before the next report. Enough today, with little margin:
+        the stack to 8 KB, or the update's log lines split, before anything
+        else lands on that task.
+      Still to see: a rollback; an older image back into the other slot; a copy
+      cut short (`verdict=invalid`); `fw` after an update; the version in Home
+      Assistant after one; the install's stack.
