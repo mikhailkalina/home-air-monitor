@@ -19,6 +19,13 @@ cell is fitted and holds. Still to see there: whether it kept counting
 through the cut (`time` against a reference), longer outages, `restart`, the
 drift and the autumn change.
 
+**Reviewed 2026-10-25**: [the card review](../hardware/soak-2026-10-25.md)
+adds 41 hours on one image, 40 hourly RTC drift samples, and uninterrupted
+UTC/uptime through the autumn transition. The offset is calculated locally;
+no SNTP answer occurs at the transition. The footer text is not recorded,
+and an offline board transition remains untested. The review distinguishes
+these from the previously seen software reset and 6.5-hour backup-cell run.
+
 **Amended 2026-10-21, phase 4f** (branch `phase-4f-sntp`; "Amendment (phase
 4f): time from the network", at the end): SNTP sets the system time once
 Wi-Fi is up, and after each answer the event loop measures the RTC by its
@@ -478,6 +485,33 @@ A night of hourly syncs, 2026-10-22 (ELF `ec5d8a60f...`, 9.4 hours, syncs 2 to
   backup cell, or a moment's stop at the changeover the chip did not flag: one
   outage does not say. Each answer corrects it within the hour of the link.
 
+### Extended run and the autumn transition, reviewed 2026-10-25
+
+Image `b358b13`, October 23 14:52Z to October 25 07:53Z, from the card's
+logs ([review and evidence](../hardware/soak-2026-10-25.md)):
+
+- Forty hourly drift samples: mean -20.7738 ppm, sample standard deviation
+  1.9505, consistent with the earlier nights. This is the powered board's
+  RTC, not the backup-cell rate or the running ESP32's offline rate.
+- First landing -489 ms; the next 40 are -14 to +12 ms. First-tick estimates
+  extend the observed range to 986–1,001 ms. All landings measured, writes
+  0–1 ms late, four rearmed once. These update the earlier empirical ranges,
+  not a guarantee of future precision.
+- On October 25, the SNTP answers at 00:53:15Z and 01:53:15Z each report
+  `system_minus_sntp_ms=-1`; none occurs at 01:00Z. The sensor summaries at
+  00:59:01.746Z and 01:00:01.746Z are exactly 60 s apart in uptime too.
+  UTC is not set back an hour. `time_zone_eu(120)` changes the conversion
+  offset from +180 to +120 minutes at 01:00Z, without network access or a
+  stored previous offset.
+- There is no redraw solely for the time change. The previous refresh is
+  00:43:26Z; the first following refresh, 01:13:26Z, is for IAQ accuracy
+  high -> low. The expected footer minutes are `03:43` then `03:13`, not an
+  immediate `03:59 -> 03:00`. Refresh completion is logged; footer text and
+  the glass are not. With valid UTC the same conversion works offline,
+  including after a boot from the RTC. The existing calendar and view-model
+  tests cover the exact boundary with no SNTP; a physical offline run is
+  still open.
+
 ### Precision
 
 - The offset before the write: ±2 ms, from three readings truncated to the
@@ -491,8 +525,9 @@ A night of hourly syncs, 2026-10-22 (ELF `ec5d8a60f...`, 9.4 hours, syncs 2 to
   trip. What varies from hour to hour is noise on each sample, which a day's
   samples average. `system_minus_sntp_ms`, hour by hour, is the ESP32's own
   drift.
-- The landing: within ±12 ms from the second write of a boot on, the delay
-  learned -- this chip's varies 986-1,000 ms from one start to the next; the
+- The landing: observed -14 to +12 ms from the second write of a boot on,
+  the delay learned (extended run reviewed 2026-10-25) -- this chip's varies
+  986-1,001 ms from one start to the next; the
   first write after a boot as the datasheet's delay is right for this chip --
   about 0.49 s off on this board, whose chip first ticks about a second after a
   start. Known either way.

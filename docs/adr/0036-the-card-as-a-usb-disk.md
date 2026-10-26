@@ -161,8 +161,31 @@ no card. The recorder's rows are dropped and counted, as with no card --
 about 12 of the SCD41's and 20 of BSEC's a minute -- and the log stays in its
 ring, 1,024 lines, the overflow counted in the file once the card is back. The
 log's lines of the session reach no terminal; they reach the card after it.
-After the session the recorder and the log open new files, the day's next
-`_N`, as after any mount.
+After the session the recorder opens new CSV files, the day's next `_N`,
+as after any mount. The debug log reopens the daily `log/<day>.log` in
+append mode; retained lines are written with their original event times
+(reconstructed from monotonic age), including to an earlier day's file if
+the session crossed midnight.
+
+**Buffer capacity, checked against the code and card logs 2026-10-25**:
+`LOG_TEE_SLOTS` is 1,024 and `LOG_TEE_SLOT_BYTES` is 320, a fixed **320 KiB
+of PSRAM** (`main/log_tee.h`). Capacity is limited by the number of records,
+not by the unused memory on the board. A full ring preserves the oldest
+records and discards new ones; after return the file reports
+`the log's buffer in RAM was full` with the loss count. The sensor-event
+queue is not an offline archive: the card task keeps consuming it, and
+`recorder_record()` counts rows as dropped when no file can be opened.
+There is therefore **no guaranteed CSV retention interval** during MSC,
+even for a short session.
+
+For debug logs alone, an approximate remaining interval is
+`(1024 - ring_used) / records_per_hour` hours, provided the rate stays
+similar and the device does not reset or lose power. The INFO log of the
+latest 41-hour run gives about **5.7 hours** at October 24's average rate;
+observed windows containing 1,024 records after the first five boot minutes
+span **3.65–7.89 hours**. These are estimates from normal operation, not
+an MSC timeout or a guaranteed minimum: reconnect/error/debug bursts can
+fill it much faster. See the [card review](../hardware/soak-2026-10-25.md).
 
 `sd` at the console prints the last session (`USB_DISK last of N: ended
 <why> after S s, ... read KB, written KB, I/O errors, refused, slowest read

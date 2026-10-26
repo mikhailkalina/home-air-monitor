@@ -332,8 +332,10 @@ measured:
   clearing `PWR_EN` for deep sleep would not either -- and the cell should
   keep it running with the board unpowered, charged through the diode while
   it is powered. **Seen 2026-10-16**: on this unit the cell is fitted and
-  kept VL clear through more than a minute with no power at all; longer
-  outages are untested ("The RTC on the board" in the open items).
+  kept VL clear through more than a minute with no power at all. **Since
+  2026-10-22** a 6.5-hour cut also retained valid time, with 2.6 s lost beyond
+  the powered-board drift; multi-day capacity remains untested ("Time from
+  the network on the board" in the open items).
 - **INT** goes to IO9 with a 10 kOhm pull-up to `VDD3V3`
   (`BOARD_RTC_INT_GPIO`): the open-drain alarm and timer interrupt. Since
   phase 4f the alarm marks the RTC's tick on it, each falling edge stamped in
@@ -666,6 +668,67 @@ TLS's TLS layer, which esp-tls links for the plain TCP transport and nothing
 runs. The adapter's buffers, about 27 KB, are in PSRAM. Its run-time share --
 two task stacks, esp-mqtt's client and buffers, the socket, the outbox -- is
 an ESTIMATE of 20-25 KB of internal RAM (open item "MQTT on the board").
+
+### Current image budget, reviewed 2026-10-25
+
+The local `build-bsec` artifacts identify **`b358b13`**, matching the
+device's final logged image. Running ESP-IDF's installed `esp_idf_size`
+against its map gives **151,147 bytes of static D/IRAM plus 16,384 bytes
+of separate IRAM: 167,531 bytes (163.6 KiB) total**. This includes code
+and vectors residing internally as well as 21,612 bytes of `.data` and
+45,200 bytes of `.bss`; it is not all application-variable storage.
+Do not add the DRAM and IRAM address-space capacities as if they were
+independent physical memories. The application `.bin` is **1,452,592 bytes
+(1.385 MiB), 34.6 % of one 4 MiB OTA slot**. The module has 16 MiB flash;
+the partition table reserves two 4 MiB OTA slots and a 7.875 MiB `storage`
+partition that the application does not currently use. Sensor recordings
+are on the separate SD card.
+
+The last available heap measurements are at the beginning of that run,
+October 23 14:52Z (`log/2026-10-23.log`); they are not a live reading or a
+continuous 41-hour heap trace:
+
+| Measuring point | Free internal RAM | Free PSRAM |
+|---|---:|---:|
+| Startup, after allocating the log ring | 288,755 B (282.0 KiB) | 8,058,508 B (7.685 MiB) |
+| Wi-Fi up | 53,427 B (52.2 KiB) | 6,683,060 B (6.374 MiB) |
+| MQTT session up | **43,251 B (42.2 KiB)** | **6,682,640 B (6.373 MiB)** |
+
+The reported minimum internal free heap **up to the last measuring point**
+is 34,539 bytes (33.7 KiB). Peripheral/network startup consumes an
+additional 245,504 bytes (239.8 KiB) from the internal heap relative to
+the startup line. The 8 MiB external RAM has about **1.63 MiB allocated or
+otherwise unavailable to its free heap** at the session-up measurement.
+Internal free heap cannot be interpreted as all 512 KiB minus allocated
+application objects: internal code, caches, reserved regions, allocator
+overhead and SDK allocations also consume the physical SRAM.
+
+The main persistent PSRAM allocations are:
+
+| Allocation | Size / behaviour |
+|---|---|
+| EPDiy front + back + difference images | 259,200 + 259,200 + 518,400 B = 1,012.5 KiB; allocated once. The UI draws directly into the front image |
+| Previous UI frame for dirty-rectangle detection | 259,200 B = 253.1 KiB; allocated once |
+| Debug log ring | 327,680 B = 320 KiB; 1,024 fixed slots, does not grow |
+| MQTT adapter message buffers/state | About 27 KiB; allocated once |
+| Recorder and file-log objects/buffers | About 13 KiB; allocated once, plus the 16-event queue and filesystem buffers |
+
+The **64 KiB waveform conversion LUT is in internal RAM**, as enforced by
+EPDiy's `MALLOC_CAP_INTERNAL` allocation, not in the external framebuffer
+pool. EPDiy also allocates internal line buffers/queues and two 4 KiB render
+task stacks. The project's event-loop stack is 8 KiB; card, touch, network
+adapter, MQTT adapter and esp-mqtt stacks are 6 KiB each: **38 KiB** across
+those six tasks, excluding EPDiy, the console and ESP-IDF's system tasks.
+Unused stack space remains reserved; a stack low-water mark is not free
+heap that another allocation can use.
+
+Most large buffers and task stacks are allocated during initialisation and
+stay allocated. MQTT client/session objects, its outbox, Wi-Fi/TCP buffers,
+file operations and firmware-update work additionally allocate/free memory
+as needed. The useful constraint for future features is therefore internal
+RAM (tens of KiB free), even though several MiB of PSRAM remain available.
+Periodic free/minimum/largest-block measurements would be needed to judge
+long-term fragmentation or leakage.
 
 ## Known constraints (vendor warning, verbatim intent)
 
@@ -1315,6 +1378,20 @@ layout settles, not before.
         rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
         the image was flashed. The brownout itself is not in the logs. See the
         item "A reboot loop when the switched 3V3 comes up".
+      **A full day and a 41-hour run, reviewed 2026-10-25** (image `b358b13`,
+      [card review](soak-2026-10-25.md)): October 24's local-date log has
+      **207 IAQ redraws, 264 total, 17 full, five `settle`, none for
+      pressure, seven late BSEC calls**. This supplies the full-day check
+      requested above, with different air and interaction from the old
+      image's days. The whole boot has 12 late calls, 270–1,810 ms, each
+      immediately after a display refresh. Accuracy reaches high after
+      18 h 12 min, but falls high -> low at October 25 01:13:26Z and stays
+      low for the remaining 6 h 40 min. No reboot, reinitialisation or timing
+      warning accompanies the drop; it precedes its status redraw and uses
+      monotonic BSEC timestamps, so it is not evidence of a DST clock jump.
+      Recovery after changing room conditions remains to be observed; do
+      not infer a cause from this log. Pressure redraws, a reference
+      thermometer and the display-task timing comparison remain open.
 - [ ] **BSEC's state restarts at every boot.** BSEC learns the room: its
       IAQ accuracy rises from 0 as its background calibration sees the air
       clean and polluted, and its state holds that. Since phase 3d the state
@@ -1397,6 +1474,13 @@ layout settles, not before.
       - *The autumn change*: 2026-10-25 at 01:00 UTC; if the device runs
         through it, its next redraw shows the hour step, 03:59 -> 03:00 in
         Vilnius.
+        **Reviewed 2026-10-25**: the board ran through it with UTC and uptime
+        continuous, no SNTP answer at the transition, and the first following
+        refresh at 01:13:26Z. The footer is a last-update time: expected
+        `03:43` before, `03:13` afterwards, not a ticking `03:59 -> 03:00`.
+        Its text is not logged. The conversion works without a network by
+        code and host tests; an offline board run and a visual check remain
+        open ([card review](soak-2026-10-25.md)).
       **First run 2026-10-16** (ELF `dd1e81a7b...`, the BSEC image, the
       owner's log of 20:25 local):
       - *What the RTC held*: `rtc: VL set`, 2000-01-27T05:06:30Z at boot,
@@ -1575,7 +1659,31 @@ layout settles, not before.
       boot, against 160 ms at most over the three days before; the event
       loop's longest post 35 us all the same -- the card's task waited, nothing
       else did.
-      Still to see: a day on a PC and in the simulator, the test app.
+      **41 hours on `b358b13`, reviewed 2026-10-25**
+      ([card review](soak-2026-10-25.md)): `rows=78648 rows_dropped=0`, the
+      five deliberately held boot log lines the only counted log loss;
+      **slowest flush 360.5 ms, longest post 40 us**. The card task still
+      does the waiting. October 24's log is 543,301 bytes; the earlier full
+      days October 18–19 have 3.11–3.14 MB of CSV each. Directory caps have
+      not been reached. The supplied CSV copy stops at October 22 14:30:16Z,
+      although the logs continue through October 25: obtain the recent
+      files before claiming their integrity or replay. The copied 248,899
+      rows parse, with no error/stale status or backwards sample offset.
+      **Fresh CSV supplied later the same day**: 133 files, 371,902 rows;
+      every nonempty file loads in the project's parser. The paired full
+      October 24 files, October 25 through the time change, and October 25's
+      files after recording resumes play successfully in the simulator. CSV matches
+      the last hourly counter exactly: 78,648 rows. Two midnight rotations
+      are continuous; the 01:00Z DST boundary has normal 3.000 s / 5.010 s
+      intervals. A later 369/371 s gap, 07:53–07:59Z, lies between the main
+      files and their `_2` successors, consistent with card absence, although the
+      log ends before it. A short BME-only temperature/humidity excursion at
+      06:39:32Z needs a thermal/compensation investigation; the minute log
+      missed its peak. IAQ stays low through 08:27Z. Details and the older
+      gaps are in the [follow-up](soak-2026-10-25.md#follow-up-fresh-sensor-files-supplied-later-on-october-25).
+      Still to see: spreadsheet UI, the test app, cap pruning. The earlier
+      1,304-byte stack minimum during an update
+      refusal remains the task's margin concern, below under firmware updates.
 - [x] **The touch panel on the board (phase 3g).** **Done 2026-10-20**:
       every check below seen, the test app's included; one fault found and
       fixed on the way (the controller's address, below). Built 2026-10-17,
@@ -2492,8 +2600,9 @@ layout settles, not before.
         difference between this chip's delay and the datasheet's -- -481 on
         2026-10-21, below -- and `first_tick_ms` says this chip's. The second
         sync's `rtc written` carries that `first_tick_ms`, and its `rtc landed`
-        a residual within ±12 ms -- this chip's delay varies 986-1,000 ms from
-        one start to the next (seen 2026-10-22, below). No learning
+        a small residual: observed -14 to +12 ms, with this chip's delay
+        varying 986–1,001 ms from one start to the next (extended run reviewed
+        2026-10-25, below). No learning
         (`learned=false`), or a residual far outside that, is the thing to
         report.
       - *The RTC chip itself*: its marking, read off the board (the chip
@@ -2548,8 +2657,11 @@ layout settles, not before.
         around a sync, and no `BSEC called late` at the write -- its spin is 30
         ms at most.
       - *The autumn change*, if the board runs through 2026-10-25 01:00 UTC:
-        the footer's next redraw after it shows the hour step, 03:59 -> 03:00
-        in Vilnius; the `synced` lines, in UTC, step nothing.
+        the footer's next redraw after it uses UTC+2 instead of UTC+3 in
+        Vilnius; the `synced` lines, in UTC, step nothing. An exact
+        `03:59 -> 03:00` on the glass requires redraws at those minutes;
+        the last-update footer does not tick by itself. See the October 25
+        review below for the observed redraw times.
       - Not provoked: `time refused` -- a server's time before 2026 or from
         2100 on -- which only a broken or unsynchronised server sends.
       **The first version on the board, 2026-10-21** (ELF `9fb8fd2b5...`, the
@@ -2701,8 +2813,20 @@ layout settles, not before.
       the card's `log/`, ten hourly syncs 22:37Z to 07:37Z): `drift_ppm` -17.2
       to -23.4, **mean -20.6** -- the first night's -20.8 again; every write on
       time (`rearms=0`), every landing within +-12 ms.
-      Still to see: a day of hourly samples, and another temperature; the cold
-      boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
+      **A day of samples and the autumn change, reviewed 2026-10-25**
+      ([card review](soak-2026-10-25.md), `b358b13`, 41 hours): 40 hourly
+      drift samples, **mean -20.7738 ppm, sample sd 1.9505**, range -25.706
+      to -17.514. The first landing is -489 ms with the datasheet default;
+      the next 40 land -14 to +12 ms, first-tick estimates 986–1,001 ms.
+      Writes start 0–1 ms late; four rearm once, all landings measured.
+      The final SNTP answer is at the copy's end, before its RTC cycle.
+      At October 25 01:00Z there is no SNTP answer or UTC/uptime jump; the
+      neighbouring answers at 00:53 and 01:53 each correct only 1 ms. The
+      EU offset conversion is internal and independent of SNTP; the first
+      next refresh is at 01:13Z, with no captured footer text. The day-long
+      powered drift check is satisfied; a temperature comparison, the cold
+      boot after `rtc_stop`, the chip's marking, an offline board transition
+      and the physical footer observation remain open. Whether the
       measured delay, about 995 ms, should replace the datasheet's 508 as the
       default, so that a boot's first write lands too, is the owner's (ADR
       0023's amendment, "Not decided here").
@@ -2848,6 +2972,15 @@ layout settles, not before.
       - *Not yet seen*: Wi-Fi gone for an hour (gone for three minutes, twice,
         2026-10-23, below); a full day's hourly lines and Home Assistant's
         long-term statistics.
+        **The full day seen in the 2026-10-25 review**
+        ([card review](soak-2026-10-25.md)): October 24's 24 hourly reports
+        total 1,603 state messages, 1,289 of them heartbeats, no session loss
+        or refusal. The latest `b358b13` boot runs 41 hours on one session:
+        2,663 states, 2,276 heartbeats, zero lost/refused. Ten HA birth
+        notices cause ten repeat discovery batches, with no reconnection.
+        The logs do not establish HA's long-term statistics; the hour-long
+        outage remains open. No further link-hold changes are motivated by
+        this stable run.
       **The test app, 2026-10-22** (the non-BSEC variant with the overlay, the
       owner's YAT logs of 23:20 and 23:29 local):
       - *The first run, one failure*: `connected within
