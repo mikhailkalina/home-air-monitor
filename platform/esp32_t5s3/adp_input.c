@@ -394,6 +394,22 @@ void adp_input_status(adp_input_t *a, adp_input_status_t *out)
     out->stack_free_min_bytes = a->stack_free_min_bytes;
 }
 
+void adp_input_health(adp_input_t *a, adp_input_health_t *out)
+{
+    a->health.init_done = a->init_done;
+    if (a->lock != NULL && xSemaphoreTake((SemaphoreHandle_t)a->lock, 0) == pdTRUE) {
+        const gt911_t *dev = gt911_input_device(&a->gt);
+        a->health.ready = gt911_input_ready(&a->gt);
+        a->health.asleep = dev->asleep;
+        a->health.read_errors = gt911_input_stats(&a->gt)->read_errors;
+        if (dev->found) {
+            a->health.address = gt911_info(dev)->address;
+        }
+        (void)xSemaphoreGive((SemaphoreHandle_t)a->lock);
+    }
+    *out = a->health;
+}
+
 void adp_input_deinit(adp_input_t *a)
 {
     if (a->lock != NULL) {

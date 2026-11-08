@@ -126,7 +126,7 @@ static screen_inputs_t screen_inputs(const event_loop_state_t *s, uint64_t now_m
     in.zone = s->deps.zone;
     in.sensors = s->deps.sensors;
     if (s->deps.facts != NULL) {
-        s->deps.facts(s->deps.facts_ctx, &in.recorder, &in.clock_source);
+        s->deps.facts(s->deps.facts_ctx, &in);
     }
     in.network = (s->deps.reporter != NULL) ? &s->network : NULL;
     return in;

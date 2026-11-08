@@ -97,3 +97,57 @@ bool wall_clock_believable_ms(uint64_t unix_ms, uint64_t earliest_ms)
 {
     return unix_ms >= earliest_ms && unix_ms < WALL_CLOCK_LATEST_MS;
 }
+
+// --- the RTC's health ---------------------------------------------------------------
+
+void wall_clock_health_read(wall_clock_rtc_health_t *h, const wall_clock_rtc_t *rtc)
+{
+    if (rtc->chip.verdict == PCF8563_TIME_NOT_ANSWERING) {
+        h->condition = WALL_CLOCK_RTC_NOT_ANSWERING;
+    } else {
+        h->condition = rtc->usable ? WALL_CLOCK_RTC_HOLDS_TIME : WALL_CLOCK_RTC_NO_TIME;
+    }
+}
+
+// A failed transfer counted; a refused address marks the chip gone, any other
+// failure leaves what the last one found.
+static void health_failed(wall_clock_rtc_health_t *h, hal_status_t st)
+{
+    h->failures = h->failures + 1u;
+    if (st == HAL_ERR_NOT_FOUND) {
+        h->condition = WALL_CLOCK_RTC_NOT_ANSWERING;
+    }
+}
+
+void wall_clock_health_written(wall_clock_rtc_health_t *h, hal_status_t st)
+{
+    if (st == HAL_OK) {
+        h->condition = WALL_CLOCK_RTC_HOLDS_TIME;
+    } else {
+        health_failed(h, st);
+    }
+}
+
+void wall_clock_health_stopped(wall_clock_rtc_health_t *h, hal_status_t st)
+{
+    if (st == HAL_OK) {
+        h->condition = WALL_CLOCK_RTC_NO_TIME;
+    } else {
+        health_failed(h, st);
+    }
+}
+
+wall_clock_rtc_condition_t wall_clock_health_condition(const wall_clock_rtc_health_t *h)
+{
+    switch ((wall_clock_rtc_condition_t)h->condition) {
+        case WALL_CLOCK_RTC_HOLDS_TIME:
+            return WALL_CLOCK_RTC_HOLDS_TIME;
+        case WALL_CLOCK_RTC_NO_TIME:
+            return WALL_CLOCK_RTC_NO_TIME;
+        case WALL_CLOCK_RTC_NOT_ANSWERING:
+            return WALL_CLOCK_RTC_NOT_ANSWERING;
+        case WALL_CLOCK_RTC_NOT_READ:
+            break;
+    }
+    return WALL_CLOCK_RTC_NOT_READ;
+}

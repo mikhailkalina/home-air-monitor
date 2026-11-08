@@ -74,11 +74,21 @@ typedef struct {
     int task_core;
 } adp_input_config_t;
 
+// What the diagnostics screen shows of the controller (adp_input_health()).
+typedef struct {
+    bool init_done;  // the task's first init has run
+    bool ready;      // found and answering: gt911_input_ready()
+    bool asleep;     // put to sleep (touch_sleep)
+    uint32_t read_errors;
+    uint8_t address;  // the one that answered; 0 before one did
+} adp_input_health_t;
+
 typedef struct {
     port_input_t port;
     gt911_input_t gt;
     gt911_int_line_t line;
     adp_input_config_t cfg;
+    adp_input_health_t health;  // adp_input_health()'s last, the caller's alone
 
     void *queue;  // QueueHandle_t of input_event_t
     void *lock;   // SemaphoreHandle_t: the controller, the touch task against the console
@@ -133,6 +143,12 @@ typedef struct {
 } adp_input_status_t;
 
 void adp_input_status(adp_input_t *a, adp_input_status_t *out);
+
+// The controller as the touch task last left it, for the diagnostics screen.
+// Never waits, for the event loop calls it: the task holds the lock through a
+// read and through a search for the controller, tens of milliseconds, and a
+// call that finds it taken returns what the last call read. One caller.
+void adp_input_health(adp_input_t *a, adp_input_health_t *out);
 
 // The interrupt off, the task stopped, the queue gone: for the test app,
 // whose cases each bring their own bus up and down. The controller is left

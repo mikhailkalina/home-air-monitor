@@ -5,15 +5,22 @@
 //
 //   normal   both sensors running, every reading fresh, BSEC's IAQ rated
 //            high, the clock set from the RTC, recording on, the MQTT
-//            session up over the Wi-Fi
+//            session up over the Wi-Fi; the touch controller at 0x5D, the
+//            RTC drifting -20.8 ppm, a cell at 74 %
 //   trouble  the BME68x failing and restarted twice, its readings in error
 //            or taken over by the SCD41, the clock not set, no card, the
 //            Wi-Fi being joined again, no session, refusals, the last
-//            message from the evening before
-//   no_telemetry  the normal device without telemetry, as the board is
-//            until its Wi-Fi adapter lands: both network lines "off"
+//            message from the evening before; the touch controller missing
+//            after three failed reads, the RTC with no time, the gauge
+//            silent
+//   no_telemetry  the normal device without telemetry, as a board without
+//            a network in its image is: both network lines "off", the RTC's
+//            drift never measured, USB with no cell -- no percentage, the
+//            supply's millivolts
 //
-// (docs/adr/0031-the-network-on-the-screen.md for the network's lines.)
+// (docs/adr/0031-the-network-on-the-screen.md for the network's lines,
+// docs/adr/0041-touch-rtc-and-battery-on-the-diagnostics-screen.md for the
+// devices and the battery.)
 //
 // Run with UPDATE_GOLDEN=1 to adopt an intentional rendering change:
 //   UPDATE_GOLDEN=1 ./build/host-debug/tests/golden/test_golden_screen_diagnostics
@@ -109,11 +116,15 @@ static reporter_status_t online(void)
     return n;
 }
 
+#define BATTERY_SOURCE_ID 3u
+
 static void normal(void)
 {
     two_sources_running();
     air_reading_t r = fresh();
     r.link = LINK_ONLINE;
+    r.battery_percent = measurement_ok(74.0f, TS_MS, BATTERY_SOURCE_ID);
+    r.battery_mv = measurement_ok(3976.0f, TS_MS, BATTERY_SOURCE_ID);
     const reporter_status_t n = online();
     const diag_facts_t f = {
         .reading = &r,
@@ -123,6 +134,8 @@ static void normal(void)
         .network = &n,
         .now_ms = NOW_MS,
         .zone = &k_vilnius_summer,
+        .touch = {.state = DIAG_DEVICE_RUNNING, .failures = 0u, .address = 0x5Du},
+        .rtc = {.state = DIAG_DEVICE_RUNNING, .drift_known = true, .drift_ppm = -20.8f},
     };
     render_and_check(&f, "screen_diagnostics_normal");
 }
@@ -130,7 +143,9 @@ static void normal(void)
 static void no_telemetry(void)
 {
     two_sources_running();
-    const air_reading_t r = fresh();
+    air_reading_t r = fresh();
+    r.battery_percent = measurement_status(VAL_UNAVAILABLE, TS_MS, BATTERY_SOURCE_ID);
+    r.battery_mv = measurement_ok(4612.0f, TS_MS, BATTERY_SOURCE_ID);
     const diag_facts_t f = {
         .reading = &r,
         .sensors = &g_mgr,
@@ -139,6 +154,8 @@ static void no_telemetry(void)
         .network = NULL,
         .now_ms = NOW_MS,
         .zone = &k_vilnius_summer,
+        .touch = {.state = DIAG_DEVICE_RUNNING, .failures = 0u, .address = 0x5Du},
+        .rtc = {.state = DIAG_DEVICE_RUNNING},
     };
     render_and_check(&f, "screen_diagnostics_no_telemetry");
 }
@@ -169,6 +186,8 @@ static void trouble(void)
     n.state = REPORTER_OFFLINE;
     n.refusals = 3u;
     n.last_published_ms = NOW_MS - 75000u;
+    r.battery_percent = measurement_status(VAL_ERROR, TS_MS, BATTERY_SOURCE_ID);
+    r.battery_mv = measurement_status(VAL_ERROR, TS_MS, BATTERY_SOURCE_ID);
     const diag_facts_t f = {
         .reading = &r,
         .sensors = &g_mgr,
@@ -177,6 +196,8 @@ static void trouble(void)
         .network = &n,
         .now_ms = NOW_MS,
         .zone = &k_vilnius_summer,
+        .touch = {.state = DIAG_DEVICE_MISSING, .failures = 3u, .address = 0u},
+        .rtc = {.state = DIAG_DEVICE_NO_TIME},
     };
     render_and_check(&f, "screen_diagnostics_trouble");
 }

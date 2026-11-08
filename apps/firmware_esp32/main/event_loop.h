@@ -82,9 +82,12 @@ typedef void (*event_loop_reading_fn)(void *ctx, const sensor_manager_t *sensors
                                       const air_reading_t *reading, uint64_t now_ms);
 
 // What the diagnostics screen shows that only the composition knows: the
-// recorder's state, and where the wall clock came from (a word, or NULL).
-typedef void (*event_loop_facts_fn)(void *ctx, diag_recorder_t *recorder,
-                                    const char **clock_source);
+// recorder's state, where the wall clock came from (a word, or NULL), and the
+// devices beside the sensors -- the touch controller, the RTC
+// (docs/adr/0041-touch-rtc-and-battery-on-the-diagnostics-screen.md). Fills
+// those fields of `in`, the rest being the pump's. On the pump's task; must
+// not wait.
+typedef void (*event_loop_facts_fn)(void *ctx, screen_inputs_t *in);
 
 // Called once, on the pump's task, when the first redraw is over and the
 // panel is no longer being driven. Must not wait.

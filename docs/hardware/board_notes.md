@@ -3436,3 +3436,25 @@ layout settles, not before.
       Still to see: an older image back into the other slot; a copy
       cut short (`verdict=invalid`); `fw` after an update; the version in Home
       Assistant after one; the install's stack.
+- [ ] **Touch, RTC and battery on the diagnostics screen (ADR 0041).** Built
+      2026-11-08, verified on the host only: under the two sensor sources, a
+      `touch` and an `rtc` line in their columns, and the battery at the last
+      line's left; the clock moved to the title's middle. What to see:
+      - *A normal boot*: `touch running failures 0 at 0x5D` (or `at 0x14`, the
+        latch's other address), `rtc running failures 0 drift -` until the
+        second hourly sync, then about `drift -20.8 ppm`; `Battery N % NNNN mV`
+        on a cell, `Battery n/a NNNN mV` on USB alone (about 4,600, the open
+        item "The battery gauge on the board").
+      - *`touch_sleep`* at the console: the line says `asleep` (grey) at the
+        next redraw; `touch_wake`: `running`.
+      - *`rtc_stop`*: `rtc no time` in black; the network's next write, or
+        `time_set`, brings `running` back.
+      - *A boot after a power cut long enough for the RTC to lose its time*: `rtc
+        no time` until SNTP writes it -- and, if it lost minutes with VL clear as
+        on 2026-10-28, `running` with nothing wrong on the screen: only the
+        network's comparison in the log says so.
+      - *The redraws*: none for the millivolts alone while the screen is up;
+        one for a percentage step, a device's change, the drift's hourly
+        update -- partial, as ADR 0038's content redraws are.
+      - *The event loop's stack* (`event_loop: stack low-water mark`) against
+        3,316 bytes free, now with the devices' facts built on it.

@@ -493,11 +493,13 @@ static void bring_up_i2c(adp_i2c_t *i2c, const port_clock_t *clock, const port_l
 // screen shows. The RTC holds UTC. Logged either way, with the chip's own
 // time, so a boot log says what the clock was set from.
 static wall_clock_source_t set_clock_from_rtc(adp_i2c_t *i2c, adp_clock_t *clock,
-                                              const port_log_t *log)
+                                              const port_log_t *log,
+                                              wall_clock_rtc_health_t *health)
 {
     const bool kept = clock->port.wall_ms(&clock->port) != 0u;
     wall_clock_rtc_t rtc;
     wall_clock_read_rtc(adp_i2c_port(i2c), BOARD_RTC_I2C_ADDRESS, ADP_CLOCK_WALL_EARLIEST_MS, &rtc);
+    wall_clock_health_read(health, &rtc);
 
     wall_clock_source_t source = kept ? WALL_CLOCK_SOURCE_KEPT : WALL_CLOCK_SOURCE_NONE;
     if (rtc.usable && adp_clock_set_wall_ms(clock, rtc.unix_ms) == HAL_OK) {
@@ -644,7 +646,8 @@ static port_net_t *start_network(adp_net_t *net, const char *hostname, const por
 // nothing here is called, and the linker drops SNTP with the rest of the
 // stack. True when the event loop is to step it.
 static bool start_net_time(port_net_t *net, adp_i2c_t *i2c, const port_clock_t *clock,
-                           const port_log_t *log, wall_clock_source_t *wall_source)
+                           const port_log_t *log, wall_clock_source_t *wall_source,
+                           wall_clock_rtc_health_t *rtc_health)
 {
     if (CONFIG_HAC_WIFI_SSID[0] == '\0' || net == NULL) {
         return false;
@@ -655,6 +658,7 @@ static bool start_net_time(port_net_t *net, adp_i2c_t *i2c, const port_clock_t *
         .clock = clock,
         .log = log,
         .wall_source = wall_source,
+        .rtc_health = rtc_health,
         .server = CONFIG_HAC_SNTP_SERVER,
         .wake = event_loop_post_time,
     };
@@ -785,16 +789,78 @@ static const char *clock_word(wall_clock_source_t source)
     return NULL;
 }
 
+// What screen_facts() reads.
+typedef struct {
+    const wall_clock_source_t *wall_source;
+    const wall_clock_rtc_health_t *rtc_health;
+    adp_input_t *touch;
+    bool net_time;  // the event loop steps net_time: the RTC's drift is measured
+} screen_facts_ctx_t;
+
+// The touch controller as the diagnostics screen shows it (docs/adr/0041): the
+// address only while it answers -- a controller lost is looked for again at
+// both (ADR 0025), and the one it left is no longer where it is.
+static diag_touch_t touch_facts(adp_input_t *touch)
+{
+    adp_input_health_t h;
+    adp_input_health(touch, &h);
+    diag_touch_t t = {.state = DIAG_DEVICE_STARTING, .failures = h.read_errors, .address = 0u};
+    if (!h.init_done) {
+        return t;
+    }
+    if (h.asleep) {
+        t.state = DIAG_DEVICE_ASLEEP;
+    } else if (h.ready) {
+        t.state = DIAG_DEVICE_RUNNING;
+        t.address = h.address;
+    } else {
+        t.state = DIAG_DEVICE_MISSING;
+    }
+    return t;
+}
+
+// The RTC as the diagnostics screen shows it: the boot's verdict, then every
+// write's (wall_clock.h), and the drift net_time measured at the last answer.
+static diag_rtc_t rtc_facts(const screen_facts_ctx_t *c)
+{
+    diag_rtc_t r = {.state = DIAG_DEVICE_STARTING, .failures = c->rtc_health->failures};
+    switch (wall_clock_health_condition(c->rtc_health)) {
+        case WALL_CLOCK_RTC_HOLDS_TIME:
+            r.state = DIAG_DEVICE_RUNNING;
+            break;
+        case WALL_CLOCK_RTC_NO_TIME:
+            r.state = DIAG_DEVICE_NO_TIME;
+            break;
+        case WALL_CLOCK_RTC_NOT_ANSWERING:
+            r.state = DIAG_DEVICE_MISSING;
+            break;
+        case WALL_CLOCK_RTC_NOT_READ:
+            break;
+    }
+    // The constant first, as for the step: without a network net_time is not
+    // referenced at all.
+    if (CONFIG_HAC_WIFI_SSID[0] != '\0' && c->net_time) {
+        net_time_status_t st;
+        net_time_status(&st);
+        r.drift_known = st.drift_known;
+        r.drift_ppm = st.drift_ppm;
+    }
+    return r;
+}
+
 // event_loop.h's facts hook: what the diagnostics screen shows that only the
 // composition knows. Read on the event loop's task; the card's task and
-// the console write them, a word each, and net_time_step() on this task.
-static void screen_facts(void *ctx, diag_recorder_t *recorder, const char **clock_source)
+// the console write them, a word each, net_time_step() on this task, and the
+// touch task the controller's, read without waiting for its lock.
+static void screen_facts(void *ctx, screen_inputs_t *in)
 {
-    const wall_clock_source_t *wall_source = (const wall_clock_source_t *)ctx;
+    const screen_facts_ctx_t *c = (const screen_facts_ctx_t *)ctx;
     recorder_state_t state = RECORDER_WAITING;
-    recorder->present = card_writer_recorder_state(&state);
-    recorder->state = state;
-    *clock_source = clock_word(*wall_source);
+    in->recorder.present = card_writer_recorder_state(&state);
+    in->recorder.state = state;
+    in->clock_source = clock_word(*c->wall_source);
+    in->touch = touch_facts(c->touch);
+    in->rtc = rtc_facts(c);
 }
 
 // The board's two sensors, set up on the bus and handed to the sensor
@@ -1087,6 +1153,7 @@ void app_main(void)
     static reading_hook_ctx_t s_hook;
     static time_zone_t s_zone;
     static wall_clock_source_t s_wall_source;
+    static wall_clock_rtc_health_t s_rtc_health;  // the boot's verdict, then every write's
     static adp_sd_t s_sd;
     static adp_input_t s_touch;
     static screen_controller_t s_screens;
@@ -1135,7 +1202,7 @@ void app_main(void)
     board_power_switched_3v3_on(log);  // what EPDiy's init does for the sensors otherwise
     bring_up_i2c(&s_i2c, clock, log);  // after the rail: see bring_up_i2c()
     log_tee_hold(false);
-    s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
+    s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log, &s_rtc_health);
     start_touch(&s_touch, &s_i2c, clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
@@ -1152,7 +1219,7 @@ void app_main(void)
         adp_display_init(&s_display, BOARD_EPD_WIDTH, BOARD_EPD_HEIGHT, log);
     bring_up_i2c(&s_i2c, clock, log);  // after the display: see bring_up_i2c()
     log_tee_hold(false);
-    s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log);
+    s_wall_source = set_clock_from_rtc(&s_i2c, &s_clock, log, &s_rtc_health);
     start_touch(&s_touch, &s_i2c, clock, log);
     if (display_status != HAL_OK) {
         const log_field_t fields[] = {log_i64("status", (int64_t)display_status)};
@@ -1185,7 +1252,7 @@ void app_main(void)
     // After the rail, the log's release and touch; the radio itself
     // waits for the first frame (start_radio()).
     port_net_t *net = start_network(&s_net, s_device_id, clock, log);
-    const bool net_time = start_net_time(net, &s_i2c, clock, log, &s_wall_source);
+    const bool net_time = start_net_time(net, &s_i2c, clock, log, &s_wall_source, &s_rtc_health);
 
     const update_policy_config_t cfg = update_policy_config_default();
     const update_policy_limits_t limits = update_policy_limits_from_display(display);
@@ -1219,6 +1286,11 @@ void app_main(void)
     // has held for a minute.
     const link_hold_config_t link_cfg = link_hold_config_default();
     link_hold_init(&s_link, &link_cfg);
+    static screen_facts_ctx_t s_facts_ctx;  // static: app_main's frame is its stack's deepest
+    s_facts_ctx.wall_source = &s_wall_source;
+    s_facts_ctx.rtc_health = &s_rtc_health;
+    s_facts_ctx.touch = &s_touch;
+    s_facts_ctx.net_time = net_time;
 
     event_loop_deps_t deps = {
         .clock = clock,
@@ -1234,7 +1306,7 @@ void app_main(void)
         .input = adp_input_port(&s_touch),
         .screens = &s_screens,
         .facts = screen_facts,
-        .facts_ctx = &s_wall_source,
+        .facts_ctx = &s_facts_ctx,
         .reporter = reporter,  // NULL without a broker: no telemetry
         .link = &s_link,
         .after_first_frame = after_first_frame,
@@ -1257,6 +1329,7 @@ void app_main(void)
         .zone = &s_zone,
         .zone_name = LOCAL_ZONE_NAME,
         .wall_source = &s_wall_source,
+        .rtc_health = &s_rtc_health,
         .touch = &s_touch,
         .net = (net != NULL) ? &s_net : NULL,
         .mqtt = s_console_mqtt,

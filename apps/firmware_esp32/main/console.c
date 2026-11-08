@@ -310,6 +310,7 @@ static int cmd_time_set(void *context, int argc, char **argv)
 
     const hal_status_t rtc =
         wall_clock_write_rtc(adp_i2c_port(s_deps.bus), BOARD_RTC_I2C_ADDRESS, unix_ms);
+    wall_clock_health_written(s_deps.rtc_health, rtc);
     // Written to the second, not to its start: no drift from the last mark.
     net_time_forget_rtc_mark();
     const hal_status_t system = adp_clock_set_wall_ms(s_deps.clock, unix_ms);
@@ -350,6 +351,7 @@ static int cmd_rtc_stop(void *context, int argc, char **argv)
     (void)argc;
     (void)argv;
     const hal_status_t st = pcf8563_stop(adp_i2c_port(s_deps.bus), BOARD_RTC_I2C_ADDRESS);
+    wall_clock_health_stopped(s_deps.rtc_health, st);
     net_time_forget_rtc_mark();
     printf("TIME_RTC_STOP %s: the RTC stands still -- a boot now finds no time in it; "
            "time_set or the network's next answer starts it again\n",

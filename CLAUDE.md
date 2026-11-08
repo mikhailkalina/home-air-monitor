@@ -916,6 +916,18 @@ ADC2 never refused beside Wi-Fi and MQTT; with USB it reads the charger's voltag
 days (`board_notes.md`): sixteen unattended without a crash, a watchdog or a Wi-Fi loss, the RTC's
 drift -20.85 ppm, and one power cut that cost the RTC 24 minutes with VL clear.
 
+On the same branch (ADR 0041), at the owner's request: the diagnostics screen shows the devices
+beside the sensors that no sensor manager drives -- a `touch` and an `rtc` line under the sources,
+in their columns: state (`starting`, `running`, `asleep`, `missing`, `no time`), failures since
+boot, and the touch controller's bus address or the RTC's drift against SNTP. The core keeps the
+words (`diag_touch_t`, `diag_rtc_t` in `diag_facts_t`); the board's composition the facts --
+`adp_input_health()`, which never waits for the controller's lock, and `wall_clock.c`'s RTC health,
+the boot's verdict and every write's (`time_set`, `rtc_stop`, SNTP's). The battery took the last
+line's left, `Battery 74 % 3976 mV`, the millivolts as of the drawing like the signal; the clock
+moved to the title's middle, as the three do not fit one line. The simulator has neither device and
+draws no line for them. Verified on the host; the firmware, its BSEC variant, the test app and the
+slideshow build. Not yet seen on the board.
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

@@ -144,7 +144,8 @@ home-air-monitor/
 │   │   ├── view_model.h/.c         # air_reading_t → what actually gets drawn
 │   │   ├── screen_home.c
 │   │   ├── diagnostics_view.h/.c   # the diagnostics screen's view model (ADR 0025)
-│   │   ├── screen_diagnostics.c    # sources, readings, network, clock, recorder; a tap away
+│   │   ├── screen_diagnostics.c    # sources, touch and RTC, readings, network, clock,
+│   │   │                           #   battery, recorder; a tap away (ADR 0041)
 │   │   ├── screen_firmware_update.h/.c  # modal progress, stages and byte counts (ADR 0039)
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c

@@ -112,6 +112,8 @@ static diag_facts_t facts_of(const screen_inputs_t *in)
     f.network = in->network;
     f.now_ms = in->now_ms;
     f.zone = in->zone;
+    f.touch = in->touch;
+    f.rtc = in->rtc;
     return f;
 }
 

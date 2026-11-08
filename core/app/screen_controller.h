@@ -90,6 +90,9 @@ typedef struct {
     // The reporter and its network (reporter_status()), or NULL without
     // telemetry; the held link the bar shows is the reading's.
     const reporter_status_t *network;
+    // The devices beside the sensors (diagnostics_view.h); zero: none.
+    diag_touch_t touch;
+    diag_rtc_t rtc;
 } screen_inputs_t;
 
 // What a redraw that reached the panel carried.
