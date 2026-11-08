@@ -232,7 +232,11 @@ class Broker:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
-                fail(f"the broker exited at once; its log is {log}")
+                # Since Ubuntu 26.04 AppArmor confines /usr/sbin/mosquitto to
+                # /etc/mosquitto (tests/support/mqtt_test_broker.c says more).
+                fail(f"the broker exited at once; its log is {log} -- if it said \"Unable "
+                     "to open config file\", AppArmor confines it: allow this directory in "
+                     "/etc/apparmor.d/local/mosquitto, as .github/workflows/checks.yml does")
             try:
                 socket.create_connection(("127.0.0.1", self.port), timeout=0.5).close()
                 return
