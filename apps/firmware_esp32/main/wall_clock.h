@@ -79,6 +79,42 @@ bool wall_clock_believable_ms(uint64_t unix_ms, uint64_t earliest_ms);
 // outside its 2000-2099, `out` then untouched.
 bool wall_clock_chip_time(uint64_t unix_ms, pcf8563_time_t *out);
 
+// --- the RTC's health, for the diagnostics screen -------------------------------
+//
+// The boot's verdict on the RTC, then every write's -- time_set and rtc_stop at
+// the console, the network's hourly one on the event loop -- and how many of
+// those failed (docs/adr/0041-touch-rtc-and-battery-on-the-diagnostics-screen.md).
+// Each field is a word, written by those two tasks and read by the event loop
+// without a lock: a read between two writes shows one of them until the next
+// redraw.
+
+typedef enum {
+    WALL_CLOCK_RTC_NOT_READ = 0,
+    WALL_CLOCK_RTC_HOLDS_TIME,  // answering, with a time to use
+    // Answering, with no time to use: VL set, stopped, undecodable, or a year
+    // no clock this firmware set holds.
+    WALL_CLOCK_RTC_NO_TIME,
+    WALL_CLOCK_RTC_NOT_ANSWERING,
+} wall_clock_rtc_condition_t;
+
+typedef struct {
+    volatile uint32_t condition;  // wall_clock_rtc_condition_t
+    volatile uint32_t failures;   // writes and stops that failed since boot
+} wall_clock_rtc_health_t;
+
+// The boot's read (wall_clock_read_rtc()).
+void wall_clock_health_read(wall_clock_rtc_health_t *h, const wall_clock_rtc_t *rtc);
+
+// A write of the time, which starts the clock and clears VL: HAL_OK holds a
+// time; HAL_ERR_NOT_FOUND, the address refused, does not answer; any failure
+// counts.
+void wall_clock_health_written(wall_clock_rtc_health_t *h, hal_status_t st);
+
+// The console's rtc_stop: HAL_OK leaves no time to use; failures as a write's.
+void wall_clock_health_stopped(wall_clock_rtc_health_t *h, hal_status_t st);
+
+wall_clock_rtc_condition_t wall_clock_health_condition(const wall_clock_rtc_health_t *h);
+
 #ifdef __cplusplus
 }
 #endif

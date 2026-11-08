@@ -126,7 +126,7 @@ static screen_inputs_t screen_inputs(const event_loop_state_t *s, uint64_t now_m
     in.zone = s->deps.zone;
     in.sensors = s->deps.sensors;
     if (s->deps.facts != NULL) {
-        s->deps.facts(s->deps.facts_ctx, &in.recorder, &in.clock_source);
+        s->deps.facts(s->deps.facts_ctx, &in);
     }
     in.network = (s->deps.reporter != NULL) ? &s->network : NULL;
     return in;
@@ -460,6 +460,9 @@ static void pump_task(void *arg)
         const uint64_t now_ms = clock->now_ms(clock);
         s->reading.wall_time_ms = clock->wall_ms(clock);
         s->reading.uptime_s = (uint32_t)(now_ms / 1000u);
+        if (s->deps.battery != NULL) {
+            s->deps.battery(s->deps.battery_ctx, &s->reading, now_ms);
+        }
         air_reading_apply_age(&s->reading, now_ms, s->deps.sensors->cfg.max_age_ms);
         if (s->deps.on_reading != NULL) {
             s->deps.on_reading(s->deps.on_reading_ctx, s->deps.sensors, &s->reading, now_ms);

@@ -2,6 +2,7 @@
 
 #include "ui/diagnostics_view.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "text/text_append.h"
@@ -141,6 +142,112 @@ static const char *recorder_word(recorder_state_t state)
     return "failed";
 }
 
+// --- the devices beside the sensors --------------------------------------------------
+
+const char *diag_view_device_state(diag_device_state_t state)
+{
+    switch (state) {
+        case DIAG_DEVICE_STARTING:
+            return "starting";
+        case DIAG_DEVICE_RUNNING:
+            return "running";
+        case DIAG_DEVICE_ASLEEP:
+            return "asleep";
+        case DIAG_DEVICE_MISSING:
+            return "missing";
+        case DIAG_DEVICE_NO_TIME:
+            return "no time";
+        case DIAG_DEVICE_NONE:
+            break;
+    }
+    return NULL;
+}
+
+// The next device's line, or NULL when there is no room: never past
+// DIAG_DEVICE_COUNT.
+static diag_device_view_t *add_device(diag_view_t *v, const char *name, diag_device_state_t state,
+                                      uint32_t failures)
+{
+    const char *word = diag_view_device_state(state);
+    if (word == NULL || v->device_count >= DIAG_DEVICE_COUNT) {
+        return NULL;
+    }
+    diag_device_view_t *d = &v->devices[v->device_count++];
+    d->name = name;
+    d->state = word;
+    d->trouble = state == DIAG_DEVICE_MISSING || state == DIAG_DEVICE_NO_TIME;
+    count_text(d->failures, sizeof(d->failures), failures);
+    return d;
+}
+
+// "at 0x5D".
+static void address_detail(char *dst, size_t cap, uint8_t address)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t len = text_append_str(dst, cap, 0u, "at 0x");
+    len = text_append_char(dst, cap, len, hex[(address >> 4) & 0x0Fu]);
+    (void)text_append_char(dst, cap, len, hex[address & 0x0Fu]);
+}
+
+// "drift -20.8 ppm", "drift 3.1 ppm", "drift -150 ppm", "drift -999 ppm";
+// "drift -" before it is known (DIAG_DRIFT_TENTHS_MAX_PPM). No sign for a
+// clock that gains: "+" would not fit the column beside 99.9.
+static void drift_detail(char *dst, size_t cap, const diag_rtc_t *rtc)
+{
+    size_t len = text_append_str(dst, cap, 0u, "drift ");
+    const float ppm = rtc->drift_ppm;
+    if (!rtc->drift_known || !text_fixed_representable((double)ppm, 1u)) {
+        (void)text_append_str(dst, cap, len, "-");
+        return;
+    }
+    // Decided on the tenths it would show, so 99.96 reads "100", not "100.0".
+    const bool tenths = fabsf(ppm) < DIAG_DRIFT_TENTHS_MAX_PPM + 0.05f;
+    float shown = ppm;
+    if (fabsf(shown) > DIAG_DRIFT_WHOLE_MAX_PPM) {
+        shown = (shown < 0.0f) ? -DIAG_DRIFT_WHOLE_MAX_PPM : DIAG_DRIFT_WHOLE_MAX_PPM;
+    }
+    const unsigned decimals = tenths ? 1u : 0u;
+    if (fabsf(shown) < (tenths ? 0.05f : 0.5f)) {
+        shown = 0.0f;  // never "-0.0"
+    }
+    len = text_append_fixed(dst, cap, len, (double)shown, decimals);
+    (void)text_append_str(dst, cap, len, " ppm");
+}
+
+static void build_devices(diag_view_t *v, const diag_facts_t *f)
+{
+    diag_device_view_t *touch = add_device(v, "touch", f->touch.state, f->touch.failures);
+    if (touch != NULL && f->touch.address != 0u) {
+        address_detail(touch->detail, sizeof(touch->detail), f->touch.address);
+    }
+    diag_device_view_t *rtc = add_device(v, "rtc", f->rtc.state, f->rtc.failures);
+    if (rtc != NULL) {
+        drift_detail(rtc->detail, sizeof(rtc->detail), &f->rtc);
+    }
+}
+
+// --- the battery ---------------------------------------------------------------------
+
+static void build_battery(diag_view_t *v, const air_reading_t *r)
+{
+    size_t len = text_append_str(v->battery, sizeof(v->battery), 0u, "Battery ");
+    const measurement_f32_t *pct = &r->battery_percent;
+    if (pct->status == VAL_OK && text_fixed_representable((double)pct->value, 0u)) {
+        len = text_append_fixed(v->battery, sizeof(v->battery), len, (double)pct->value, 0u);
+        (void)text_append_str(v->battery, sizeof(v->battery), len, " %");
+    } else {
+        (void)text_append_str(v->battery, sizeof(v->battery), len,
+                              status_word((pct->status == VAL_OK) ? VAL_ERROR : pct->status));
+    }
+    v->battery_trouble = pct->status == VAL_ERROR;
+
+    const measurement_f32_t *mv = &r->battery_mv;
+    if (mv->status == VAL_OK && text_fixed_representable((double)mv->value, 0u)) {
+        len = text_append_fixed(v->battery_mv, sizeof(v->battery_mv), 0u, (double)mv->value, 0u);
+        (void)text_append_str(v->battery_mv, sizeof(v->battery_mv), len, " mV");
+    }
+}
+
 // --- the network --------------------------------------------------------------------
 
 static const char *wifi_word(net_state_t state)
@@ -261,6 +368,7 @@ void diag_view_build(diag_view_t *v, const diag_facts_t *facts)
             v->slot_count++;
         }
     }
+    build_devices(v, facts);
 
     build_field(&v->fields[DIAG_FIELD_CO2], "CO2", &r->co2_ppm, sensors);
     build_field(&v->fields[DIAG_FIELD_TEMPERATURE], "Temperature", &r->temperature_c, sensors);
@@ -289,6 +397,7 @@ void diag_view_build(diag_view_t *v, const diag_facts_t *facts)
                               facts->recorder.state == RECORDER_FAILED;
     }
 
+    build_battery(v, r);
     build_network(v, facts);
 }
 
@@ -307,15 +416,29 @@ bool diag_view_equal(const diag_view_t *a, const diag_view_t *b)
         !same_text(a->recorder_text, b->recorder_text)) {
         return false;
     }
-    // The network: all of it redraws but the signal, which is as of the
-    // drawing.
     if (a->network_present != b->network_present || !same_text(a->ssid, b->ssid) ||
         !same_text(a->wifi_state, b->wifi_state) || a->wifi_trouble != b->wifi_trouble ||
-        !same_text(a->address, b->address) || !same_text(a->broker_state, b->broker_state) ||
-        a->broker_trouble != b->broker_trouble || !same_text(a->sent, b->sent) ||
-        !same_text(a->last, b->last) || !same_text(a->refused, b->refused) ||
-        a->refused_trouble != b->refused_trouble) {
+        !same_text(a->rssi, b->rssi) || !same_text(a->address, b->address) ||
+        !same_text(a->broker_state, b->broker_state) || a->broker_trouble != b->broker_trouble ||
+        !same_text(a->sent, b->sent) || !same_text(a->last, b->last) ||
+        !same_text(a->refused, b->refused) || a->refused_trouble != b->refused_trouble) {
         return false;
+    }
+    if (!same_text(a->battery, b->battery) || a->battery_trouble != b->battery_trouble ||
+        !same_text(a->battery_mv, b->battery_mv)) {
+        return false;
+    }
+    if (a->device_count != b->device_count) {
+        return false;
+    }
+    for (size_t i = 0u; i < a->device_count; ++i) {
+        const diag_device_view_t *x = &a->devices[i];
+        const diag_device_view_t *y = &b->devices[i];
+        if (x->trouble != y->trouble || !same_text(x->name, y->name) ||
+            !same_text(x->state, y->state) || !same_text(x->failures, y->failures) ||
+            !same_text(x->detail, y->detail)) {
+            return false;
+        }
     }
     for (size_t i = 0u; i < a->slot_count; ++i) {
         const diag_slot_view_t *x = &a->slots[i];

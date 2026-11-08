@@ -123,6 +123,8 @@ typedef struct {
     // time task's after (net_time.h). The event loop reads it, a word, for
     // the diagnostics screen.
     wall_clock_source_t *wall_source;
+    // The RTC's health (wall_clock.h): time_set and rtc_stop report to it.
+    wall_clock_rtc_health_t *rtc_health;
     adp_input_t *touch;     // the console's touch, touch_sleep and touch_wake
     adp_net_t *net;         // the console's wifi; NULL without a network in this image
     adp_mqtt_t *mqtt;       // the console's mqtt; NULL without a broker in this image

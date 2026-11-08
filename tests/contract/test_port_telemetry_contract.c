@@ -282,7 +282,9 @@ static void the_suite_catches_each_broken_wrapper(void)
 #define BROKER_USER_ENV "HAC_TEST_MQTT_USER"
 #define BROKER_PASSWORD_ENV "HAC_MQTT_PASSWORD"
 
-#define WHY_MAX 256u
+// Room for the broker's log path (MQTT_TEST_BROKER_PATH_MAX) and the reason
+// around it, the AppArmor hint included (tests/support/mqtt_test_broker.c).
+#define WHY_MAX 1024u
 
 #if defined(HAC_SIM_MQTT)
 

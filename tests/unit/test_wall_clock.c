@@ -176,6 +176,64 @@ static void believable_times_are_the_firmwares_years(void)
     HAC_CHECK(wall_clock_believable_ms(SOME_TIME_MS, EARLIEST_MS));
 }
 
+// The RTC's health, for the diagnostics screen (docs/adr/0041): the boot's
+// read, then each write and stop, against the fake bus.
+static void the_rtcs_health_follows_the_read_and_every_write(void)
+{
+    // Not read yet.
+    wall_clock_rtc_health_t h;
+    memset(&h, 0, sizeof(h));
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NOT_READ);
+
+    // A boot that found VL set: no time; a write gives it one.
+    const uint8_t lost[PCF8563_READ_LEN] = {0x00u, 0x00u, 0x80u, 0x00u, 0x01u,
+                                            0x25u, 0x00u, 0x10u, 0x26u};
+    rig_t r;
+    rig_init(&r, lost);
+    wall_clock_rtc_t rtc = read_rtc(&r);
+    wall_clock_health_read(&h, &rtc);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NO_TIME);
+    wall_clock_health_written(
+        &h, wall_clock_write_rtc(adp_i2c_fake_port(&r.bus), RTC_ADDR, SOME_TIME_MS));
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_HOLDS_TIME);
+    HAC_CHECK_EQ_U64(h.failures, 0u);
+    // ... and it reads back so at the next boot.
+    rtc = read_rtc(&r);
+    wall_clock_health_read(&h, &rtc);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_HOLDS_TIME);
+
+    // rtc_stop: no time; a stop that failed on the bus counts and changes
+    // nothing else.
+    wall_clock_health_stopped(&h, HAL_OK);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NO_TIME);
+    wall_clock_health_stopped(&h, HAL_ERR_IO);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NO_TIME);
+    HAC_CHECK_EQ_U64(h.failures, 1u);
+
+    // A write the address refuses: not answering, counted; a write that
+    // fails otherwise leaves the condition.
+    wall_clock_health_written(&h, HAL_OK);
+    wall_clock_health_written(&h, HAL_ERR_TIMEOUT);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_HOLDS_TIME);
+    adp_i2c_fake_t empty;
+    adp_i2c_fake_init(&empty, NULL);
+    wall_clock_health_written(
+        &h, wall_clock_write_rtc(adp_i2c_fake_port(&empty), RTC_ADDR, SOME_TIME_MS));
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NOT_ANSWERING);
+    HAC_CHECK_EQ_U64(h.failures, 3u);
+
+    // A boot with no chip at all, and with one that holds an implausible year.
+    wall_clock_read_rtc(adp_i2c_fake_port(&empty), RTC_ADDR, EARLIEST_MS, &rtc);
+    wall_clock_health_read(&h, &rtc);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NOT_ANSWERING);
+    const uint8_t y2000[PCF8563_READ_LEN] = {0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+                                             0x01u, 0x06u, 0x01u, 0x00u};
+    rig_init(&r, y2000);
+    rtc = read_rtc(&r);
+    wall_clock_health_read(&h, &rtc);
+    HAC_CHECK(wall_clock_health_condition(&h) == WALL_CLOCK_RTC_NO_TIME);
+}
+
 int main(void)
 {
     HAC_RUN(a_valid_time_sets_the_clock);
@@ -186,5 +244,6 @@ int main(void)
     HAC_RUN(sources_have_names);
     HAC_RUN(a_time_becomes_the_chips);
     HAC_RUN(believable_times_are_the_firmwares_years);
+    HAC_RUN(the_rtcs_health_follows_the_read_and_every_write);
     return hac_test_summary();
 }

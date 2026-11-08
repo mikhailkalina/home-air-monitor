@@ -59,41 +59,66 @@ static void join(char *dst, size_t cap, const char *a, const char *b)
     dst[len] = '\0';
 }
 
-static void draw_title(framebuffer_t *fb)
+// The title, the clock in the middle of the panel, the hint at the right.
+static void draw_title(framebuffer_t *fb, const diag_view_t *v)
 {
     const font_t *font = &font_dejavu_sans_32;
     const int32_t right = (int32_t)fb->width - SCREEN_DIAG_MARGIN;
     (void)gfx_draw_text(fb, SCREEN_DIAG_MARGIN, SCREEN_DIAG_TITLE_BASELINE, font, "Diagnostics",
                         ink(fb, VM_INK_SECONDARY));
+    const int32_t clock_x = ((int32_t)fb->width - gfx_measure_text_ink(font, v->clock_text)) / 2;
+    (void)gfx_draw_text(fb, clock_x, SCREEN_DIAG_TITLE_BASELINE, font, v->clock_text,
+                        tone(fb, !v->clock_set));
     const char *hint = "tap to return";
     (void)gfx_draw_text(fb, right - gfx_measure_text_ink(font, hint), SCREEN_DIAG_TITLE_BASELINE,
                         font, hint, ink(fb, VM_INK_SECONDARY));
     draw_rule(fb, SCREEN_DIAG_TITLE_RULE_Y);
 }
 
+static bool is_zero(const char *count)
+{
+    return count[0] == '0' && count[1] == '\0';
+}
+
+// One line of the sources' section: the name, the state, the failures, and the
+// last column's text as it comes -- a source's restarts, a device's detail.
+static void draw_source_line(framebuffer_t *fb, size_t line, const char *name, const char *state,
+                             bool trouble, const char *failures, const char *last,
+                             bool last_trouble)
+{
+    const font_t *font = &font_dejavu_sans_32;
+    const int32_t y = SCREEN_DIAG_SLOTS_BASELINE + (int32_t)line * SCREEN_DIAG_PITCH;
+    char text[TEXT_MAX];
+
+    fit(text, sizeof(text), font, name,
+        SCREEN_DIAG_SLOT_STATE_X - SCREEN_DIAG_COLUMN_GAP - SCREEN_DIAG_SLOT_NAME_X);
+    (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_NAME_X, y, font, text, ink(fb, VM_INK_PRIMARY));
+    (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_STATE_X, y, font, state, tone(fb, trouble));
+    join(text, sizeof(text), "failures ", failures);
+    (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_FAILURES_X, y, font, text,
+                        tone(fb, !is_zero(failures)));
+    (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_RESTARTS_X, y, font, last, tone(fb, last_trouble));
+}
+
 static void draw_slots(framebuffer_t *fb, const diag_view_t *v)
 {
     const font_t *font = &font_dejavu_sans_32;
+    size_t line = 0u;
     if (v->slot_count == 0u) {
         (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_NAME_X, SCREEN_DIAG_SLOTS_BASELINE, font,
                             "no sensor sources", ink(fb, VM_INK_PRIMARY));
+        line = 1u;
     }
-    for (size_t i = 0u; i < v->slot_count && i < DIAG_MAX_SLOTS; ++i) {
+    for (size_t i = 0u; i < v->slot_count && line < SCREEN_DIAG_SOURCE_LINES; ++i, ++line) {
         const diag_slot_view_t *s = &v->slots[i];
-        const int32_t y = SCREEN_DIAG_SLOTS_BASELINE + (int32_t)i * SCREEN_DIAG_PITCH;
-        char text[TEXT_MAX];
-
-        fit(text, sizeof(text), font, s->name,
-            SCREEN_DIAG_SLOT_STATE_X - SCREEN_DIAG_COLUMN_GAP - SCREEN_DIAG_SLOT_NAME_X);
-        (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_NAME_X, y, font, text, ink(fb, VM_INK_PRIMARY));
-        (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_STATE_X, y, font, s->state, tone(fb, s->trouble));
-
-        const bool failed = !(s->failures[0] == '0' && s->failures[1] == '\0');
-        join(text, sizeof(text), "failures ", s->failures);
-        (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_FAILURES_X, y, font, text, tone(fb, failed));
-        const bool restarted = !(s->restarts[0] == '0' && s->restarts[1] == '\0');
-        join(text, sizeof(text), "restarts ", s->restarts);
-        (void)gfx_draw_text(fb, SCREEN_DIAG_SLOT_RESTARTS_X, y, font, text, tone(fb, restarted));
+        char restarts[TEXT_MAX];
+        join(restarts, sizeof(restarts), "restarts ", s->restarts);
+        draw_source_line(fb, line, s->name, s->state, s->trouble, s->failures, restarts,
+                         !is_zero(s->restarts));
+    }
+    for (size_t i = 0u; i < v->device_count && line < SCREEN_DIAG_SOURCE_LINES; ++i, ++line) {
+        const diag_device_view_t *d = &v->devices[i];
+        draw_source_line(fb, line, d->name, d->state, d->trouble, d->failures, d->detail, false);
     }
     draw_rule(fb, SCREEN_DIAG_SLOTS_RULE_Y);
 }
@@ -163,12 +188,18 @@ static void draw_network(framebuffer_t *fb, const diag_view_t *v)
     draw_right(fb, mqtt_y, v->last, well);
 }
 
+// The battery at the left -- its number, then its millivolts -- and the
+// recorder at the right.
 static void draw_foot(framebuffer_t *fb, const diag_view_t *v)
 {
     const font_t *font = &font_dejavu_sans_32;
     const int32_t right = (int32_t)fb->width - SCREEN_DIAG_MARGIN;
-    (void)gfx_draw_text(fb, SCREEN_DIAG_MARGIN, SCREEN_DIAG_FOOT_BASELINE, font, v->clock_text,
-                        tone(fb, !v->clock_set));
+    const int32_t end = gfx_draw_text(fb, SCREEN_DIAG_MARGIN, SCREEN_DIAG_FOOT_BASELINE, font,
+                                      v->battery, tone(fb, v->battery_trouble));
+    if (v->battery_mv[0] != '\0') {
+        (void)gfx_draw_text(fb, end + gfx_measure_text(font, " "), SCREEN_DIAG_FOOT_BASELINE, font,
+                            v->battery_mv, ink(fb, VM_INK_SECONDARY));
+    }
     const int32_t x = right - gfx_measure_text_ink(font, v->recorder_text);
     (void)gfx_draw_text(fb, x, SCREEN_DIAG_FOOT_BASELINE, font, v->recorder_text,
                         tone(fb, v->recorder_trouble));
@@ -177,7 +208,7 @@ static void draw_foot(framebuffer_t *fb, const diag_view_t *v)
 void screen_diagnostics_render(framebuffer_t *fb, const diag_view_t *v)
 {
     framebuffer_clear(fb, ink(fb, VM_INK_BACKGROUND));
-    draw_title(fb);
+    draw_title(fb, v);
     draw_slots(fb, v);
     draw_fields(fb, v);
     draw_network(fb, v);

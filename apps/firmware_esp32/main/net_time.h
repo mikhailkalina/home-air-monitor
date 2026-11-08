@@ -73,6 +73,9 @@ typedef struct {
     // Set to WALL_CLOCK_SOURCE_SNTP at each answer, on the event loop. The
     // console and the event loop read it, a word.
     wall_clock_source_t *wall_source;
+    // The RTC's health (wall_clock.h): each write reports to it, on the event
+    // loop. May be NULL.
+    wall_clock_rtc_health_t *rtc_health;
     const char *server;  // a name or an address; borrowed for the firmware's life
     net_time_wake_fn wake;
 } net_time_config_t;

@@ -47,6 +47,11 @@
 // steps, with a deadline of its own -- the RTC measured and written after
 // each SNTP answer (net_time.c). When ADR 0022's display task takes the panel
 // off this loop, the step goes with the sensors, which keep the bus.
+//
+// Since docs/adr/0040-a-battery-gauge-from-the-voltage.md it asks the
+// composition for the battery's fields after each poll, for the status bar and
+// for update_policy to compare like any other reading. On its own pace: the
+// sensors wake this loop every few seconds, so there is no deadline for it.
 
 #ifndef HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
 #define HAC_APPS_FIRMWARE_ESP32_EVENT_LOOP_H
@@ -77,13 +82,20 @@ typedef void (*event_loop_reading_fn)(void *ctx, const sensor_manager_t *sensors
                                       const air_reading_t *reading, uint64_t now_ms);
 
 // What the diagnostics screen shows that only the composition knows: the
-// recorder's state, and where the wall clock came from (a word, or NULL).
-typedef void (*event_loop_facts_fn)(void *ctx, diag_recorder_t *recorder,
-                                    const char **clock_source);
+// recorder's state, where the wall clock came from (a word, or NULL), and the
+// devices beside the sensors -- the touch controller, the RTC
+// (docs/adr/0041-touch-rtc-and-battery-on-the-diagnostics-screen.md). Fills
+// those fields of `in`, the rest being the pump's. On the pump's task; must
+// not wait.
+typedef void (*event_loop_facts_fn)(void *ctx, screen_inputs_t *in);
 
 // Called once, on the pump's task, when the first redraw is over and the
 // panel is no longer being driven. Must not wait.
 typedef void (*event_loop_first_frame_fn)(void *ctx);
+
+// Called after every poll, before the reading's age is applied: the composition
+// writes the battery's two fields. Must not wait.
+typedef void (*event_loop_battery_fn)(void *ctx, air_reading_t *reading, uint64_t now_ms);
 
 // Called after every poll, the reporter's step and the link's hold: the
 // composition's work that runs on this task in short steps and wants waking
@@ -102,6 +114,9 @@ typedef struct {
 
     event_loop_reading_fn on_reading;  // may be NULL
     void *on_reading_ctx;
+
+    event_loop_battery_fn battery;  // may be NULL: the bar says "n/a"
+    void *battery_ctx;
 
     port_input_t *input;           // may be NULL: no touch
     screen_controller_t *screens;  // already screen_controller_init()-ed

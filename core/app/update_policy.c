@@ -15,6 +15,7 @@ update_policy_config_t update_policy_config_default(void)
     cfg.humidity_delta_rh = UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
     cfg.pressure_delta_hpa = UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
     cfg.iaq_delta = UPDATE_POLICY_DEFAULT_IAQ_DELTA;
+    cfg.battery_delta_percent = UPDATE_POLICY_DEFAULT_BATTERY_DELTA_PERCENT;
     cfg.settle_after_ms = UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS;
     cfg.min_redraw_interval_ms = UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS;
     return cfg;
@@ -139,6 +140,7 @@ static void delta_fields(const update_policy_t *p, const air_reading_t *r,
         {&r->humidity_rh, &f->humidity_rh, p->cfg.humidity_delta_rh},
         {&r->pressure_hpa, &f->pressure_hpa, p->cfg.pressure_delta_hpa},
         {&r->iaq, &f->iaq, p->cfg.iaq_delta},
+        {&r->battery_percent, &f->battery_percent, p->cfg.battery_delta_percent},
     };
     memcpy(out, fields, sizeof(fields));
 }
@@ -211,6 +213,10 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
     if (delta_exceeded(&reading->iaq, &p->last_rendered.iaq, p->cfg.iaq_delta)) {
         return UPDATE_REASON_IAQ;
     }
+    if (delta_exceeded(&reading->battery_percent, &p->last_rendered.battery_percent,
+                       p->cfg.battery_delta_percent)) {
+        return UPDATE_REASON_BATTERY;
+    }
     if (statuses_differ(reading, &p->last_rendered)) {
         return UPDATE_REASON_STATUS;
     }
@@ -262,10 +268,12 @@ static void decide(const update_policy_t *p, update_reason_t reason, bool partia
 
     // One redraw per cycle: one that comes due sooner after the last waits,
     // and takes whatever else changes meanwhile with it. Not the first frame,
-    // not a redraw a person asked for, and not across a clock restart, where
-    // the old stamp means nothing.
-    if (!immediate && reason != UPDATE_REASON_FIRST_FRAME && reason != UPDATE_REASON_REQUEST &&
-        now_ms >= p->last_refresh_ms) {
+    // not a redraw a person asked for, not the diagnostics screen's content
+    // (partial_only: a developer watching it wants each change as it comes,
+    // docs/adr/0038-the-diagnostics-screen-is-a-developers.md, "Amendment"),
+    // and not across a clock restart, where the old stamp means nothing.
+    if (!immediate && !partial_only && reason != UPDATE_REASON_FIRST_FRAME &&
+        reason != UPDATE_REASON_REQUEST && now_ms >= p->last_refresh_ms) {
         const uint64_t redraw_at = p->last_refresh_ms + (uint64_t)p->cfg.min_redraw_interval_ms;
         if (now_ms < redraw_at) {
             out->action = UPDATE_NONE;
@@ -289,8 +297,10 @@ static void decide(const update_policy_t *p, update_reason_t reason, bool partia
     }
 
     // The diagnostics screen's own content stays live with partial refreshes,
-    // without a count limit. Screen changes above and the first frame stay
-    // full (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    // at once and without a count limit. Screen changes above and the first
+    // frame stay full (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    // On a panel with no partial mode it falls through to the full refresh
+    // below, and the panel's minimum full-refresh interval still holds it.
     if (partial_only && reason != UPDATE_REASON_FIRST_FRAME &&
         p->limits.max_partial_refreshes_before_full > 0u) {
         out->action = UPDATE_PARTIAL;
@@ -451,6 +461,8 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "pressure";
         case UPDATE_REASON_IAQ:
             return "iaq";
+        case UPDATE_REASON_BATTERY:
+            return "battery";
         case UPDATE_REASON_SETTLE:
             return "settle";
         case UPDATE_REASON_STATUS:

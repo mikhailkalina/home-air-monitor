@@ -9,7 +9,8 @@
 //     moved by more than 50 ppm, temperature by 0.2 C, humidity by 1 %
 //     (docs/requirements.md 9.1), IAQ by 5 points
 //     (docs/adr/0026-iaq-redraw-delta.md), pressure by 1 hPa
-//     (docs/adr/0027-pressure-redraw-delta.md), when a status the screen shows
+//     (docs/adr/0027-pressure-redraw-delta.md), the battery by 5 points
+//     (docs/adr/0040-a-battery-gauge-from-the-voltage.md), when a status the screen shows
 //     changes -- a number's accuracy crossing what the screen marks
 //     (measurement_low_accuracy()) among them
 //     (docs/adr/0021-measurement-accuracy-and-iaq-levels.md) -- when a smaller
@@ -47,8 +48,9 @@
 // whether what it would draw has changed says so through
 // update_policy_evaluate_content(), and the panel's rules are the same -- or
 // through update_policy_evaluate_partial_content(), whose content redraws
-// stay partial without a count limit: the diagnostics screen's, a developer's
-// screen. Its first frame and screen changes still go out full
+// stay partial without a count limit and go out as soon as they are due, not
+// once per sensor cycle: the diagnostics screen's, a developer's screen. Its
+// first frame and screen changes still go out full
 // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
 //
 // The module is pure. It performs no I/O, allocates nothing, and takes every
@@ -78,6 +80,12 @@ extern "C" {
 #define UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH 1.0f
 #define UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA 1.0f
 #define UPDATE_POLICY_DEFAULT_IAQ_DELTA 5.0f
+// CHOICE: the status bar's percentage, an estimate to begin with
+// (core/app/battery_gauge.h), redraws by itself only past this. Otherwise it
+// is carried along by whatever else redraws, as pressure once was: a still
+// night made eleven redraws in seven hours (board_notes.md, "BSEC on the
+// board"), and the number would lag by as long.
+#define UPDATE_POLICY_DEFAULT_BATTERY_DELTA_PERCENT 5.0f
 
 // CHOICE: at most one redraw per this interval -- one sensor cycle
 // (SENSOR_MANAGER_DEFAULT_INTERVAL_MS). The two sensors are read at different
@@ -112,8 +120,8 @@ extern "C" {
 #define UPDATE_POLICY_SETTLE_DELTA_FRACTION 0.5f
 #define UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS (15u * 60u * 1000u)
 
-// The readings with a delta: CO2, temperature, humidity, pressure, IAQ.
-#define UPDATE_POLICY_DELTA_FIELDS 5u
+// The readings with a delta: CO2, temperature, humidity, pressure, IAQ, battery.
+#define UPDATE_POLICY_DELTA_FIELDS 6u
 
 // Returned as next_deadline_ms when no timer is pending: only new data can
 // change the answer, so there is nothing to wake up for.
@@ -127,6 +135,7 @@ typedef struct {
     float humidity_delta_rh;
     float pressure_delta_hpa;
     float iaq_delta;
+    float battery_delta_percent;
 
     // A reading more than UPDATE_POLICY_SETTLE_DELTA_FRACTION of its delta
     // from the frame on the glass for this long without a break redraws.
@@ -163,6 +172,7 @@ typedef enum {
     UPDATE_REASON_HUMIDITY,
     UPDATE_REASON_PRESSURE,
     UPDATE_REASON_IAQ,
+    UPDATE_REASON_BATTERY,
     UPDATE_REASON_SETTLE,  // an offset of more than half a delta held settle_after_ms
     // A value_status_t, the accuracy mark, the link the bar shows, or whether
     // the wall time is known, changed -- or, on a screen that compares its
@@ -227,8 +237,8 @@ typedef struct {
     uint64_t offset_since_ms[UPDATE_POLICY_DELTA_FIELDS];
 } update_policy_t;
 
-// The thresholds of docs/requirements.md 9.1, IAQ's and pressure's, the
-// persistent offset's interval, and the one-redraw-per-cycle interval.
+// The thresholds of docs/requirements.md 9.1, IAQ's, pressure's and the
+// battery's, the persistent offset's interval, and the one-redraw-per-cycle interval.
 update_policy_config_t update_policy_config_default(void);
 
 // Reads the panel's constraints off the port. A NULL display yields limits
@@ -257,10 +267,12 @@ void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
 void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out);
 
 // The same for a screen whose content redraws stay partial, without a count
-// limit or budget-forced full refreshes. Content is held to
-// min_redraw_interval_ms as usual. Requests (screen changes) and the first
-// frame are full. On a panel with no partial mode the normal full-refresh
-// rules apply, as in update_policy_evaluate_content().
+// limit or budget-forced full refreshes, and go out at once: not held to
+// min_redraw_interval_ms -- the diagnostics screen, where each change is to be
+// seen as it comes. Requests (screen changes) and the first frame are full. On
+// a panel with no partial mode the normal full-refresh rules apply, the
+// panel's minimum full-refresh interval included, as in
+// update_policy_evaluate_content().
 void update_policy_evaluate_partial_content(const update_policy_t *p, bool changed,
                                             update_decision_t *out);
 

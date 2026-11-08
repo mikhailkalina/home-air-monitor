@@ -475,7 +475,17 @@ separate process -- run, never linked.
 - **CI**: the host job installs `libmosquitto-dev` and `mosquitto`, so both
   run there; the ASan job does too, so that the client's threads and copies
   run under the sanitizers. Each test starts its own broker on a free port,
-  whatever the package's own service does.
+  whatever the package's own service does. **Since Ubuntu 26.04** (the runner
+  from November 2026) the apparmor package confines `/usr/sbin/mosquitto` to
+  `/etc/mosquitto` (`/etc/apparmor.d/mosquitto`, read from apparmor
+  5.0.2-0ubuntu1~26.04.1): a broker given a configuration in the build
+  directory prints "Unable to open config file" and exits, and both tests
+  failed on the first run there (2026-11-08). Both jobs now add the build
+  directory, read and write, to the profile's site-specific include
+  (`/etc/apparmor.d/local/mosquitto`) and reload it; the rest of the
+  confinement stands. A developer's machine on such a release needs the same,
+  which both tests' failure messages say. Unpacked packages, as below, are not
+  confined: the profile attaches to the installed path.
 - Verified locally with libmosquitto 2.0.22 and its broker, Ubuntu 26.04's
   packages unpacked into a scratch directory (nothing could be installed on
   the development machine): both tests under the debug build, ASan and UBSan,

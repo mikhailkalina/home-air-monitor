@@ -167,6 +167,40 @@ static void the_pressure_threshold_applies_too(void)
     HAC_CHECK(strcmp(update_policy_reason_name(d.reason), "pressure") == 0);
 }
 
+// Strictly more than the delta, as the others, and only between two numbers: a
+// gauge that gains or loses its number is a status change.
+static void the_battery_threshold_applies_too(void)
+{
+    fixture_t f;
+    fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, TEST_MAX_PARTIALS);
+    air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    r.battery_percent = measurement_ok(80.0f, f.clock.now_ms, 3u);
+    update_decision_t d;
+    update_policy_evaluate(&f.policy, &r, &d);
+    update_policy_commit(&f.policy, &r, &d);
+    fake_clock_advance(&f.clock, 5000u);
+
+    const float delta = UPDATE_POLICY_DEFAULT_BATTERY_DELTA_PERCENT;
+    const float percents[] = {80.0f + delta, 80.0f - delta, 80.0f + delta + 1.0f,
+                              80.0f - delta - 1.0f};
+    const update_reason_t want[] = {UPDATE_REASON_NONE, UPDATE_REASON_NONE, UPDATE_REASON_BATTERY,
+                                    UPDATE_REASON_BATTERY};
+    for (size_t i = 0u; i < 4u; ++i) {
+        r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+        r.battery_percent = measurement_ok(percents[i], f.clock.now_ms, 3u);
+        update_policy_evaluate(&f.policy, &r, &d);
+        HAC_CHECK_EQ_INT(d.reason, want[i]);
+    }
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK(strcmp(update_policy_reason_name(d.reason), "battery") == 0);
+
+    // The number gone: not a delta, a status.
+    r = reading_at(&f, 620.0f, 22.0f, 45.0f);
+    r.battery_percent = measurement_status(VAL_UNAVAILABLE, f.clock.now_ms, 3u);
+    update_policy_evaluate(&f.policy, &r, &d);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+}
+
 // The same reading with every quantity aged out: what the screen holds when
 // the sensors have stopped delivering.
 static air_reading_t stale(air_reading_t r)
@@ -415,6 +449,7 @@ static void each_reading_with_a_delta_settles(void)
         air_reading_t r = reading_at(&f, 620.0f, 22.0f, 45.0f);
         r.pressure_hpa = measurement_ok(1006.0f, f.clock.now_ms, 2u);
         r.iaq = measurement_ok(50.0f, f.clock.now_ms, 2u);
+        r.battery_percent = measurement_ok(80.0f, f.clock.now_ms, 3u);
         update_decision_t d;
         update_policy_evaluate(&f.policy, &r, &d);
         update_policy_commit(&f.policy, &r, &d);
@@ -433,8 +468,11 @@ static void each_reading_with_a_delta_settles(void)
             case 3u:
                 r.pressure_hpa.value -= 0.75f * UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
                 break;
-            default:
+            case 4u:
                 r.iaq.value += 0.75f * UPDATE_POLICY_DEFAULT_IAQ_DELTA;
+                break;
+            default:
+                r.battery_percent.value -= 0.75f * UPDATE_POLICY_DEFAULT_BATTERY_DELTA_PERCENT;
                 break;
         }
         uint64_t first = 0u;
@@ -1349,7 +1387,9 @@ static void past_the_budget_by_the_budget_again_a_redraw_waits(void)
 }
 
 // Diagnostics content stays partial beyond the budget and the former bound,
-// even after the minimum full-refresh interval. Entering and leaving are full.
+// even after the minimum full-refresh interval, and goes out at once -- not
+// held to the sensor cycle (docs/adr/0038's amendment). Entering and leaving
+// are full.
 static void diagnostics_content_stays_partial_without_a_count_limit(void)
 {
     fixture_t f;
@@ -1371,29 +1411,25 @@ static void diagnostics_content_stays_partial_without_a_count_limit(void)
     update_policy_commit(&f.policy, &r, &d);
     HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 0);
 
-    // Content within the cycle waits for its deadline.
-    fake_clock_advance(&f.clock, 1000u);
-    update_policy_evaluate_partial_content(&f.policy, true, &d);
-    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
-    HAC_CHECK(d.held_for_redraw_interval);
-    HAC_CHECK_EQ_U64(d.next_deadline_ms,
-                     f.policy.last_refresh_ms + UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
-
     // Far beyond the old bound, with enough time for full refreshes: every
-    // content change still goes out partially, without a frozen screen.
+    // content change still goes out partially, without a frozen screen --
+    // at once, each a second after the last, well inside the sensor cycle.
+    HAC_CHECK(UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS > 1000u);
     const uint32_t redraws = TEST_MAX_PARTIALS * UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET * 10u;
     for (uint32_t i = 0u; i < redraws; ++i) {
-        fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
+        fake_clock_advance(&f.clock, 1000u);
         update_policy_evaluate_partial_content(&f.policy, true, &d);
         HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
         HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
         HAC_CHECK(!d.full_forced_by_budget);
         HAC_CHECK(!d.deferred_by_min_interval);
         HAC_CHECK(d.partial_past_budget == (i >= TEST_MAX_PARTIALS));
+        HAC_CHECK(!d.held_for_redraw_interval);
         HAC_CHECK_EQ_U64(d.next_deadline_ms, f.clock.now_ms);
         update_policy_commit(&f.policy, &r, &d);
     }
     HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), (int)redraws);
+    HAC_CHECK(f.clock.now_ms > TEST_MIN_FULL_INTERVAL_MS);  // the panel's interval passed too
 
     // No change means no redraw, even beyond the budget and interval.
     fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
@@ -1414,18 +1450,31 @@ static void diagnostics_content_stays_partial_without_a_count_limit(void)
 }
 
 // On a panel with no partial mode, partial-only means nothing: full, as
-// update_policy_evaluate_content() would say.
+// update_policy_evaluate_content() would say -- the panel's minimum
+// full-refresh interval included, a guard of the panel's, where the sensor
+// cycle's pacing is gone (docs/adr/0038's amendment).
 static void partial_only_on_a_panel_without_partials_is_full(void)
 {
     fixture_t f;
     fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, 0u);
     const air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
-    (void)r;
     update_decision_t d;
     update_policy_request(&f.policy);
     update_policy_evaluate_partial_content(&f.policy, false, &d);
     HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    update_policy_commit(&f.policy, &r, &d);
+
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_evaluate_partial_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK(d.deferred_by_min_interval);
+    HAC_CHECK(!d.held_for_redraw_interval);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, f.policy.last_full_refresh_ms + TEST_MIN_FULL_INTERVAL_MS);
+    fake_clock_advance(&f.clock, d.next_deadline_ms - f.clock.now_ms);
+    update_policy_evaluate_partial_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
 }
 
 static void limits_come_from_the_display_port(void)
@@ -1466,6 +1515,7 @@ int main(void)
     HAC_RUN(a_threshold_not_crossed_leaves_the_panel_alone);
     HAC_RUN(the_temperature_and_humidity_thresholds_apply_too);
     HAC_RUN(the_pressure_threshold_applies_too);
+    HAC_RUN(the_battery_threshold_applies_too);
     HAC_RUN(a_small_offset_held_for_the_interval_redraws);
     HAC_RUN(an_offset_that_breaks_starts_over);
     HAC_RUN(exactly_half_the_delta_is_no_offset);

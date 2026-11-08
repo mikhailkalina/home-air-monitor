@@ -2,12 +2,15 @@
 //
 // The diagnostics screen's view model (core/ui/diagnostics_view.h): each
 // source's state, failures and restarts; each reading's status, accuracy and
-// source; the clock and the recorder; the network -- and diag_view_equal(),
-// which decides whether the screen redraws, ignoring what changes at every
-// poll and the network's words that are as of the drawing -- the signal and
-// the messages, not the states (docs/adr/0031-the-network-on-the-screen.md,
-// docs/adr/0034-a-change-of-screen-is-a-full-refresh.md's amendment).
+// source; the clock and the recorder; the network; the touch controller, the
+// RTC and the battery -- and diag_view_equal(), which decides whether the
+// screen redraws: for everything it draws, the network's signal and the
+// battery's millivolts included, and for nothing it does not -- the readings'
+// numbers, a read counted, the held link
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md and its amendment,
+// docs/adr/0034-a-change-of-screen-is-a-full-refresh.md).
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -165,12 +168,12 @@ static void the_clock_and_the_recorder(void)
     HAC_CHECK(strcmp(v.recorder_text, "Recording: waiting") == 0);
 }
 
-static void equal_ignores_what_changes_every_poll(void)
+static void equal_ignores_what_the_screen_does_not_draw(void)
 {
     setup();
     const diag_view_t a = build("rtc", true, RECORDER_ON);
     // A new reading, its time, the wall clock moving, a read counted, the
-    // slot measuring: the same picture.
+    // slot measuring: none of it drawn, the same picture.
     g_r.co2_ppm = measurement_ok(735.0f, 5100u, 1u);
     g_r.wall_time_ms += 5000u;
     g_mgr.slots[0].reads = 200u;
@@ -373,20 +376,22 @@ static void without_telemetry_both_say_off(void)
     HAC_CHECK(v.ssid[0] == '\0' && v.rssi[0] == '\0' && v.address[0] == '\0');
 }
 
-// The network redraws as it changes (ADR 0038): an outage's start and end,
-// the messages sent and the last. The signal alone is as of the drawing, and
-// so is the held link, which the screen does not draw (ADR 0034).
-static void the_network_redraws_live_but_for_its_signal(void)
+// The network redraws as it changes (ADR 0038 and its amendment): the signal,
+// an outage's start and end, the messages sent and the last. The held link
+// does not: the screen does not draw it (ADR 0034).
+static void the_network_redraws_live_signal_and_all(void)
 {
     setup();
     const reporter_status_t n = online();
     const diag_view_t a = build_net(&n, LINK_ONLINE);
 
-    // The signal moved, the bar's link changing: nothing to redraw.
+    // The signal moved by a dB: redraw.
     reporter_status_t m = online();
-    m.rssi_dbm = -80;
+    m.rssi_dbm = (int8_t)(n.rssi_dbm - 1);
     const diag_view_t b = build_net(&m, LINK_ONLINE);
-    HAC_CHECK(diag_view_equal(&a, &b));
+    HAC_CHECK(strcmp(a.rssi, b.rssi) != 0);
+    HAC_CHECK(!diag_view_equal(&a, &b));
+    // The bar's link changing alone: nothing to redraw.
     const diag_view_t c = build_net(&m, LINK_NO_WIFI);
     HAC_CHECK(diag_view_equal(&b, &c));
     // A message sent: redraw -- its count and, a minute on, its time.
@@ -449,6 +454,190 @@ static void the_network_redraws_live_but_for_its_signal(void)
     HAC_CHECK(!diag_view_equal(&a, &k));
 }
 
+// --- the devices beside the sensors, and the battery (docs/adr/0041) ----------------
+
+static diag_view_t build_devices(diag_touch_t touch, diag_rtc_t rtc)
+{
+    const diag_facts_t f = {.reading = &g_r, .sensors = &g_mgr, .touch = touch, .rtc = rtc};
+    diag_view_t v;
+    diag_view_build(&v, &f);
+    return v;
+}
+
+static diag_rtc_t rtc_drifting(float ppm)
+{
+    const diag_rtc_t rtc = {.state = DIAG_DEVICE_RUNNING, .drift_known = true, .drift_ppm = ppm};
+    return rtc;
+}
+
+static void the_touch_controller_and_the_rtc_beside_the_sources(void)
+{
+    setup();
+    const diag_touch_t touch = {.state = DIAG_DEVICE_RUNNING, .failures = 0u, .address = 0x5Du};
+    const diag_view_t v = build_devices(touch, rtc_drifting(-20.8f));
+    HAC_CHECK_EQ_INT(v.slot_count, 2);
+    HAC_CHECK_EQ_INT(v.device_count, 2);
+    HAC_CHECK(strcmp(v.devices[0].name, "touch") == 0);
+    HAC_CHECK(strcmp(v.devices[0].state, "running") == 0);
+    HAC_CHECK(!v.devices[0].trouble);
+    HAC_CHECK(strcmp(v.devices[0].failures, "0") == 0);
+    HAC_CHECK(strcmp(v.devices[0].detail, "at 0x5D") == 0);
+    HAC_CHECK(strcmp(v.devices[1].name, "rtc") == 0);
+    HAC_CHECK(strcmp(v.devices[1].state, "running") == 0);
+    HAC_CHECK(strcmp(v.devices[1].detail, "drift -20.8 ppm") == 0);
+
+    // The latch's other address; failures counted as the sources' are.
+    const diag_touch_t moved = {.state = DIAG_DEVICE_RUNNING, .failures = 1200u, .address = 0x14u};
+    const diag_view_t w = build_devices(moved, rtc_drifting(-20.8f));
+    HAC_CHECK(strcmp(w.devices[0].detail, "at 0x14") == 0);
+    HAC_CHECK(strcmp(w.devices[0].failures, "999+") == 0);
+}
+
+static void each_device_state_its_word_and_what_is_trouble(void)
+{
+    setup();
+    static const struct {
+        diag_device_state_t state;
+        const char *word;
+        bool trouble;
+    } k_states[] = {
+        {DIAG_DEVICE_STARTING, "starting", false}, {DIAG_DEVICE_RUNNING, "running", false},
+        {DIAG_DEVICE_ASLEEP, "asleep", false},     {DIAG_DEVICE_MISSING, "missing", true},
+        {DIAG_DEVICE_NO_TIME, "no time", true},
+    };
+    for (size_t i = 0u; i < sizeof(k_states) / sizeof(k_states[0]); ++i) {
+        const diag_touch_t touch = {.state = k_states[i].state};
+        const diag_rtc_t rtc = {.state = k_states[i].state};
+        const diag_view_t v = build_devices(touch, rtc);
+        HAC_CHECK_EQ_INT(v.device_count, 2);
+        for (size_t d = 0u; d < 2u; ++d) {
+            hac_test_check(strcmp(v.devices[d].state, k_states[i].word) == 0 &&
+                               v.devices[d].trouble == k_states[i].trouble,
+                           "a device's word and trouble", k_states[i].word, __LINE__);
+        }
+    }
+    HAC_CHECK(diag_view_device_state(DIAG_DEVICE_NONE) == NULL);
+}
+
+static void a_device_the_build_does_not_have_has_no_line(void)
+{
+    setup();
+    const diag_touch_t none = {.state = DIAG_DEVICE_NONE};
+    const diag_rtc_t no_rtc = {.state = DIAG_DEVICE_NONE};
+    HAC_CHECK_EQ_INT(build_devices(none, no_rtc).device_count, 0);
+    // The RTC alone takes the first line after the sources.
+    const diag_view_t v = build_devices(none, rtc_drifting(1.0f));
+    HAC_CHECK_EQ_INT(v.device_count, 1);
+    HAC_CHECK(strcmp(v.devices[0].name, "rtc") == 0);
+    // An address not known, a drift not measured: nothing, and "drift -".
+    const diag_touch_t unaddressed = {.state = DIAG_DEVICE_STARTING};
+    const diag_rtc_t unmeasured = {.state = DIAG_DEVICE_RUNNING};
+    const diag_view_t w = build_devices(unaddressed, unmeasured);
+    HAC_CHECK(w.devices[0].detail[0] == '\0');
+    HAC_CHECK(strcmp(w.devices[1].detail, "drift -") == 0);
+}
+
+static void the_drift_in_tenths_then_whole_ppm_never_wider(void)
+{
+    setup();
+    static const struct {
+        float ppm;
+        const char *text;
+    } k_drifts[] = {
+        {-20.85f, "drift -20.9 ppm"}, {3.14f, "drift 3.1 ppm"},     {-0.02f, "drift 0.0 ppm"},
+        {0.0f, "drift 0.0 ppm"},      {99.94f, "drift 99.9 ppm"},   {-99.94f, "drift -99.9 ppm"},
+        {99.96f, "drift 100 ppm"},    {-150.4f, "drift -150 ppm"},  {-0.4f, "drift -0.4 ppm"},
+        {5000.0f, "drift 999 ppm"},   {-5000.0f, "drift -999 ppm"},
+    };
+    const diag_touch_t none = {.state = DIAG_DEVICE_NONE};
+    for (size_t i = 0u; i < sizeof(k_drifts) / sizeof(k_drifts[0]); ++i) {
+        const diag_view_t v = build_devices(none, rtc_drifting(k_drifts[i].ppm));
+        hac_test_check(strcmp(v.devices[0].detail, k_drifts[i].text) == 0, "the drift's text",
+                       k_drifts[i].text, __LINE__);
+    }
+    const diag_view_t nan = build_devices(none, rtc_drifting(NAN));
+    HAC_CHECK(strcmp(nan.devices[0].detail, "drift -") == 0);
+}
+
+static diag_view_t build_battery(measurement_f32_t percent, measurement_f32_t mv)
+{
+    g_r.battery_percent = percent;
+    g_r.battery_mv = mv;
+    return build("rtc", true, RECORDER_ON);
+}
+
+// The gauge's four states (core/app/battery_gauge.h, battery_gauge_fill()).
+static void the_battery_in_each_of_the_gauges_states(void)
+{
+    setup();
+    diag_view_t v =
+        build_battery(measurement_ok(74.0f, 100u, 3u), measurement_ok(3976.0f, 100u, 3u));
+    HAC_CHECK(strcmp(v.battery, "Battery 74 %") == 0);
+    HAC_CHECK(strcmp(v.battery_mv, "3976 mV") == 0);
+    HAC_CHECK(!v.battery_trouble);
+    // Not a cell: the voltage is real, the percentage is not.
+    v = build_battery(measurement_status(VAL_UNAVAILABLE, 100u, 3u),
+                      measurement_ok(4612.0f, 100u, 3u));
+    HAC_CHECK(strcmp(v.battery, "Battery n/a") == 0);
+    HAC_CHECK(strcmp(v.battery_mv, "4612 mV") == 0);
+    HAC_CHECK(!v.battery_trouble);
+    // No sample yet -- and the simulator, which has no gauge.
+    v = build_battery(measurement_status(VAL_UNAVAILABLE, 0u, 0u),
+                      measurement_status(VAL_UNAVAILABLE, 0u, 0u));
+    HAC_CHECK(strcmp(v.battery, "Battery n/a") == 0);
+    HAC_CHECK(v.battery_mv[0] == '\0');
+    // Silent: no burst for minutes.
+    v = build_battery(measurement_status(VAL_ERROR, 100u, 3u),
+                      measurement_status(VAL_ERROR, 100u, 3u));
+    HAC_CHECK(strcmp(v.battery, "Battery ERR") == 0);
+    HAC_CHECK(v.battery_mv[0] == '\0');
+    HAC_CHECK(v.battery_trouble);
+}
+
+static bool same_as(const diag_view_t *a, diag_touch_t touch, diag_rtc_t rtc)
+{
+    const diag_view_t b = build_devices(touch, rtc);
+    return diag_view_equal(a, &b);
+}
+
+// Everything of the devices and the battery redraws: the millivolts, the
+// number, the gauge's state, the devices' lines.
+static void what_of_the_devices_and_the_battery_redraws(void)
+{
+    setup();
+    const diag_touch_t touch = {.state = DIAG_DEVICE_RUNNING, .address = 0x5Du};
+    const diag_rtc_t rtc = rtc_drifting(-20.8f);
+    g_r.battery_percent = measurement_ok(74.0f, 100u, 3u);
+    g_r.battery_mv = measurement_ok(3976.0f, 100u, 3u);
+    const diag_view_t a = build_devices(touch, rtc);
+
+    // A new burst's median a millivolt lower, the percentage unchanged: redraw.
+    g_r.battery_mv = measurement_ok(3975.0f, 112u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc));
+    // The voltage gone, the number kept: redraw.
+    g_r.battery_mv = measurement_status(VAL_ERROR, 112u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc));
+    // The same millivolts measured again later: nothing to redraw.
+    g_r.battery_mv = measurement_ok(3976.0f, 124u, 3u);
+    HAC_CHECK(same_as(&a, touch, rtc));
+    g_r.battery_percent = measurement_ok(72.0f, 112u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc));
+    g_r.battery_percent = measurement_status(VAL_ERROR, 112u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc));
+
+    g_r.battery_percent = measurement_ok(74.0f, 100u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc_drifting(-20.6f)));
+    const diag_touch_t moved = {.state = DIAG_DEVICE_RUNNING, .address = 0x14u};
+    HAC_CHECK(!same_as(&a, moved, rtc));
+    const diag_touch_t failed = {.state = DIAG_DEVICE_RUNNING, .failures = 1u, .address = 0x5Du};
+    HAC_CHECK(!same_as(&a, failed, rtc));
+    const diag_touch_t asleep = {.state = DIAG_DEVICE_ASLEEP, .address = 0x5Du};
+    HAC_CHECK(!same_as(&a, asleep, rtc));
+    const diag_rtc_t gone = {.state = DIAG_DEVICE_NONE};
+    HAC_CHECK(!same_as(&a, touch, gone));
+    HAC_CHECK(same_as(&a, touch, rtc));
+}
+
 int main(void)
 {
     HAC_RUN(every_source_with_its_state_and_counts);
@@ -456,7 +645,7 @@ int main(void)
     HAC_RUN(counts_stop_at_999_plus);
     HAC_RUN(every_reading_with_status_accuracy_and_source);
     HAC_RUN(the_clock_and_the_recorder);
-    HAC_RUN(equal_ignores_what_changes_every_poll);
+    HAC_RUN(equal_ignores_what_the_screen_does_not_draw);
     HAC_RUN(without_a_sensor_manager_there_are_no_sources);
     HAC_RUN(a_working_session_and_its_network);
     HAC_RUN(the_network_in_trouble);
@@ -464,6 +653,12 @@ int main(void)
     HAC_RUN(messages_sent_in_thousands_past_four_digits);
     HAC_RUN(a_name_that_is_not_text_is_shown_with_question_marks);
     HAC_RUN(without_telemetry_both_say_off);
-    HAC_RUN(the_network_redraws_live_but_for_its_signal);
+    HAC_RUN(the_network_redraws_live_signal_and_all);
+    HAC_RUN(the_touch_controller_and_the_rtc_beside_the_sources);
+    HAC_RUN(each_device_state_its_word_and_what_is_trouble);
+    HAC_RUN(a_device_the_build_does_not_have_has_no_line);
+    HAC_RUN(the_drift_in_tenths_then_whole_ppm_never_wider);
+    HAC_RUN(the_battery_in_each_of_the_gauges_states);
+    HAC_RUN(what_of_the_devices_and_the_battery_redraws);
     return hac_test_summary();
 }

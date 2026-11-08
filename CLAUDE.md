@@ -882,11 +882,11 @@ the board" and "MQTT on the board").
 
 On branch `usb-card-updates-and-live-diagnostics` (ADR 0038), at the owner's request after watching an outage:
 the diagnostics screen is a developer's. Its content redraws are partial without a count limit
-(`update_policy_evaluate_partial_content()`: past the budget and former bound too, one per
-sensor cycle); entering and returning home stay full and start the budget over (ADR 0034).
-It goes home after five minutes untouched, not one, and its network lines redraw as they
-change -- the Wi-Fi's and the session's states, the address, `sent`, `last`,
-the refusals -- all but the signal. Verified on the host (`test_update_policy`,
+(`update_policy_evaluate_partial_content()`: past the budget and former bound too, then one per
+sensor cycle -- at once since its amendment, below); entering and returning home stay full and
+start the budget over (ADR 0034). It goes home after five minutes untouched, not one, and its
+network lines redraw as they change -- the Wi-Fi's and the session's states, the address, `sent`,
+`last`, the refusals -- then all but the signal. Verified on the host (`test_update_policy`,
 `test_screen_controller`, `test_diagnostics_view`, `simulator_link_flapping`, `simulator_taps`);
 the owner confirmed the BSEC firmware works on the board on 2026-10-23, without a detailed log.
 
@@ -898,6 +898,48 @@ home by tap or after ten seconds. Host tests and the BSEC build pass; the owner 
 the update screen and touch lock work on the board with build `b358b13` on 2026-10-23.
 No detailed log or timing accompanied that confirmation. Its first installation uses
 the old updater; copy an image again after installing it to exercise the screen.
+
+Ahead of phase 5, branch `phase-5-battery-gauge` (ADR 0040), at the owner's request: a percentage
+in the status bar, so that a real cell can be run down and timed. `core/app/battery_gauge.c`: a
+table of voltages the composition passes in (`board_battery.c`, an ESTIMATE), the median of five
+bursts 12 s apart, a two-point step; above 4.4 V or below 2.5 V not a cell, and the bar keeps its
+`n/a` -- USB alone, by the schematic. `update_policy` redraws past 5 points, reason `battery`. A
+hook on the event loop and a plain function, no port; `battery: sample` once a minute for the card's
+log; `vbat` over the same reader. No MQTT key, no cut-off, the simulator's bar still `n/a`. Verified
+on the host; the firmware, the test app and the slideshow build. What to measure and solder before
+phase 5's plan is rewritten: `docs/hardware/phase-5-bench-plan.md`. On the board, 2026-11-08: the
+first image overflowed the main task's stack (ESP-IDF's 3,584 bytes) in EPDiy's init, an inline
+set-up having grown app_main's frame by 128 bytes, and the bootloader rolled it back; the second
+logged 72 bytes to spare, so the main task has 6,144 since -- freed when app_main returns, about
+2 s in -- 2,608 bytes to spare on the board (2026-11-09). The gauge on a cell alone: 4,230 to
+3,940 mV in 54 minutes,
+ADC2 never refused beside Wi-Fi and MQTT; with USB it reads the charger's voltage. The card's 24
+days (`board_notes.md`): sixteen unattended without a crash, a watchdog or a Wi-Fi loss, the RTC's
+drift -20.85 ppm, and one power cut that cost the RTC 24 minutes with VL clear.
+
+On the same branch (ADR 0041), at the owner's request: the diagnostics screen shows the devices
+beside the sensors that no sensor manager drives -- a `touch` and an `rtc` line under the sources,
+in their columns: state (`starting`, `running`, `asleep`, `missing`, `no time`), failures since
+boot, and the touch controller's bus address or the RTC's drift against SNTP. The core keeps the
+words (`diag_touch_t`, `diag_rtc_t` in `diag_facts_t`); the board's composition the facts --
+`adp_input_health()`, which never waits for the controller's lock, and `wall_clock.c`'s RTC health,
+the boot's verdict and every write's (`time_set`, `rtc_stop`, SNTP's). The battery took the last
+line's left, `Battery 74 % 3976 mV`; the clock moved to the title's middle, as the three do not fit
+one line. The simulator has neither device and draws no line for them. Verified on the host; the
+firmware, its BSEC variant, the test app and the slideshow build. Not yet seen on the board.
+
+On the same branch, ADR 0038 amended at the owner's request: the diagnostics screen is live,
+nothing saved on it. Its content redraws go out at once, no longer held to a sensor cycle
+(`update_policy_evaluate_partial_content()`; on a panel without partials the minimum full-refresh
+interval still holds); `diag_view_equal()` compares everything drawn, the Wi-Fi's signal and the
+battery's millivolts included; and while it is up `screen_controller_tick()` wakes both loops every
+second (`SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS`), so a change another task makes reaches the glass
+within a second and a partial refresh. A redraw every 5-10 s or so while it is up; more BSEC late
+calls during a visit. Verified on the host. On the board, 2026-11-09 (ELF `b07c2bef5...`, installed
+from the card): an 80 s visit made 18 partial redraws, 272-323 ms each -- the signal's digits, `sent`,
+the millivolts, the clock's source when SNTP answered -- none making BSEC's call late; the lines by
+eye not yet reported (`board_notes.md`, open item "Touch, RTC and battery on the diagnostics
+screen").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable

@@ -43,6 +43,19 @@ jobs:
       # a free port, whatever the package's own service does (ADR 0030,
       # amendment "The simulator on a real broker").
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libmosquitto-dev mosquitto
+      # Since Ubuntu 26.04 -- ubuntu-latest from November 2026 -- the apparmor
+      # package confines /usr/sbin/mosquitto to /etc/mosquitto
+      # (/etc/apparmor.d/mosquitto), and the private brokers' configuration,
+      # password file and log live in the build directory: "Unable to open
+      # config file". That directory alone is allowed, through the profile's
+      # own site-specific include; nothing else of the confinement changes.
+      - name: Let mosquitto use the build directory under AppArmor
+        run: |
+          if [ -f /etc/apparmor.d/mosquitto ]; then
+            sudo mkdir -p /etc/apparmor.d/local
+            echo "file ${{ github.workspace }}/build/** rw," | sudo tee -a /etc/apparmor.d/local/mosquitto
+            sudo apparmor_parser -r /etc/apparmor.d/mosquitto
+          fi
       - run: cmake --preset ci-headless
       - run: cmake --build build/host-debug
       - run: ctest --test-dir build/host-debug --output-on-failure
@@ -55,6 +68,14 @@ jobs:
       # The same, so that the MQTT client's threads and copies run under the
       # sanitizers too.
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libmosquitto-dev mosquitto
+      # As in the job above: mosquitto under AppArmor, the build directory allowed.
+      - name: Let mosquitto use the build directory under AppArmor
+        run: |
+          if [ -f /etc/apparmor.d/mosquitto ]; then
+            sudo mkdir -p /etc/apparmor.d/local
+            echo "file ${{ github.workspace }}/build/** rw," | sudo tee -a /etc/apparmor.d/local/mosquitto
+            sudo apparmor_parser -r /etc/apparmor.d/mosquitto
+          fi
       - run: cmake --preset host-asan
       - run: cmake --build build/host-asan
       - run: ctest --test-dir build/host-asan --output-on-failure

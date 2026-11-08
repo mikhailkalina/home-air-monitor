@@ -30,6 +30,15 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # the app's: main/fw_update.c refuses an sdkconfig without it.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# The main task, which runs app_main(): 6 KB, not ESP-IDF's 3,584 bytes. The
+# boot left 72 bytes of those unused (app_main's own low-water mark, on the
+# board 2026-11-08), and an image whose app_main() frame was 128 bytes larger
+# overflowed it in EPDiy's init and was rolled back. ESP-IDF allocates this
+# stack from the heap and frees it when app_main() returns, about 2 s into the
+# boot and before Wi-Fi's allocations, so the 2.5 KB more cost nothing after
+# it. main/main.c refuses to build with an sdkconfig that predates this.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
 # This board's USB-C is the S3's native USB-Serial-JTAG (README.MD FAQ 4), not
 # a separate UART bridge chip. If idf.py monitor shows nothing, the one-line
 # fallback is CONFIG_ESP_CONSOLE_UART_DEFAULT=y in place of this.

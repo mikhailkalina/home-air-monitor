@@ -130,6 +130,7 @@ home-air-monitor/
 │   │   ├── app_core.h/.c           # state machine: event → actions; next_deadline()
 │   │   ├── sensor_manager.h/.c     # polling, source priority, fault tolerance
 │   │   ├── screen_controller.h/.c  # which screen; port_input's consumer (ADR 0025)
+│   │   ├── battery_gauge.h/.c      # millivolts to the status bar's percentage, an estimate (ADR 0040)
 │   │   ├── link_hold.h/.c          # the link the status bar shows, once held a minute (ADR 0031)
 │   │   ├── tap.h/.c                # what counts as a tap
 │   │   ├── update_policy.h/.c      # display refresh thresholds (publishing's: reporting/, ADR 0030)
@@ -143,7 +144,8 @@ home-air-monitor/
 │   │   ├── view_model.h/.c         # air_reading_t → what actually gets drawn
 │   │   ├── screen_home.c
 │   │   ├── diagnostics_view.h/.c   # the diagnostics screen's view model (ADR 0025)
-│   │   ├── screen_diagnostics.c    # sources, readings, network, clock, recorder; a tap away
+│   │   ├── screen_diagnostics.c    # sources, touch and RTC, readings, network, clock,
+│   │   │                           #   battery, recorder; a tap away (ADR 0041)
 │   │   ├── screen_firmware_update.h/.c  # modal progress, stages and byte counts (ADR 0039)
 │   │   ├── screen_status.c
 │   │   ├── screen_error.c
@@ -219,6 +221,7 @@ home-air-monitor/
 │   │   ├── usb_disk_pure.c         # ... when the host is done, and the button: tested on the host
 │   │   ├── tinyusb/tusb_config.h   # ... TinyUSB's configuration: one mass-storage interface
 │   │   ├── board_button.c          # the user button on IO21
+│   │   ├── board_battery.c         # the battery's divider on GPIO14, and its table (ADR 0040)
 │   │   ├── board_power.c           # PWR_EN without EPDiy: the sensors' rail (null display, test app)
 │   │   ├── board_rtc_int.c         # the RTC's INT on IO9: each falling edge stamped in an interrupt
 │   │   └── board_gpio_isr.c        # ESP-IDF's shared GPIO ISR service, installed once

@@ -288,9 +288,15 @@ static void take_note(const rtc_sync_note_t *n)
             break;
         case RTC_SYNC_NOTE_WRITTEN:
             st->writes++;
+            if (s_t.cfg.rtc_health != NULL) {
+                wall_clock_health_written(s_t.cfg.rtc_health, HAL_OK);
+            }
             break;
         case RTC_SYNC_NOTE_WRITE_FAILED:
             st->write_failures++;
+            if (s_t.cfg.rtc_health != NULL) {
+                wall_clock_health_written(s_t.cfg.rtc_health, n->status);
+            }
             break;
         case RTC_SYNC_NOTE_LANDED:
             st->landed_known = true;

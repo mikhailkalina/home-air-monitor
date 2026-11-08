@@ -45,6 +45,9 @@ idf_component_register(
         ${HAC_ROOT}/platform/esp32_t5s3/usb_disk.c
         ${HAC_ROOT}/platform/esp32_t5s3/usb_disk_pure.c
         ${HAC_ROOT}/platform/esp32_t5s3/board_button.c
+        # The battery's divider on GPIO14 (docs/adr/0040). Linked into the
+        # firmware, whose main.c and console read it.
+        ${HAC_ROOT}/platform/esp32_t5s3/board_battery.c
     INCLUDE_DIRS
         ${HAC_ROOT}/platform/esp32_t5s3
     PRIV_INCLUDE_DIRS
@@ -57,6 +60,8 @@ idf_component_register(
         esp_timer
         esp_driver_i2c
         esp_driver_gpio
+        # The battery's divider (board_battery.c).
+        esp_adc
         # The microSD card (adp_sd.c): ESP-IDF's FATFS, which links ChaN's
         # FatFs (THIRD_PARTY_NOTICES.md), the SD protocol and SD over SPI.
         fatfs

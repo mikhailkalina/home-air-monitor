@@ -8,11 +8,13 @@
 // name can be, the network's -- "joining", a network's name of 32 octets,
 // "-127 dBm", "255.255.255.255", "offline", "sent 999k+", "refused 999+",
 // "last 15.10 23:58" (docs/adr/0031-the-network-on-the-screen.md) --
-// "Clock: set (--wall-time)", "Recording: no medium" -- with every slot
-// filled, and checks by pixels that nothing reaches the margins or a rule,
-// that each column keeps clear of the next, that every line stays a line of
-// its own, and that the two halves of the title and of the last line never
-// meet.
+// "Clock: set (--wall-time)" in the title's middle, the devices' lines --
+// "starting", "drift -99.9 ppm" -- "Battery 100 % 6600 mV" and "Recording:
+// no medium" (docs/adr/0041-touch-rtc-and-battery-on-the-diagnostics-screen.md)
+// -- with every line of the sources' section filled, and checks by pixels that
+// nothing reaches the margins or a rule, that each column keeps clear of the
+// next, that every line stays a line of its own, and that the three parts of
+// the title and the two halves of the last line never meet.
 
 #include <stdint.h>
 #include <string.h>
@@ -96,12 +98,13 @@ static void set(char *dst, size_t cap, const char *src)
     dst[cap - 1u] = '\0';
 }
 
-// Every slot, every column at its widest.
+// Every line of the sources' section, every column at its widest: as many
+// sources as leave room for both devices, then the devices.
 static diag_view_t widest(const char *clock, const char *recorder)
 {
     diag_view_t v;
     memset(&v, 0, sizeof(v));
-    v.slot_count = DIAG_MAX_SLOTS;
+    v.slot_count = SCREEN_DIAG_SOURCE_LINES - DIAG_DEVICE_COUNT;
     for (size_t i = 0u; i < DIAG_MAX_SLOTS; ++i) {
         set(v.slots[i].name, sizeof(v.slots[i].name), "WWWWWWWWWWWWWWWWWWWWWWW");
         v.slots[i].state = "restarting";
@@ -109,6 +112,20 @@ static diag_view_t widest(const char *clock, const char *recorder)
         set(v.slots[i].failures, sizeof(v.slots[i].failures), "999+");
         set(v.slots[i].restarts, sizeof(v.slots[i].restarts), "999+");
     }
+    // The widest of the devices' words, and of their details: digits share
+    // one width in this font, and "-" is wider than any digit's absence.
+    static const char *const names[DIAG_DEVICE_COUNT] = {"touch", "rtc"};
+    static const char *const details[DIAG_DEVICE_COUNT] = {"at 0xDD", "drift -99.9 ppm"};
+    v.device_count = DIAG_DEVICE_COUNT;
+    for (size_t i = 0u; i < DIAG_DEVICE_COUNT; ++i) {
+        v.devices[i].name = names[i];
+        v.devices[i].state = "starting";
+        v.devices[i].trouble = true;
+        set(v.devices[i].failures, sizeof(v.devices[i].failures), "999+");
+        set(v.devices[i].detail, sizeof(v.devices[i].detail), details[i]);
+    }
+    set(v.battery, sizeof(v.battery), "Battery 100 %");
+    set(v.battery_mv, sizeof(v.battery_mv), "6600 mV");  // the ADC's whole range, divided by 2
     static const char *const labels[DIAG_FIELD_COUNT] = {"CO2",      "Temperature", "Humidity",
                                                          "Pressure", "IAQ",         "Gas"};
     for (size_t i = 0u; i < DIAG_FIELD_COUNT; ++i) {
@@ -197,8 +214,8 @@ static void check_layout(const char *what)
     const int32_t fields_bottom = SCREEN_DIAG_FIELDS_RULE_Y - 1;
 
     hac_test_check(count_bands(m, slots_top, PANEL_W - m - 1, slots_bottom, LINE_CLEARANCE) ==
-                       (int)DIAG_MAX_SLOTS,
-                   "every source's line stays a line of its own", what, __LINE__);
+                       (int)SCREEN_DIAG_SOURCE_LINES,
+                   "every source's and device's line stays a line of its own", what, __LINE__);
     hac_test_check(count_bands(m, fields_top, PANEL_W - m - 1, fields_bottom, LINE_CLEARANCE) ==
                        (int)DIAG_FIELD_COUNT,
                    "every reading's line stays a line of its own", what, __LINE__);
@@ -227,8 +244,20 @@ static void check_layout(const char *what)
                                  right - gfx_measure_text_ink(&font_dejavu_sans_32, v->last)};
     check_columns(mqtt_cols, 5u, LINE_TOP(mqtt_y), LINE_BOTTOM(mqtt_y), what);
 
-    hac_test_check(widest_gap(0, SCREEN_DIAG_TITLE_RULE_Y - 1) >= HALVES_CLEARANCE,
-                   "the title's halves stay apart", what, __LINE__);
+    // The title's three parts: the clock, centred, keeps clear of both.
+    const font_t *font = &font_dejavu_sans_32;
+    const int32_t title_end = m + gfx_measure_text_ink(font, "Diagnostics");
+    const int32_t clock_w = gfx_measure_text_ink(font, v->clock_text);
+    const int32_t clock_x = (PANEL_W - clock_w) / 2;
+    const int32_t hint_x = right - gfx_measure_text_ink(font, "tap to return");
+    const int32_t title_top = LINE_TOP(SCREEN_DIAG_TITLE_BASELINE);
+    const int32_t title_bottom = SCREEN_DIAG_TITLE_RULE_Y - 1;
+    ok = clock_x - title_end >= HALVES_CLEARANCE &&
+         hint_x - (clock_x + clock_w) >= HALVES_CLEARANCE &&
+         clear(title_end, title_top, clock_x - 1 - widest_left_bearing(), title_bottom) &&
+         clear(clock_x + clock_w, title_top, hint_x - 1 - widest_left_bearing(), title_bottom) &&
+         !clear(clock_x, title_top, clock_x + clock_w - 1, title_bottom);
+    hac_test_check(ok, "the title's three parts stay apart", what, __LINE__);
     hac_test_check(widest_gap(LINE_TOP(SCREEN_DIAG_FOOT_BASELINE), PANEL_H - 1) >= HALVES_CLEARANCE,
                    "the last line's halves stay apart", what, __LINE__);
 }
@@ -299,14 +328,59 @@ static void a_long_name_is_shortened_to_its_column(void)
     HAC_CHECK(clear(PANEL_W - SCREEN_DIAG_MARGIN, 0, PANEL_W - 1, PANEL_H - 1));
 }
 
+static int source_section_lines(const diag_view_t *v)
+{
+    screen_diagnostics_render(&g_fb, v);
+    const int32_t top = SCREEN_DIAG_TITLE_RULE_Y + SCREEN_DIAG_RULE_PX;
+    return count_bands(SCREEN_DIAG_MARGIN, top, PANEL_W - SCREEN_DIAG_MARGIN - 1,
+                       SCREEN_DIAG_SLOTS_RULE_Y - 1, LINE_CLEARANCE);
+}
+
+// No sources: the line that says so, then the devices.
 static void no_sources_says_so(void)
 {
     diag_view_t v = widest("Clock: set", "Recording: on");
     v.slot_count = 0u;
-    screen_diagnostics_render(&g_fb, &v);
-    const int32_t top = SCREEN_DIAG_TITLE_RULE_Y + SCREEN_DIAG_RULE_PX;
-    HAC_CHECK(count_bands(SCREEN_DIAG_MARGIN, top, PANEL_W - SCREEN_DIAG_MARGIN - 1,
-                          SCREEN_DIAG_SLOTS_RULE_Y - 1, LINE_CLEARANCE) == 1);
+    v.device_count = 0u;
+    HAC_CHECK_EQ_INT(source_section_lines(&v), 1);
+    v.device_count = DIAG_DEVICE_COUNT;
+    HAC_CHECK_EQ_INT(source_section_lines(&v), 1 + (int)DIAG_DEVICE_COUNT);
+}
+
+// The section holds SCREEN_DIAG_SOURCE_LINES lines, the sources first: with as
+// many sources as it has lines, the devices are not drawn -- over the rule or
+// the readings least of all.
+static void the_sources_come_first_and_the_devices_while_room_remains(void)
+{
+    diag_view_t v = widest("Clock: set", "Recording: on");
+    v.slot_count = DIAG_MAX_SLOTS;
+    g_view = v;
+    HAC_CHECK_EQ_INT(source_section_lines(&v), (int)SCREEN_DIAG_SOURCE_LINES);
+    check_layout("four sources, two devices");
+    v.slot_count = SCREEN_DIAG_SOURCE_LINES - 1u;
+    g_view = v;
+    HAC_CHECK_EQ_INT(source_section_lines(&v), (int)SCREEN_DIAG_SOURCE_LINES);
+    check_layout("three sources, two devices");
+    v.slot_count = 1u;
+    v.device_count = 1u;
+    HAC_CHECK_EQ_INT(source_section_lines(&v), 2);
+}
+
+// The battery's every form at the last line's left, beside the widest
+// recorder.
+static void every_battery_text_fits(void)
+{
+    static const char *const texts[] = {"Battery 100 %", "Battery n/a", "Battery ERR",
+                                        "Battery stale", "Battery warm"};
+    for (size_t i = 0u; i < sizeof(texts) / sizeof(texts[0]); ++i) {
+        g_view = widest("Clock: set (rtc)", "Recording: no medium");
+        set(g_view.battery, sizeof(g_view.battery), texts[i]);
+        screen_diagnostics_render(&g_fb, &g_view);
+        check_layout(texts[i]);
+        g_view.battery_mv[0] = '\0';
+        screen_diagnostics_render(&g_fb, &g_view);
+        check_layout(texts[i]);
+    }
 }
 
 // The held link is not on this screen (docs/adr/0034): the MQTT line says
@@ -354,5 +428,7 @@ int main(void)
     HAC_RUN(the_held_link_is_not_on_the_screen);
     HAC_RUN(a_long_name_is_shortened_to_its_column);
     HAC_RUN(no_sources_says_so);
+    HAC_RUN(the_sources_come_first_and_the_devices_while_room_remains);
+    HAC_RUN(every_battery_text_fits);
     return hac_test_summary();
 }

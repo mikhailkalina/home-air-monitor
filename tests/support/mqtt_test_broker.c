@@ -68,6 +68,16 @@ static bool accepts(uint16_t port)
     return ok;
 }
 
+// Since Ubuntu 26.04 the apparmor package confines /usr/sbin/mosquitto to
+// /etc/mosquitto (/etc/apparmor.d/mosquitto): started on a configuration
+// anywhere else it prints "Unable to open config file" on stderr and exits, its
+// log unwritten. CI allows the build directory in
+// /etc/apparmor.d/local/mosquitto (.github/workflows/checks.yml); a
+// developer's machine on such a release needs the same.
+static const char k_apparmor_hint[] =
+    " -- if it said \"Unable to open config file\", AppArmor confines it: allow this "
+    "directory in /etc/apparmor.d/local/mosquitto, as .github/workflows/checks.yml does";
+
 bool mqtt_test_broker_start(mqtt_test_broker_t *b, const char *binary, const char *work_dir,
                             char *why, size_t why_cap)
 {
@@ -111,8 +121,8 @@ bool mqtt_test_broker_start(mqtt_test_broker_t *b, const char *binary, const cha
         int status = 0;
         if (waitpid(pid, &status, WNOHANG) == pid) {
             b->pid = 0;
-            (void)snprintf(why, why_cap, "%s exited at once (status %d); its log is %s", binary,
-                           status, b->log_path);
+            (void)snprintf(why, why_cap, "%s exited at once (status %d); its log is %s%s", binary,
+                           status, b->log_path, k_apparmor_hint);
             return false;
         }
         if (accepts(b->port)) {
