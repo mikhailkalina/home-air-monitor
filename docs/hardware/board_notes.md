@@ -2343,7 +2343,9 @@ layout settles, not before.
       confirmed at its first frame. **`app_main: stack low-water mark
       stack_free_min_bytes=72`** of 3,584 -- so the main task's stack is 6,144
       since (`sdkconfig.defaults`; `main.c` refuses an sdkconfig made before it),
-      not yet seen on the board. The gauge, the owner's cell connected:
+      **seen on the board 2026-11-09** (ELF `da378821b...` and `b07c2bef5...`, the
+      owner's YAT log of 00:09): `stack_free_min_bytes=2608 stack_bytes=6144` in
+      both boots. The gauge, the owner's cell connected:
       - *The cell alone*, 08:09-09:03Z by the falling voltage: the first sample
         `state=cell percent=100 median_mv=4230` (the first frame's, one burst),
         then 4,174 mV (97 %), 4,110 (91 %), 4,088 (86 %) at 3 minutes, 4,042 (82
@@ -3464,3 +3466,21 @@ layout settles, not before.
         calls with them (`BSEC called late` while the screen is up).
       - *The event loop's stack* (`event_loop: stack low-water mark`) against
         3,316 bytes free, now with the devices' facts built on it.
+      **First run 2026-11-09** (ELF `b07c2bef5...`, the BSEC image with ADR 0038's
+      amendment, installed from the card over `da378821b...` in 36.9 s and
+      confirmed at its first frame; the owner's YAT log of 00:09, one visit of 80
+      s, 3 minutes after boot in all):
+      - *Entering*: full, `latency_ms=1910`; home again by tap, full, 1,880.
+      - *Live*: 18 partial redraws in the 80 s, 0.3 to 9.6 s apart, each 272-323
+        ms of EPDiy, `reason=status`, every one within the second the loop looks
+        at it. By their rectangles: the signal's digits on the Wi-Fi line (7),
+        `sent` on the MQTT line, the millivolts on the last line -- 4,232 mV,
+        USB and the cell both connected -- the clock's source in the title when
+        SNTP answered at 13.4 s, and once 690 x 281 px across the readings' and
+        the network's lines at 62.7 s. More than the 5-10 s estimated, in the
+        boot's first minutes: the state messages go out often then.
+      - *BSEC*: no late call during the visit; 1,775 ms at the full refresh
+        home, 567 ms at the first boot's first frame, as before.
+      - *The event loop's stack*: 3,292 bytes free.
+      - The touch controller at `0x14` again in the second boot (`gt911: found
+        address=20`), the latch. The lines by eye: not reported.

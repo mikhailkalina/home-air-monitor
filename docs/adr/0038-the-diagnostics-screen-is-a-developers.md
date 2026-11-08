@@ -9,7 +9,10 @@ Amends ADR 0031's and 0034's rule that the diagnostics network lines are as
 of the drawing. Both changes of screen stay full, as ADR 0034 specifies.
 Amended 2026-11-08 ("Amendment: live, at once", below): the content redraws
 are no longer held to a sensor cycle, the signal and the battery's
-millivolts redraw too, and the loop looks at the screen every second.
+millivolts redraw too, and the loop looks at the screen every second. Seen
+on the board 2026-11-09: 18 partial redraws in an 80 s visit, none making
+BSEC's call late (board_notes, open item "Touch, RTC and battery on the
+diagnostics screen").
 Verified on the host. The owner confirmed the firmware works on the board
 on 2026-10-23 after installing the BSEC build; no detailed log accompanied
 that confirmation (`docs/hardware/board_notes.md`, open item "A change of

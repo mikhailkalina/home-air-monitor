@@ -911,7 +911,8 @@ phase 5's plan is rewritten: `docs/hardware/phase-5-bench-plan.md`. On the board
 first image overflowed the main task's stack (ESP-IDF's 3,584 bytes) in EPDiy's init, an inline
 set-up having grown app_main's frame by 128 bytes, and the bootloader rolled it back; the second
 logged 72 bytes to spare, so the main task has 6,144 since -- freed when app_main returns, about
-2 s in -- not yet seen on the board. The gauge on a cell alone: 4,230 to 3,940 mV in 54 minutes,
+2 s in -- 2,608 bytes to spare on the board (2026-11-09). The gauge on a cell alone: 4,230 to
+3,940 mV in 54 minutes,
 ADC2 never refused beside Wi-Fi and MQTT; with USB it reads the charger's voltage. The card's 24
 days (`board_notes.md`): sixteen unattended without a crash, a watchdog or a Wi-Fi loss, the RTC's
 drift -20.85 ppm, and one power cut that cost the RTC 24 minutes with VL clear.
@@ -934,7 +935,11 @@ interval still holds); `diag_view_equal()` compares everything drawn, the Wi-Fi'
 battery's millivolts included; and while it is up `screen_controller_tick()` wakes both loops every
 second (`SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS`), so a change another task makes reaches the glass
 within a second and a partial refresh. A redraw every 5-10 s or so while it is up; more BSEC late
-calls during a visit. Verified on the host; not yet seen on the board.
+calls during a visit. Verified on the host. On the board, 2026-11-09 (ELF `b07c2bef5...`, installed
+from the card): an 80 s visit made 18 partial redraws, 272-323 ms each -- the signal's digits, `sent`,
+the millivolts, the clock's source when SNTP answered -- none making BSEC's call late; the lines by
+eye not yet reported (`board_notes.md`, open item "Touch, RTC and battery on the diagnostics
+screen").
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
