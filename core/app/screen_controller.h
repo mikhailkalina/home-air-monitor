@@ -61,6 +61,14 @@ extern "C" {
 // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
 #define SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS 300000u
 
+// CHOICE: while the diagnostics screen is up, the loop looks at what it would
+// say at least this often, so a change no event announces -- the signal the
+// network adapter reads on its own task, the card's state, the RTC written at
+// the console -- is on the glass within a second and a partial refresh,
+// whatever the sensors' pace. A look that finds nothing changed draws nothing
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md, "Amendment").
+#define SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS 1000u
+
 // CHOICE: leave an update failure visible long enough to read, then go home.
 #define SCREEN_CONTROLLER_UPDATE_ERROR_TIMEOUT_MS 10000u
 
@@ -146,8 +154,9 @@ bool screen_controller_input(screen_controller_t *sc, update_policy_t *policy,
                              const input_event_t *ev);
 
 // At `now_ms`: the diagnostics screen's timeout. Returns when it next needs
-// calling without an event -- SCREEN_CONTROLLER_NO_DEADLINE on the home
-// screen.
+// calling without an event -- on the diagnostics screen the next look
+// (SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS) or the timeout, whichever comes
+// first; SCREEN_CONTROLLER_NO_DEADLINE on the home screen.
 uint64_t screen_controller_tick(screen_controller_t *sc, update_policy_t *policy, uint64_t now_ms);
 
 // Whether the screen to show is to be redrawn now, and how: `policy`'s

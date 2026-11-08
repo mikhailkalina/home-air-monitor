@@ -2,11 +2,13 @@
 //
 // The diagnostics screen's view model (core/ui/diagnostics_view.h): each
 // source's state, failures and restarts; each reading's status, accuracy and
-// source; the clock and the recorder; the network -- and diag_view_equal(),
-// which decides whether the screen redraws, ignoring what changes at every
-// poll and the network's words that are as of the drawing -- the signal and
-// the messages, not the states (docs/adr/0031-the-network-on-the-screen.md,
-// docs/adr/0034-a-change-of-screen-is-a-full-refresh.md's amendment).
+// source; the clock and the recorder; the network; the touch controller, the
+// RTC and the battery -- and diag_view_equal(), which decides whether the
+// screen redraws: for everything it draws, the network's signal and the
+// battery's millivolts included, and for nothing it does not -- the readings'
+// numbers, a read counted, the held link
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md and its amendment,
+// docs/adr/0034-a-change-of-screen-is-a-full-refresh.md).
 
 #include <math.h>
 #include <stdint.h>
@@ -166,12 +168,12 @@ static void the_clock_and_the_recorder(void)
     HAC_CHECK(strcmp(v.recorder_text, "Recording: waiting") == 0);
 }
 
-static void equal_ignores_what_changes_every_poll(void)
+static void equal_ignores_what_the_screen_does_not_draw(void)
 {
     setup();
     const diag_view_t a = build("rtc", true, RECORDER_ON);
     // A new reading, its time, the wall clock moving, a read counted, the
-    // slot measuring: the same picture.
+    // slot measuring: none of it drawn, the same picture.
     g_r.co2_ppm = measurement_ok(735.0f, 5100u, 1u);
     g_r.wall_time_ms += 5000u;
     g_mgr.slots[0].reads = 200u;
@@ -374,20 +376,22 @@ static void without_telemetry_both_say_off(void)
     HAC_CHECK(v.ssid[0] == '\0' && v.rssi[0] == '\0' && v.address[0] == '\0');
 }
 
-// The network redraws as it changes (ADR 0038): an outage's start and end,
-// the messages sent and the last. The signal alone is as of the drawing, and
-// so is the held link, which the screen does not draw (ADR 0034).
-static void the_network_redraws_live_but_for_its_signal(void)
+// The network redraws as it changes (ADR 0038 and its amendment): the signal,
+// an outage's start and end, the messages sent and the last. The held link
+// does not: the screen does not draw it (ADR 0034).
+static void the_network_redraws_live_signal_and_all(void)
 {
     setup();
     const reporter_status_t n = online();
     const diag_view_t a = build_net(&n, LINK_ONLINE);
 
-    // The signal moved, the bar's link changing: nothing to redraw.
+    // The signal moved by a dB: redraw.
     reporter_status_t m = online();
-    m.rssi_dbm = -80;
+    m.rssi_dbm = (int8_t)(n.rssi_dbm - 1);
     const diag_view_t b = build_net(&m, LINK_ONLINE);
-    HAC_CHECK(diag_view_equal(&a, &b));
+    HAC_CHECK(strcmp(a.rssi, b.rssi) != 0);
+    HAC_CHECK(!diag_view_equal(&a, &b));
+    // The bar's link changing alone: nothing to redraw.
     const diag_view_t c = build_net(&m, LINK_NO_WIFI);
     HAC_CHECK(diag_view_equal(&b, &c));
     // A message sent: redraw -- its count and, a minute on, its time.
@@ -596,8 +600,8 @@ static bool same_as(const diag_view_t *a, diag_touch_t touch, diag_rtc_t rtc)
     return diag_view_equal(a, &b);
 }
 
-// The millivolts are as of the drawing; the number, the gauge's state and the
-// devices' lines redraw.
+// Everything of the devices and the battery redraws: the millivolts, the
+// number, the gauge's state, the devices' lines.
 static void what_of_the_devices_and_the_battery_redraws(void)
 {
     setup();
@@ -607,7 +611,14 @@ static void what_of_the_devices_and_the_battery_redraws(void)
     g_r.battery_mv = measurement_ok(3976.0f, 100u, 3u);
     const diag_view_t a = build_devices(touch, rtc);
 
-    g_r.battery_mv = measurement_ok(3962.0f, 112u, 3u);
+    // A new burst's median a millivolt lower, the percentage unchanged: redraw.
+    g_r.battery_mv = measurement_ok(3975.0f, 112u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc));
+    // The voltage gone, the number kept: redraw.
+    g_r.battery_mv = measurement_status(VAL_ERROR, 112u, 3u);
+    HAC_CHECK(!same_as(&a, touch, rtc));
+    // The same millivolts measured again later: nothing to redraw.
+    g_r.battery_mv = measurement_ok(3976.0f, 124u, 3u);
     HAC_CHECK(same_as(&a, touch, rtc));
     g_r.battery_percent = measurement_ok(72.0f, 112u, 3u);
     HAC_CHECK(!same_as(&a, touch, rtc));
@@ -634,7 +645,7 @@ int main(void)
     HAC_RUN(counts_stop_at_999_plus);
     HAC_RUN(every_reading_with_status_accuracy_and_source);
     HAC_RUN(the_clock_and_the_recorder);
-    HAC_RUN(equal_ignores_what_changes_every_poll);
+    HAC_RUN(equal_ignores_what_the_screen_does_not_draw);
     HAC_RUN(without_a_sensor_manager_there_are_no_sources);
     HAC_RUN(a_working_session_and_its_network);
     HAC_RUN(the_network_in_trouble);
@@ -642,7 +653,7 @@ int main(void)
     HAC_RUN(messages_sent_in_thousands_past_four_digits);
     HAC_RUN(a_name_that_is_not_text_is_shown_with_question_marks);
     HAC_RUN(without_telemetry_both_say_off);
-    HAC_RUN(the_network_redraws_live_but_for_its_signal);
+    HAC_RUN(the_network_redraws_live_signal_and_all);
     HAC_RUN(the_touch_controller_and_the_rtc_beside_the_sources);
     HAC_RUN(each_device_state_its_word_and_what_is_trouble);
     HAC_RUN(a_device_the_build_does_not_have_has_no_line);

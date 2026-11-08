@@ -48,8 +48,9 @@
 // whether what it would draw has changed says so through
 // update_policy_evaluate_content(), and the panel's rules are the same -- or
 // through update_policy_evaluate_partial_content(), whose content redraws
-// stay partial without a count limit: the diagnostics screen's, a developer's
-// screen. Its first frame and screen changes still go out full
+// stay partial without a count limit and go out as soon as they are due, not
+// once per sensor cycle: the diagnostics screen's, a developer's screen. Its
+// first frame and screen changes still go out full
 // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
 //
 // The module is pure. It performs no I/O, allocates nothing, and takes every
@@ -266,10 +267,12 @@ void update_policy_evaluate(update_policy_t *p, const air_reading_t *reading,
 void update_policy_evaluate_content(const update_policy_t *p, bool changed, update_decision_t *out);
 
 // The same for a screen whose content redraws stay partial, without a count
-// limit or budget-forced full refreshes. Content is held to
-// min_redraw_interval_ms as usual. Requests (screen changes) and the first
-// frame are full. On a panel with no partial mode the normal full-refresh
-// rules apply, as in update_policy_evaluate_content().
+// limit or budget-forced full refreshes, and go out at once: not held to
+// min_redraw_interval_ms -- the diagnostics screen, where each change is to be
+// seen as it comes. Requests (screen changes) and the first frame are full. On
+// a panel with no partial mode the normal full-refresh rules apply, the
+// panel's minimum full-refresh interval included, as in
+// update_policy_evaluate_content().
 void update_policy_evaluate_partial_content(const update_policy_t *p, bool changed,
                                             update_decision_t *out);
 

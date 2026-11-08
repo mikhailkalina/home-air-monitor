@@ -416,18 +416,16 @@ bool diag_view_equal(const diag_view_t *a, const diag_view_t *b)
         !same_text(a->recorder_text, b->recorder_text)) {
         return false;
     }
-    // The network: all of it redraws but the signal, which is as of the
-    // drawing.
     if (a->network_present != b->network_present || !same_text(a->ssid, b->ssid) ||
         !same_text(a->wifi_state, b->wifi_state) || a->wifi_trouble != b->wifi_trouble ||
-        !same_text(a->address, b->address) || !same_text(a->broker_state, b->broker_state) ||
-        a->broker_trouble != b->broker_trouble || !same_text(a->sent, b->sent) ||
-        !same_text(a->last, b->last) || !same_text(a->refused, b->refused) ||
-        a->refused_trouble != b->refused_trouble) {
+        !same_text(a->rssi, b->rssi) || !same_text(a->address, b->address) ||
+        !same_text(a->broker_state, b->broker_state) || a->broker_trouble != b->broker_trouble ||
+        !same_text(a->sent, b->sent) || !same_text(a->last, b->last) ||
+        !same_text(a->refused, b->refused) || a->refused_trouble != b->refused_trouble) {
         return false;
     }
-    // The battery: its number and its trouble, not its millivolts.
-    if (!same_text(a->battery, b->battery) || a->battery_trouble != b->battery_trouble) {
+    if (!same_text(a->battery, b->battery) || a->battery_trouble != b->battery_trouble ||
+        !same_text(a->battery_mv, b->battery_mv)) {
         return false;
     }
     if (a->device_count != b->device_count) {

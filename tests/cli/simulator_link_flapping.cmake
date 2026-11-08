@@ -187,8 +187,9 @@ message(STATUS "diagnostics: no redraw for the link's change, none skipped")
 # A tap at 130 s brings the screen; the network goes at 150 s and is back at
 # 200 s (the simulated link associating for a few seconds), both while it is
 # up -- for five minutes since 2026-10-23. Its Wi-Fi and MQTT states are
-# drawn, so each change is a redraw, partial, in the sensor cycle it happens
-# in; nothing between them, however many attempts the reporter makes -- and no
+# drawn, so each change is a redraw, partial, at once -- not held to a sensor
+# cycle since ADR 0038's amendment; nothing between them, however many
+# attempts the reporter makes -- and no
 # message goes out meanwhile to change the MQTT line's counts. Before the loss
 # the counts may redraw it; that is not this check's business.
 execute_process(

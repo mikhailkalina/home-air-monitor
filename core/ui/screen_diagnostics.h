@@ -45,7 +45,7 @@
 // 32px text -- four of sources and devices, six readings, the network's two
 // and the battery's -- and the title is 32px as its hint always was. The status bar's
 // word for the link stood beside the hint until ADR 0034: the MQTT line says
-// the same, and the network's lines are as of the drawing.
+// the same, live since ADR 0038.
 
 #ifndef HAC_CORE_UI_SCREEN_DIAGNOSTICS_H
 #define HAC_CORE_UI_SCREEN_DIAGNOSTICS_H

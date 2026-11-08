@@ -751,7 +751,11 @@ static reporter_t *start_telemetry(port_net_t *net, const char *device_id, senso
 // has long settled and the panel has stopped being driven. up() only asks;
 // the station's task starts the radio -- its RF calibration the current this
 // waits for -- and joins. The next panel drive is a sensor cycle away at
-// least (update_policy's min_redraw_interval_ms), unless someone taps.
+// least (update_policy's min_redraw_interval_ms), unless someone taps -- or
+// the first frame was the diagnostics screen, a tap during the boot: its
+// content redraws at once since ADR 0038's amendment, so a partial refresh
+// for what changed during the first frame's flush may start within
+// milliseconds of this, beside the RF calibration. A rare path, not guarded.
 static void start_radio(void *ctx)
 {
     port_net_t *net = (port_net_t *)ctx;

@@ -3,9 +3,10 @@
 // The screen controller (core/app/screen_controller.h) with the real update
 // policy on the fake clock: a tap switches the screen and its redraw goes out
 // at once, as a full refresh; the diagnostics screen redraws only
-// when what it says changes, goes home after its timeout -- kept up by any
-// touch -- and a redraw that carried a tap reports the latency from the
-// finger's lift to the end of the flush.
+// when what it says changes, and then at once, is looked at every second
+// while it is up, goes home after its timeout -- kept up by any touch -- and
+// a redraw that carried a tap reports the latency from the finger's lift to
+// the end of the flush.
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -145,18 +146,25 @@ static void the_diagnostics_screen_redraws_when_what_it_says_changes(void)
     tap_at(480u, 270u);
     (void)pass(1200u, &note);
 
-    // A source fails: a status redraw, held to the cycle like any other.
+    // A source fails a second after the screen came: a partial redraw at
+    // once, not held to the sensor cycle (docs/adr/0038's amendment).
     g_mgr.slots[0].failing = true;
     g_mgr.slots[0].failures = 1u;
     fake_clock_advance(&g_clock, 1000u);
     update_decision_t d = pass(500u, &note);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
+    HAC_CHECK(!d.held_for_redraw_interval);
+    HAC_CHECK(!note.screen_changed);
+    // Nothing more to say: nothing drawn.
+    d = pass(500u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
-    HAC_CHECK(d.held_for_redraw_interval);
-    fake_clock_advance(&g_clock, 5000u);
+    // Another failure 100 ms after that redraw: at once again.
+    g_mgr.slots[0].failures = 2u;
+    fake_clock_advance(&g_clock, 100u);
     d = pass(500u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
-    HAC_CHECK(!note.screen_changed);
     d = pass(500u, &note);
     HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
 }
@@ -172,8 +180,12 @@ static void the_diagnostics_screen_goes_home_untouched_and_touches_keep_it(void)
     const uint64_t lifted = g_clock.now_ms;
     (void)pass(1200u, &note);
 
-    uint64_t due = screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms);
-    HAC_CHECK_EQ_U64(due, lifted + SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS);
+    // While it is up the loop looks at it every second, well before the
+    // timeout (docs/adr/0038's amendment).
+    HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms),
+                     g_clock.now_ms + SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS);
+    HAC_CHECK(g_clock.now_ms + SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS <
+              lifted + SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS);
 
     // A drag across the glass half way: not a tap, but a touch -- the
     // timeout starts again from it.
@@ -186,10 +198,16 @@ static void the_diagnostics_screen_goes_home_untouched_and_touches_keep_it(void)
     ev.kind = INPUT_TOUCH_UP;
     HAC_CHECK(!screen_controller_input(&g_sc, &g_policy, &ev));
     HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_DIAGNOSTICS);
-    const uint64_t touched = g_clock.now_ms;
-    due = screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms);
-    HAC_CHECK_EQ_U64(due, touched + SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS);
+    const uint64_t due = g_clock.now_ms + SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS;
 
+    // Untouched from the original tap's timeout on: still up.
+    fake_clock_advance(&g_clock,
+                       lifted + SCREEN_CONTROLLER_DEFAULT_DIAGNOSTICS_TIMEOUT_MS - g_clock.now_ms);
+    HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms),
+                     g_clock.now_ms + SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS);
+    HAC_CHECK_EQ_INT(screen_controller_screen(&g_sc), SCREEN_DIAGNOSTICS);
+
+    // Within a look of the timeout, the timeout is the deadline.
     fake_clock_advance(&g_clock, due - g_clock.now_ms - 1u);
     HAC_CHECK_EQ_U64(screen_controller_tick(&g_sc, &g_policy, g_clock.now_ms), due);
     fake_clock_advance(&g_clock, 1u);

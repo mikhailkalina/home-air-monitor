@@ -35,27 +35,23 @@
 //     (docs/adr/0041-touch-rtc-and-battery-on-the-diagnostics-screen.md);
 //   * the battery: the status bar's percentage and the millivolts behind it.
 //
-// Nothing on it changes with time alone, and nothing that changes at every
-// poll -- no read counts, no ages, no uptime: on e-paper a redraw costs a
-// partial refresh of the budget, and the screen redraws only when what it
-// says has changed (diag_view_equal()). The slot states fold IDLE and
-// MEASURING into "running" for the same reason: a forced-mode BME68x passes
-// through both every cycle.
+// The screen is a developer's, up for minutes while someone tests the device,
+// and it is live: everything it draws redraws as soon as it changes
+// (diag_view_equal() compares all of it), with a partial refresh at once --
+// not held to a sensor cycle, not counted against the budget -- and the loop
+// looks at it every second while it is up
+// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md and its
+// amendment). Partial refreshes are not saved on it: the full refresh home
+// clears what they leave. What moves most often is the signal, which the
+// network adapter reads every 10 s, and the battery's millivolts, a median
+// that moves at every burst, 12 s apart: a redraw each, every 10 s or so.
 //
-// The network redraws as it changes -- the Wi-Fi's state ("up", "joining",
-// "failed", "off") and its address, the MQTT session's ("online",
-// "offline"), the state messages sent, the time of the last and the
-// refusals -- so a developer can watch it live
-// (docs/adr/0038-the-diagnostics-screen-is-a-developers.md; until 2026-10-23
-// it was drawn as of the drawing). "joining" covers a whole outage, every
-// attempt and the backoff between them, so an outage costs a redraw at its
-// start and one or two at its end, not one an attempt; the messages one a
-// minute or so while a session is up. The signal alone stays as it is when
-// the screen is drawn: it moves by a dB or two at every read, every 10 s,
-// and redraws nothing by itself. The battery's millivolts are as of the drawing
-// too: the median under them moves by a few millivolts at every burst, 12 s
-// apart; its percentage, the gauge's state and the devices' lines redraw. The
-// link the status bar shows (core/app/link_hold.h) is not on
+// What it shows is chosen for what it says, not for what it costs. The slot
+// states fold IDLE and MEASURING into "running": they are the phases of every
+// measurement, not the source's health, and a forced-mode BME68x passes
+// through both every cycle -- the word would flicker, not inform. "joining"
+// covers a whole outage, every attempt and the backoff between them, as one
+// state. The link the status bar shows (core/app/link_hold.h) is not on
 // this screen: its word is the MQTT line's state, said twice, a minute late.
 // Neither is it compared: compared and not drawn, a change of it made a
 // redraw due whose picture was the one on the glass -- an empty diff, tried
@@ -191,8 +187,7 @@ typedef struct {
     bool recorder_trouble;              // no medium, full, failed
     char recorder_text[DIAG_LINE_MAX];  // "Recording: on", ...
 
-    // The network (above). Everything in it redraws but the signal, which
-    // is as of the drawing.
+    // The network (above).
     bool network_present;    // a reporter: telemetry configured
     const char *wifi_state;  // "up", "joining", "failed", "off"; "-" without a network port
     bool wifi_trouble;       // telemetry, and the link not up
@@ -210,8 +205,7 @@ typedef struct {
 
     // The battery: "Battery 74 %", "Battery n/a", "Battery ERR" -- the status
     // bar's number, or the home screen's word for none -- and "3976 mV"
-    // whenever the gauge has a voltage, a cell's or not; "" without one. The
-    // millivolts are as of the drawing (above).
+    // whenever the gauge has a voltage, a cell's or not; "" without one.
     char battery[DIAG_SHORT_TEXT_MAX];
     bool battery_trouble;  // the gauge in error: no burst for minutes
     char battery_mv[DIAG_SHORT_TEXT_MAX];
@@ -247,9 +241,8 @@ typedef struct {
 void diag_view_build(diag_view_t *v, const diag_facts_t *facts);
 
 // Whether the screen showing `b` has nothing to redraw for `a`: everything
-// either would draw is the same but the network's signal and the battery's
-// millivolts, which are as of the drawing (above). Everything it compares is
-// drawn.
+// either would draw is the same. Everything it compares is drawn, and
+// everything drawn is compared.
 bool diag_view_equal(const diag_view_t *a, const diag_view_t *b);
 
 // "starting", "running", "failing", "restarting" for a slot.

@@ -2417,7 +2417,9 @@ layout settles, not before.
         screen up five minutes with partial content redraws (ADR 0038): an outage
         watched on it shows `joining` and `offline` at the loss, `up` and
         `online` at the return, a partial refresh each; `sent` and `last` a
-        minute or so apart while a session is up.
+        minute or so apart while a session is up. **Since 2026-11-08** the
+        signal too, and every change at once, not held to a sensor cycle
+        (ADR 0038's amendment).
       - *The test app*: the `port_net` contract against the Wi-Fi adapter,
         `info()`'s checks included -- the name terminated and the same up and
         down, an address only while up -- with the cut and restore checks "not
@@ -3453,8 +3455,12 @@ layout settles, not before.
         no time` until SNTP writes it -- and, if it lost minutes with VL clear as
         on 2026-10-28, `running` with nothing wrong on the screen: only the
         network's comparison in the log says so.
-      - *The redraws*: none for the millivolts alone while the screen is up;
-        one for a percentage step, a device's change, the drift's hourly
-        update -- partial, as ADR 0038's content redraws are.
+      - *The redraws* (ADR 0038's amendment): one for each change of the
+        millivolts -- every 12 s or so on a cell -- and of the signal, every
+        10 s or so; one for a percentage step, a device's change, the drift's
+        hourly update; each partial, at once, within a second of the change
+        (`decision action=partial reason=status` lines, a second or less after
+        the cause). How many a five-minute visit makes, and how many late BSEC
+        calls with them (`BSEC called late` while the screen is up).
       - *The event loop's stack* (`event_loop: stack low-water mark`) against
         3,316 bytes free, now with the devices' facts built on it.

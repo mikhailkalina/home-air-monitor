@@ -268,10 +268,12 @@ static void decide(const update_policy_t *p, update_reason_t reason, bool partia
 
     // One redraw per cycle: one that comes due sooner after the last waits,
     // and takes whatever else changes meanwhile with it. Not the first frame,
-    // not a redraw a person asked for, and not across a clock restart, where
-    // the old stamp means nothing.
-    if (!immediate && reason != UPDATE_REASON_FIRST_FRAME && reason != UPDATE_REASON_REQUEST &&
-        now_ms >= p->last_refresh_ms) {
+    // not a redraw a person asked for, not the diagnostics screen's content
+    // (partial_only: a developer watching it wants each change as it comes,
+    // docs/adr/0038-the-diagnostics-screen-is-a-developers.md, "Amendment"),
+    // and not across a clock restart, where the old stamp means nothing.
+    if (!immediate && !partial_only && reason != UPDATE_REASON_FIRST_FRAME &&
+        reason != UPDATE_REASON_REQUEST && now_ms >= p->last_refresh_ms) {
         const uint64_t redraw_at = p->last_refresh_ms + (uint64_t)p->cfg.min_redraw_interval_ms;
         if (now_ms < redraw_at) {
             out->action = UPDATE_NONE;
@@ -295,8 +297,10 @@ static void decide(const update_policy_t *p, update_reason_t reason, bool partia
     }
 
     // The diagnostics screen's own content stays live with partial refreshes,
-    // without a count limit. Screen changes above and the first frame stay
-    // full (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    // at once and without a count limit. Screen changes above and the first
+    // frame stay full (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    // On a panel with no partial mode it falls through to the full refresh
+    // below, and the panel's minimum full-refresh interval still holds it.
     if (partial_only && reason != UPDATE_REASON_FIRST_FRAME &&
         p->limits.max_partial_refreshes_before_full > 0u) {
         out->action = UPDATE_PARTIAL;

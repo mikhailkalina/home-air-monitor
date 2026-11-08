@@ -55,10 +55,11 @@ room for four lines of which the board uses two.
   event loop without a lock. Its drift is net_time's last.
 - **The battery on the last line's left**, `Battery 74 %` and then `3976 mV`:
   the status bar's number in the home screen's words (`n/a`, `ERR`), and the
-  gauge's median whenever it has a voltage, a cell's or USB's. The millivolts
-  are as of the drawing, as the Wi-Fi's signal is: the median moves by a few
-  millivolts at every burst, 12 s apart, and comparing it would redraw the
-  screen at that pace. The number and the gauge's error redraw.
+  gauge's median whenever it has a voltage, a cell's or USB's. All of it
+  redraws as it changes, the millivolts too -- the median moves at most bursts,
+  12 s apart -- since ADR 0038's amendment the same day; this ADR first left
+  the millivolts as of the drawing, as the Wi-Fi's signal was, to spare the
+  redraws. The owner's verdict: the screen is up minutes at a time, and live.
 - **The clock to the title's middle.** Clock, battery and recorder do not fit
   one line at their widest -- "Clock: set (--wall-time)", "Battery 100 % 4400
   mV", "Recording: no medium", over 1,000 px against 872 -- and the title's
@@ -78,7 +79,9 @@ room for four lines of which the board uses two.
   diagnostics view is about 130 bytes larger, twice over in the screen
   controller's static state.
 - The screen redraws for a device's change: a new failure, a state, an address,
-  a drift an hour apart. All rare; ADR 0038's partial content redraws carry them.
+  a drift an hour apart -- all rare -- and for the battery's millivolts every
+  12 s or so; ADR 0038's partial content redraws carry them, at once since its
+  amendment.
 - An RTC whose oscillator stopped with VL clear still reads `running`: the
   chip does not say so, and only the network's comparison shows it (the drift's
   sync, and its log line). The screen is no better than the chip's own report.

@@ -7,6 +7,9 @@ Date: 2026-10-23
 Accepted, at the owner's request after watching a Wi-Fi outage on the board.
 Amends ADR 0031's and 0034's rule that the diagnostics network lines are as
 of the drawing. Both changes of screen stay full, as ADR 0034 specifies.
+Amended 2026-11-08 ("Amendment: live, at once", below): the content redraws
+are no longer held to a sensor cycle, the signal and the battery's
+millivolts redraw too, and the loop looks at the screen every second.
 Verified on the host. The owner confirmed the firmware works on the board
 on 2026-10-23 after installing the BSEC build; no detailed log accompanied
 that confirmation (`docs/hardware/board_notes.md`, open item "A change of
@@ -81,3 +84,71 @@ held link stays undrawn and uncompared (ADR 0034).
   `simulator_link_flapping` (full entry, then one partial redraw at the loss,
   none between, one to three at the return, nothing skipped), `simulator_taps`
   (four full changes of screen; the timeout 300 s after the last tap).
+
+## Amendment: live, at once (2026-11-08)
+
+At the owner's request, on reading ADR 0041's battery line: "everything on the
+diagnostics screen in real time -- the millivolts too; drop any rule that
+saves this screen's refreshes: it is not up all the time, there is nothing to
+save there."
+
+What still saved refreshes after the decision above:
+
+- **The sensor cycle.** Content redraws were held to one per
+  `min_redraw_interval_ms` (5 s): a change waited for it, and took whatever
+  else changed meanwhile with it.
+- **Two numbers drawn and not compared.** The Wi-Fi's signal (above) and,
+  since ADR 0041, the battery's millivolts were "as of the drawing": on the
+  glass as they were at the last redraw for something else.
+- **The loop's pace.** On the board the event loop wakes for the sensors,
+  the reporter, a tap, a network event. What another task changes without an
+  event -- the signal the station's task reads every 10 s, the card's state,
+  the RTC written at the console -- reached the screen at the next of those,
+  up to a sensor cycle later.
+
+**Decided:**
+
+- `update_policy_evaluate_partial_content()` goes out at once: a content
+  redraw due is a partial refresh now, not held to `min_redraw_interval_ms`.
+  Everything else of the decision above stands: partial, no count limit,
+  entry and the way home full. On a panel with no partial mode the content
+  falls through to a full refresh, and the panel's minimum full-refresh
+  interval still holds it: a guard of the panel's, not a saving.
+- `diag_view_equal()` compares everything the screen draws -- the signal and
+  the millivolts included -- and nothing it does not (the readings' numbers,
+  the held link: ADR 0034's empty diff stays avoided).
+- While the screen is up, `screen_controller_tick()` asks to be called again
+  within `SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS`, a second (a CHOICE): both
+  loops then look at what the screen would say every second. A look that
+  finds nothing changed draws nothing; the timeout's deadline is kept.
+- The slot states still fold IDLE and MEASURING into "running", and "joining"
+  still covers a whole outage: chosen for what they say -- the phases of every
+  measurement, every attempt of one outage, would flicker rather than inform --
+  not for what they cost.
+
+**Consequences:**
+
+- A change reaches the glass within a second plus its partial refresh (0.3-0.6
+  s for a line or two, ADR 0008's model), where it waited up to 5 s, or for
+  something else, before.
+- More partial refreshes per visit: the signal moves by a dB or so at most of
+  its reads, 10 s apart, and the millivolts at most bursts, 12 s apart -- a
+  redraw every 5-10 s or so while the screen is up, on top of the states and
+  counts. Five minutes untouched is some 30-60 partial refreshes; the full
+  refresh home clears what they leave (ADR 0008, 0019).
+- BSEC's call late more often while the screen is up: any partial refresh that
+  starts within about 0.6 s of a call delays it (ADR 0020, "Timing"). Accepted:
+  the screen is up minutes at a time, and BSEC's accuracy reached `high`
+  through 17 late calls in 21 minutes on the board (board_notes, open item
+  "BSEC on the board", second run); how often a long visit makes them is the
+  board's to show.
+- The loop wakes every second while the screen is up: each look builds the
+  view and compares it, microseconds; nothing on the home screen changes.
+- **Tests**: `test_update_policy` (content at once, a second apart, through
+  100 redraws and past the panel's interval; a panel without partials still
+  held by that interval), `test_screen_controller` (a failure redrawn at once,
+  another 100 ms after; the look every second, the timeout's deadline within a
+  look of it), `test_diagnostics_view` (the signal by a dB, the millivolts by
+  one, the voltage gone: each a redraw; the held link not),
+  `simulator_link_flapping` (unchanged counts: the outage's loss and return
+  redraw at once).

@@ -1387,7 +1387,9 @@ static void past_the_budget_by_the_budget_again_a_redraw_waits(void)
 }
 
 // Diagnostics content stays partial beyond the budget and the former bound,
-// even after the minimum full-refresh interval. Entering and leaving are full.
+// even after the minimum full-refresh interval, and goes out at once -- not
+// held to the sensor cycle (docs/adr/0038's amendment). Entering and leaving
+// are full.
 static void diagnostics_content_stays_partial_without_a_count_limit(void)
 {
     fixture_t f;
@@ -1409,29 +1411,25 @@ static void diagnostics_content_stays_partial_without_a_count_limit(void)
     update_policy_commit(&f.policy, &r, &d);
     HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), 0);
 
-    // Content within the cycle waits for its deadline.
-    fake_clock_advance(&f.clock, 1000u);
-    update_policy_evaluate_partial_content(&f.policy, true, &d);
-    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
-    HAC_CHECK(d.held_for_redraw_interval);
-    HAC_CHECK_EQ_U64(d.next_deadline_ms,
-                     f.policy.last_refresh_ms + UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
-
     // Far beyond the old bound, with enough time for full refreshes: every
-    // content change still goes out partially, without a frozen screen.
+    // content change still goes out partially, without a frozen screen --
+    // at once, each a second after the last, well inside the sensor cycle.
+    HAC_CHECK(UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS > 1000u);
     const uint32_t redraws = TEST_MAX_PARTIALS * UPDATE_POLICY_MOST_PARTIALS_PER_BUDGET * 10u;
     for (uint32_t i = 0u; i < redraws; ++i) {
-        fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
+        fake_clock_advance(&f.clock, 1000u);
         update_policy_evaluate_partial_content(&f.policy, true, &d);
         HAC_CHECK_EQ_INT(d.action, UPDATE_PARTIAL);
         HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
         HAC_CHECK(!d.full_forced_by_budget);
         HAC_CHECK(!d.deferred_by_min_interval);
         HAC_CHECK(d.partial_past_budget == (i >= TEST_MAX_PARTIALS));
+        HAC_CHECK(!d.held_for_redraw_interval);
         HAC_CHECK_EQ_U64(d.next_deadline_ms, f.clock.now_ms);
         update_policy_commit(&f.policy, &r, &d);
     }
     HAC_CHECK_EQ_INT((int)update_policy_partials_since_full(&f.policy), (int)redraws);
+    HAC_CHECK(f.clock.now_ms > TEST_MIN_FULL_INTERVAL_MS);  // the panel's interval passed too
 
     // No change means no redraw, even beyond the budget and interval.
     fake_clock_advance(&f.clock, UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS);
@@ -1452,18 +1450,31 @@ static void diagnostics_content_stays_partial_without_a_count_limit(void)
 }
 
 // On a panel with no partial mode, partial-only means nothing: full, as
-// update_policy_evaluate_content() would say.
+// update_policy_evaluate_content() would say -- the panel's minimum
+// full-refresh interval included, a guard of the panel's, where the sensor
+// cycle's pacing is gone (docs/adr/0038's amendment).
 static void partial_only_on_a_panel_without_partials_is_full(void)
 {
     fixture_t f;
     fixture_init(&f, TEST_MIN_FULL_INTERVAL_MS, 0u);
     const air_reading_t r = prime(&f, 620.0f, 22.0f, 45.0f);
-    (void)r;
     update_decision_t d;
     update_policy_request(&f.policy);
     update_policy_evaluate_partial_content(&f.policy, false, &d);
     HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
     HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_REQUEST);
+    update_policy_commit(&f.policy, &r, &d);
+
+    fake_clock_advance(&f.clock, 1000u);
+    update_policy_evaluate_partial_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_NONE);
+    HAC_CHECK(d.deferred_by_min_interval);
+    HAC_CHECK(!d.held_for_redraw_interval);
+    HAC_CHECK_EQ_U64(d.next_deadline_ms, f.policy.last_full_refresh_ms + TEST_MIN_FULL_INTERVAL_MS);
+    fake_clock_advance(&f.clock, d.next_deadline_ms - f.clock.now_ms);
+    update_policy_evaluate_partial_content(&f.policy, true, &d);
+    HAC_CHECK_EQ_INT(d.action, UPDATE_FULL);
+    HAC_CHECK_EQ_INT(d.reason, UPDATE_REASON_STATUS);
 }
 
 static void limits_come_from_the_display_port(void)

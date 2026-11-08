@@ -95,7 +95,8 @@ uint64_t screen_controller_tick(screen_controller_t *sc, update_policy_t *policy
     }
     const uint64_t home_at = since + sc->cfg.diagnostics_timeout_ms;
     if (now_ms < home_at) {
-        return home_at;
+        const uint64_t look_at = now_ms + SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS;
+        return (look_at < home_at) ? look_at : home_at;
     }
     sc->timeouts++;
     switch_to(sc, policy, SCREEN_HOME, false, now_ms);
@@ -133,7 +134,7 @@ void screen_controller_evaluate(screen_controller_t *sc, update_policy_t *policy
     const bool changed =
         !sc->have_shown_diag || !diag_view_equal(&sc->pending_diag, &sc->shown_diag);
     // A developer's screen: content redraws stay partial without a count limit
-    // (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
+    // and go out at once (docs/adr/0038-the-diagnostics-screen-is-a-developers.md).
     update_policy_evaluate_partial_content(policy, changed, out);
 }
 

@@ -882,11 +882,11 @@ the board" and "MQTT on the board").
 
 On branch `usb-card-updates-and-live-diagnostics` (ADR 0038), at the owner's request after watching an outage:
 the diagnostics screen is a developer's. Its content redraws are partial without a count limit
-(`update_policy_evaluate_partial_content()`: past the budget and former bound too, one per
-sensor cycle); entering and returning home stay full and start the budget over (ADR 0034).
-It goes home after five minutes untouched, not one, and its network lines redraw as they
-change -- the Wi-Fi's and the session's states, the address, `sent`, `last`,
-the refusals -- all but the signal. Verified on the host (`test_update_policy`,
+(`update_policy_evaluate_partial_content()`: past the budget and former bound too, then one per
+sensor cycle -- at once since its amendment, below); entering and returning home stay full and
+start the budget over (ADR 0034). It goes home after five minutes untouched, not one, and its
+network lines redraw as they change -- the Wi-Fi's and the session's states, the address, `sent`,
+`last`, the refusals -- then all but the signal. Verified on the host (`test_update_policy`,
 `test_screen_controller`, `test_diagnostics_view`, `simulator_link_flapping`, `simulator_taps`);
 the owner confirmed the BSEC firmware works on the board on 2026-10-23, without a detailed log.
 
@@ -923,10 +923,18 @@ boot, and the touch controller's bus address or the RTC's drift against SNTP. Th
 words (`diag_touch_t`, `diag_rtc_t` in `diag_facts_t`); the board's composition the facts --
 `adp_input_health()`, which never waits for the controller's lock, and `wall_clock.c`'s RTC health,
 the boot's verdict and every write's (`time_set`, `rtc_stop`, SNTP's). The battery took the last
-line's left, `Battery 74 % 3976 mV`, the millivolts as of the drawing like the signal; the clock
-moved to the title's middle, as the three do not fit one line. The simulator has neither device and
-draws no line for them. Verified on the host; the firmware, its BSEC variant, the test app and the
-slideshow build. Not yet seen on the board.
+line's left, `Battery 74 % 3976 mV`; the clock moved to the title's middle, as the three do not fit
+one line. The simulator has neither device and draws no line for them. Verified on the host; the
+firmware, its BSEC variant, the test app and the slideshow build. Not yet seen on the board.
+
+On the same branch, ADR 0038 amended at the owner's request: the diagnostics screen is live,
+nothing saved on it. Its content redraws go out at once, no longer held to a sensor cycle
+(`update_policy_evaluate_partial_content()`; on a panel without partials the minimum full-refresh
+interval still holds); `diag_view_equal()` compares everything drawn, the Wi-Fi's signal and the
+battery's millivolts included; and while it is up `screen_controller_tick()` wakes both loops every
+second (`SCREEN_CONTROLLER_DIAGNOSTICS_LOOK_MS`), so a change another task makes reaches the glass
+within a second and a partial refresh. A redraw every 5-10 s or so while it is up; more BSEC late
+calls during a visit. Verified on the host; not yet seen on the board.
 
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
