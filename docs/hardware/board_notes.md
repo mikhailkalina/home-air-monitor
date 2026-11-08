@@ -116,6 +116,7 @@ two never disagree. Carried forward as named constants in
 | Battery ADC | 14 | `src/utilities.h:32` |
 | microSD `MISO`/`MOSI`/`SCLK`/`CS` -- the card's since phase 3f ("The microSD slot") | 16 / 15 / 11 / 42 | `src/utilities.h:34-37` |
 | Genuinely free | 45, 10 (analog-in only), 48, 39 | `README.MD` "GPIO List" |
+| ... of them on the 40-pin header | 10 (pin 19, `MOSI`), 39 (pin 24, `CS`) | the v2.4 schematic, read 2026-10-22 ("Connectors") |
 
 Four findings worth carrying forward, because each one corrects or narrows an
 assumption made elsewhere in this repository:
@@ -187,16 +188,88 @@ where the sensors take their power. Sources:
 | Net | Source | Present | Feeds |
 |---|---|---|---|
 | `VBUS` | USB-C, before the Schottky `D8` | only with USB plugged in | the charger; pins 2 and 4 of the 40-pin header |
-| `5V` | `VBUS` through `D8`, or the battery through P-MOSFET `Q5` while `VBUS` is absent (3.7-4.2 V then) | whenever the board is powered | the LDO |
-| `VDD3V3` | LDO `U13` (ME6217-3V3) from `5V` | whenever the board is powered | the ESP32-S3 module, the RTC (through `D3`, as `VCC_RTC` -- "The RTC" below), the 74HCT4094 (`VCC` and `OE`), the touch connector `P2`, the I2C pull-ups |
-| `3V3` | `VDD3V3` through P-MOSFET `Q4`, switched by `PWR_EN` (NPN `Q2` pulls the gate) | while `PWR_EN` is high | pin 1 ("V") of the 4-pin connectors `P4`/`P5`, the blue LED `LED7` (through 2 kOhm), and the boost `U2` (LT1945): its `VIN`, and `SHDN1`/`SHDN2` through 100 kOhm |
-| +22 V, -20 V | boost `U2` | while `3V3` is up -- see below | the panel; ±15 V derived from them by `U1`/`U6` (78L15/79L15) |
+| `5V` | `VBUS` through `D8`, or the battery through P-MOSFET `Q5` while `VBUS` is absent (3.7-4.2 V then) | whenever the board is powered | the LDO, through a 750 mA fuse -- and behind the fuse the battery joins it through `Q3` while `PWR_EN` is high ("The battery path" below) |
+| `VDD3V3` | LDO `U13` (printed "ME6217-3V3/RT9080-3V3") from `5V`, its enable tied to its input | whenever the board is powered | the ESP32-S3 module, the RTC (through `D3`, as `VCC_RTC` -- "The RTC" below), the 74HCT4094 (`VCC` and `OE`), the touch connector `P2`, the I2C pull-ups, the microSD slot, the button's pull-up |
+| `3V3` | `VDD3V3` through P-MOSFET `Q4`, switched by `PWR_EN` (NPN `Q2` pulls the gate) | while `PWR_EN` is high | pin 1 ("V") of the 4-pin connectors `P4`/`P5`, the blue LED `LED7` (through 2 kOhm), the panel's logic (`VDD` and `TEST/VDD+` on `P1`/`P7`), and the boost `U2` (LT1945): its `VIN`, and `SHDN1`/`SHDN2` through 100 kOhm |
+| +22 V, -20 V | boost `U2` | while `3V3` is up -- see below | the panel; ±15 V derived from them by `U1`/`U6` (78L15/79L15), which also feed `U5` (LM358), the panel's `VCOM` |
 
 A second P-MOSFET on `PWR_EN`'s gate net, `Q3`, connects the battery to the
-LDO input; its role was not traced further.
+LDO input; its role was not traced further. **Traced 2026-10-22**: "The
+battery path" below.
 
 `VBUS` is never a sensor supply: it is 5 V, absent on battery, and a sensor
 module's pull-ups would put 5 V on the ESP32's I2C pins.
+
+### The battery path
+
+**Read from the v2.4 schematic 2026-10-22** (the same PDF, rendered at 900
+dpi, for phase 5's power work); not measured:
+
+- **`Q5`** (SI2301) joins the battery to `5V` while `VBUS` is absent: its
+  gate is `VBUS`, held at ground by `R36` (100 kOhm) when USB is unplugged.
+  With USB plugged in it is off, and `5V` is `VBUS` through `D8` (1N5819).
+- **`Q3`** (SI2301) joins the battery to the LDO's input, behind the fuse,
+  **whenever `PWR_EN` is high -- USB or not**. `PWR_EN` drives the NPN `Q2`
+  through `D6` (1N4148) and `R22` (10 kOhm; `R25`, 100 kOhm, holds the base
+  low); `Q2` pulls the shared gate net low through `R24` (1 kOhm), which
+  `R28` (100 kOhm) otherwise holds at the LDO's input. The same net switches
+  `Q4`, the switched `3V3`. `Q3`'s source is the LDO's input, its drain the
+  battery, its body diode pointing from the battery to the LDO.
+- So, read and not measured: **on USB, while `PWR_EN` is high -- all the
+  time the firmware runs -- the battery hangs on `VBUS` less `D8`'s drop,
+  beside the charger `U9` (HX6610S), not behind it.** Where that is above
+  the cell's voltage, current flows into the cell outside the charger's
+  regulation, bounded by the source, `D8` and the fuse; above 4.2 V, it holds
+  the cell above its float voltage. Open item "Does `Q3` charge the battery
+  past the charger?".
+- **With no battery**, `Q3` switching on joins the LDO's input to the
+  battery node's capacitors (`C58` and `C43`, 10 uF each, a 100 nF beside
+  each) at whatever voltage the charger left them: a step load at the
+  instant `PWR_EN` rises, beside the switched rail's own inrush. A candidate
+  for the brownouts at that instant on USB alone (open item "A reboot loop
+  when the switched 3V3 comes up"), not established; a battery fitted turns
+  the same switch into a stiff supply, which fits the 2026-10-15
+  observation that the battery stopped the loop.
+- **Nothing tells the ESP32 where its power comes from.** The charger's
+  `CHRG` and `STDBY` drive only `LED1` and `LED2`, and `VBUS` reaches no
+  module pin: only the 40-pin header's pins 2 and 4 and `Q5`'s gate.
+  USB-Serial-JTAG sees a host, never a charger. The header does carry IO10
+  (pin 19, net `MOSI`), an ADC1 channel and an RTC GPIO ("Connectors"
+  below): a divider from pin 2 to pin 19 would give the firmware `VBUS`.
+- **Nothing on the board protects a cell from over-discharge.** Between `PY2`
+  and the load there are only `Q5`, `Q3` and the fuse; the HX6610S charges and
+  does nothing else, and there is no protection IC. As a cell runs down the LDO
+  drops out, the ESP32's brownout detector (`CONFIG_ESP_BROWNOUT_DET_LVL` 7, about
+  2.44 V on `VDD3V3`) resets it and it boots again, and nothing ever disconnects
+  the cell. The only limit is a protection circuit in the cell's own pack, if it
+  has one.
+- **The charger, by its datasheet** (LCSC C296208; read in extracted text, the
+  original is Chinese): charge current 1200 V / `R19`, so 2.4 kOhm is **0.5 A**,
+  which wants a cell of 500 mAh or more for 1 C; float 4.22 V with `VPROG` open, as
+  it is here (`RT` and `R18` printed NC); `CHRG` and `STDBY` open-drain, `LED2`
+  and `LED1` on the schematic, the red and the green of LilyGO's pinmap. It shuts
+  down on a reversed cell; the rest of the board makes no such promise.
+- **The connector**: the schematic prints `PY2` "2P-1.27MM", LilyGO's pinmap says
+  JST-PH 2.0 mm and its photograph looks like one. Not checked on this unit. Pin 1
+  is the battery, silkscreen `BAT+`.
+- **What the battery always feeds**, whatever the firmware does: `R35`,
+  100 kOhm from the battery to ground beside `Q5`, and the divider
+  `R29`/`R32` (2 x 100 kOhm, 1 %) -- about 63 uA at 4.2 V, 1.5 mAh a day.
+- **The LDO** has its enable tied to its input through `R30` (100 kOhm):
+  `VDD3V3` is up whenever there is power, and nothing switches it. `U13` is
+  printed "ME6217-3V3/RT9080-3V3", so either part may be fitted; the marking
+  says which, and with it the LDO's own quiescent current (RT9080's
+  datasheet gives about 2 uA; ME6217's is to be read).
+- **The user button `S4`** is IO21 (net `SENSOP_VN`), pulled up by `R8`
+  (100 kOhm) to `VDD3V3`, `C13` (4.7 uF) to ground, low while pressed: an
+  RTC GPIO pulled up on the always-on rail, so a deep-sleep wake source
+  with no RTC pull-up to configure. The 0.47 s time constant makes its
+  release slow.
+- **The I2C pull-ups while `PWR_EN` is low**: `N6`/`N7` pull SDA and SCL
+  towards `VDD3V3` (through `N8`), and the sensors, on the switched rail and
+  unpowered, clamp both lines low -- what took the bus down on 2026-10-15.
+  By the values printed, some 0.13 mA a line for as long as the rail is off:
+  a deep sleep with `PWR_EN` low pays it throughout.
 
 ### The 74HCT4094 (`U3`)
 
@@ -234,6 +307,15 @@ Three consequences:
   power-up they hold whatever the register happens to contain until the
   first latch.
 
+**Its strobe, read 2026-10-22**: `STR` is the net `STR_IO0`, which the
+schematic puts on module pins 27 *and* 16 -- IO0 and IO46, both strapping
+pins -- with `R46` (100 kOhm) pulling it up to `VDD3V3` and the Boot button
+`S6` pulling it to ground. Undriven, the strobe is high and the storage
+register transparent: the outputs follow the shift register, which moves
+only on a `CP` (IO12) edge. So what keeps `PWR_EN` as it was through a
+reset or a deep sleep is `CP` held still -- IO12 and IO13 are RTC GPIOs --
+not GPIO0, which need not be driven at all.
+
 The schematic also carries an unfitted option, in dashed boxes, that drives
 `EP_LE` and `EP_STV` straight from IO48 and IO45 through resistors marked
 NC. LilyGO's pinmap labels "STV IO45" and "LE IO48" describe that option;
@@ -247,8 +329,8 @@ free, as the pin table above says.
 | `P2` | 6-pin 0.5 mm FPC socket beside the RST button: **the touch panel's**, occupied by its flex | 1 GND, 2 INT (IO47), 3 SCL (IO17), 4 SDA (IO18), 5 `VDD3V3`, 6 NC. The only connector carrying `VDD3V3`. Pull-ups beside it: see the open item on pull-ups |
 | `P6` | 8-pin FPC footprint with a `T_RST` line, in a dashed option box | not fitted on this revision (absent from LilyGO's photographs) |
 | `P5` | the white 4-pin connector, fitted | 1 `3V3` (switched), 2 IO15, 3 IO16, 4 GND -- LilyGO's "G 16 15 V". IO15/IO16 are the microSD card's MOSI/MISO, and **from phase 3f the card's**: the sensors use only pins 1 and 4 ("The microSD slot") |
-| `P4` | a 4-hole footprint beside `P5`, not fitted | 1 `3V3` (switched), 2 IO48, 3 IO45, 4 GND. **IO45 is a strapping pin** (it selects the flash supply voltage at reset): never put a pull-up on it |
-| `P8` | the 40-pin header, "Raspberry Pi compatible" (`P3` is a second footprint for the same signals) | 1 NC; 2, 4 `VBUS`; 3 IO18 (SDA); 5 IO17 (SCL); 6, 9 GND; 7 IO47; 8, 10 UART0 RX/TX; 19, 21, 23, 24 MOSI/MISO/SCLK/CS; 33, 35, 37 `NEG_CTRL`/`POS_CTRL`/`SMPS_CTRL` (undriven, above); the rest NC or GND. **No 3.3 V pin** |
+| `P4` | a 4-hole footprint beside `P5`, not fitted | 1 `3V3` (switched), 2 IO48 (net `MSIO`, through `R23`), 3 IO45 (net `SCLK`, through `R26`), 4 GND; `R23` and `R26` are 0 Ohm in a dashed option box, whether fitted is not established, and LilyGO's pinmap swaps the two names, not the GPIOs. **IO45 is a strapping pin** (it selects the flash supply voltage at reset): never put a pull-up on it |
+| `P8` | the 40-pin header, "Raspberry Pi compatible" (`P3` is a second footprint for the same signals) | 1 NC; 2, 4 `VBUS`; 3 IO18 (SDA); 5 IO17 (SCL); 6, 9 GND; 7 IO47; 8, 10 UART0 RX/TX; 19, 21, 23, 24 MOSI/MISO/SCLK/CS -- `MOSI` is IO10 and `CS` IO39 (module pins 18 and 32), `MSIO` and `SCLK` are `P4`'s pins 2 and 3, so IO48 and IO45 if `R23` and `R26` are fitted (`P4` below, read 2026-10-31): pin 23 may be a strapping pin; 33, 35, 37 `NEG_CTRL`/`POS_CTRL`/`SMPS_CTRL` (undriven, above); the rest NC or GND. **No 3.3 V pin** |
 
 **Discrepancy on the 40-pin header.** LilyGO's pinmap labels pin 3
 "SCL(17)" and pin 5 "SDA(18)". The schematic puts IO18 on pin 3 and IO17 on
@@ -300,7 +382,10 @@ the firmware:
   either -- it stops periodic measurement first.
 - **Phase 5**: clearing `PWR_EN` switches off the sensors, the panel's
   high-voltage rails and the blue LED together, and deep sleep that does not
-  hold GPIO0/12/13 probably drops the rail as a reset does.
+  hold GPIO0/12/13 probably drops the rail as a reset does. (Since
+  2026-10-22: the strobe has a pull-up of its own, so IO12 held still is the
+  part that matters -- "The 74HCT4094"; and clearing `PWR_EN` also takes the
+  battery off the LDO's input through `Q3` -- "The battery path".)
 
 ### The sensor modules
 
@@ -894,7 +979,13 @@ layout settles, not before.
       The likely reading, not measured: the battery, behind `Q5`, holds the
       `5V` node up when the USB supply, through its cable and `D8`, sags under
       the inrush -- the switched rail feeds the panel's boost as well as the
-      sensors, and both start at the same register write. Not yet known:
+      sensors, and both start at the same register write. (**Corrected
+      2026-10-22 by the schematic**, "The battery path": with USB plugged in
+      `Q5` is off; what joins the battery to the LDO's input is `Q3`, and
+      only once `PWR_EN` is high -- switched on by the same register write
+      that starts the inrush. Without a battery, the same switch joins the
+      LDO's input at that instant to the battery node's ~20 uF, at whatever
+      voltage the charger left them.) Not yet known:
       which module draws the inrush, and the reset reason by name (the
       `previous reset` line). **Firmware since 2026-10-15:** the bus comes up
       and the boot scan runs after the display adapter, once EPDiy has raised
@@ -1019,6 +1110,12 @@ layout settles, not before.
       the port reset the chip into a brownout at the rail's rise, the card cannot
       say. To see: a terminal attached through a cold boot, and `BOD:` after
       `adp_net` lines rather than after `epdiy-i80: i80 row output ready`.
+      **None in sixteen days unattended, 2026-10-24 to 11-08** (the card's
+      `log/`): three power cuts and a USB host's reset, each boot clean. Two
+      more at the update of 2026-11-08: 07:57Z, in the boot after the
+      terminal's reset, and 08:08Z, after the image was copied to the card --
+      how, the card does not say: the last line before is 08:06:57, the rest
+      lost with the ring.
       **What follows, until the mechanism is known:** nothing may drive the
       bus while `PWR_EN` is low and the sensors are on the switched rail.
       That binds phase 5 above all: clearing `PWR_EN` for deep sleep, or
@@ -1315,6 +1412,16 @@ layout settles, not before.
         rom_code=3` -- ESP-IDF's brownout handler resetting the chip -- after
         the image was flashed. The brownout itself is not in the logs. See the
         item "A reboot loop when the switched 3V3 comes up".
+      **Fifteen whole days unattended, 2026-10-24 to 11-07** (`b358b13`, the
+      card's `log/`, local days; 10-28 and 10-31 lost 7 and 8.6 hours to power
+      cuts): redraws 220-586 a day, **mean 392** -- IAQ 168-479 (mean 294, 75 %),
+      humidity 4-195 (50), CO2 22, temperature 17, status 4, taps 2.5, `settle`
+      0-5 (1.5), pressure none; **full refreshes 10-33 (21)**; **late BSEC calls
+      1-17 (7)**. Days with people in the room redraw twice what the night of
+      10-21 scaled to (190) and refresh fully 2.6 times as often (8), and are
+      still 2.4-4 times under 2026-10-18 and 19's 921-1,568 redraws, 44-74 full
+      refreshes and 167-292 late calls. IAQ remains three quarters of the
+      redraws.
 - [ ] **BSEC's state restarts at every boot.** BSEC learns the room: its
       IAQ accuracy rises from 0 as its background calibration sees the air
       clean and polluted, and its state holds that. Since phase 3d the state
@@ -2183,6 +2290,77 @@ layout settles, not before.
       it off between refreshes means clearing `PWR_EN`, which also cuts the
       sensors' `3V3`, so it is the same decision as the sensors' power in
       deep sleep ("The sensor wiring this implies").
+- [ ] **Does `Q3` charge the battery past the charger?** Read from the
+      schematic 2026-10-22, not measured ("The battery path"): on USB, while
+      `PWR_EN` is high, `Q3` joins the cell to `VBUS` less `D8`'s drop,
+      beside the HX6610S rather than behind it. Phase 4e's `vbat` -- 4,224 mV
+      with USB and a cell both connected -- does not settle it, but it is the
+      charger's float voltage, 4.22 V, to the digit, which argues against the
+      reading above or for a `Q3` that does not conduct: to be measured. First,
+      with no cell at all: `vbat` on USB alone reads about 4.6 V if `Q3` joins
+      the node to the LDO's input, and whatever the charger leaves if it does
+      not. Then, a cell connected and USB plugged in: a meter in series with the
+      cell (at `PY2`), current and its direction
+      with the firmware running (`PWR_EN` high) and with RST held down (the
+      blue LED off: `PWR_EN` low, "Measured: the switched `3V3`"); and the
+      cell's voltage at `PY2` beside the charger's LEDs. Current into a cell
+      the green `STDBY` LED calls full, a charge current with RST up that
+      RST held changes, or a cell above 4.2 V, each says the charger is
+      bypassed. Also to record: the cell's capacity, and whether it carries
+      a protection circuit of its own, which would then be the only limit.
+      This decides phase 5's battery mode before anything else does.
+- [ ] **The battery gauge on the board (ADR 0040).** Built 2026-11-07, verified on
+      the host only. The steps to take with it, and what each decides, are in
+      `docs/hardware/phase-5-bench-plan.md`. What to see first:
+      - *USB alone, no cell*: the bar still says `Battery n/a`, the log `battery:
+        sample state=not-a-cell percent=n/a median_mv=` about 4,600 -- what
+        the 4,400 mV limit is an ESTIMATE of. `state=cell percent=100` here means
+        the node reads lower than the schematic says, and the limit moves.
+      - *A cell alone*: `Battery N %` in the first frame, the same in the log with
+        `state=cell`; `refused=` 0 or a few; `took_us=` about a millisecond or less.
+      - *The redraws*: `decision ... reason=battery` at most every 5 points or, by
+        `settle`, some 15 minutes after 2.5 points; none on USB alone.
+      - *ADC2 under traffic*: `refused=` during MQTT's bursts, the open item on GPIO14.
+      - *app_main's stack*: `main: app_main: stack low-water mark
+        stack_free_min_bytes=` at the end of the boot, of 3,584.
+      **The first image never ran, 2026-11-08** (ELF `641fd03df...`, installed
+      from the card twice, the owner's YAT log of 09:56): `***ERROR*** A stack
+      overflow in task main has been detected` right after `epd: Space used for
+      waveform LUT`, in EPDiy's init, before any of the gauge's code -- and the
+      bootloader rolled it back (open item "Firmware from the card on the
+      board"). The gauge's set-up, inline in `app_main()`, had grown its frame
+      from 496 to 624 bytes, on the main task's 3,584 (ESP-IDF's default, the
+      product's since phase 2a). So the boot had left less than 128 bytes of
+      that stack unused, and nothing logged it. Since then the set-up is
+      `start_battery()`, `app_main()`'s frame 496 bytes again in both builds,
+      and app_main logs its own low-water mark before it returns. If that
+      figure is a few hundred bytes or less, the main task's stack wants
+      raising (`CONFIG_ESP_MAIN_TASK_STACK_SIZE` in `sdkconfig.defaults`, every
+      build's sdkconfig regenerated): app_main returns within two seconds of
+      boot and frees it, before Wi-Fi's allocations.
+      **The second image on the board, 2026-11-08** (ELF `203add5f8...`, the BSEC
+      image, from the card's `log/`): installed from the card in 36.9 s and
+      confirmed at its first frame. **`app_main: stack low-water mark
+      stack_free_min_bytes=72`** of 3,584 -- so the main task's stack is 6,144
+      since (`sdkconfig.defaults`; `main.c` refuses an sdkconfig made before it),
+      not yet seen on the board. The gauge, the owner's cell connected:
+      - *The cell alone*, 08:09-09:03Z by the falling voltage: the first sample
+        `state=cell percent=100 median_mv=4230` (the first frame's, one burst),
+        then 4,174 mV (97 %), 4,110 (91 %), 4,088 (86 %) at 3 minutes, 4,042 (82
+        %) at 6, 4,004 (78 %) at 13, 3,976 (74 %) at 25, 3,952 (71 %) at 49, 3,940
+        (69 %) at 54: 290 mV in 54 minutes, 120 mV of it in the first 3 -- the
+        cell leaving its charge voltage under load. The table's percentages are
+        the ESTIMATE the discharge run replaces.
+      - *The redraws*: one `reason=battery` (100 to 91 %, at 2 minutes); the
+        other redraws carried the number with them.
+      - *ADC2*: `refused=0` in all 56 samples, through the Wi-Fi's association,
+        an MQTT session's first burst and its traffic after; `took_us=` 1,209-1,428.
+      - *USB plugged in with the cell* (09:03:25, a reset from the terminal
+        opening the port): 4,124 mV, `percent=92`, against 3,940 mV a minute
+        before -- with USB the node reads the charger's voltage, not the charge.
+        The bar reads high while the cell charges; nothing on the board says
+        when (`docs/hardware/phase-5-bench-plan.md`).
+      - Not yet seen: USB with no cell (`state=not-a-cell`), the screen by eye.
 - [ ] `update_policy`'s status trigger can fire on `charging` alone, which
       `screen_home` does not draw yet, making the empty-diff skip in
       `event_loop.c`'s `redraw()` (`apps/firmware_esp32/main/event_loop.c`)
@@ -2455,6 +2633,12 @@ layout settles, not before.
         and the Pi would keep both.
       - *Measuring went on*: the sensors' minute samples on time throughout,
         taps answered, no reset.
+      **Sixteen days unattended, 2026-10-24 to 11-08** (the card's `log/`): no
+      link lost -- the only `link lost` lines are the owner's test of 10-23.
+      Boots joined at the first attempt after a power cut of hours and a
+      software reset; after a USB host's reset, a brownout and a power cut of
+      under a minute, at the third, 15 s after `up()`: the access point still
+      held the old association, as on 2026-10-21.
 - [ ] **Time from the network on the board (phase 4f).** Built 2026-10-21
       (`docs/adr/0023-wall-clock-and-the-time-of-the-last-update.md`,
       "Amendment (phase 4f): time from the network"): SNTP from Wi-Fi's first
@@ -2701,8 +2885,36 @@ layout settles, not before.
       the card's `log/`, ten hourly syncs 22:37Z to 07:37Z): `drift_ppm` -17.2
       to -23.4, **mean -20.6** -- the first night's -20.8 again; every write on
       time (`rearms=0`), every landing within +-12 ms.
-      Still to see: a day of hourly samples, and another temperature; the cold
-      boot after `rtc_stop`; the chip's marking; the autumn change. Whether the
+      **Seventeen days, from the card, 2026-10-21 to 11-08** (images of phase 4g
+      to `b358b13`, the card's `log/`, analysed locally): 387 hourly drifts,
+      **mean -20.85 ppm**, median -20.83, the daily means -20.46 to -21.27 -- this
+      unit's figure, steady over the days and the room's 22-25 C; the spread of
+      single hours, sd 3.5 ppm (-59.9 to +13.6 at the extremes), is SNTP's
+      answers, not the chip. Landings: 387 within +-20 ms, 23 about half a second
+      behind -- each boot's first write, with the datasheet's 508 ms. The device
+      ran through the autumn change (2026-10-25 01:00Z) without a reboot; the
+      footer's hour step is not in a log, which keeps UTC. Three more outages,
+      each a `power_on` boot with the RTC `valid`, VL clear:
+      - 2026-10-31, **8 h 36 min**: the RTC -730 ms at the first comparison,
+        where its drift since the last landing predicts -672: nothing lost.
+      - 2026-11-04, under a minute: -12 ms against -16: nothing lost.
+      - **2026-10-28, 7 h 4 min**, the power gone at 22:45Z with everything
+        running as usual (the card's rows to 22:44:46, the last flush): the RTC
+        **1,423.7 s behind** at the first comparison, where its drift predicts
+        -0.6 s -- **23 min 43 s lost**, 5.6 % of the outage, with VL clear. The
+        boot's lines carry the RTC's time until SNTP's answer 12 s in, which is
+        why the log seems to stop from 05:25 to 05:49: the system time stepped.
+      With 2026-10-22's 2.6 s over 6.5 h, four outages: two cost nothing, one
+      seconds, one 24 minutes. Not a slower oscillator on the cell -- the 8.6
+      hours of 10-31 counted true -- but a stop, as the supply went or came
+      back, that the chip did not report: VL is the voltage-low detector's, and
+      the oscillator may stop above its threshold. Without a network, such a
+      boot shows a time minutes off as valid. To find out: the cell's voltage
+      (`VCC_RTC`, behind `D3`) after a day on USB -- charged through a 1N4148
+      from 3.3 V it sits at about 2.7 V at most -- and `time` against a
+      reference right after a cut of a known length, several times.
+      Still to see: another temperature; the cold
+      boot after `rtc_stop`; the chip's marking. Whether the
       measured delay, about 995 ms, should replace the datasheet's 508 as the
       default, so that a boot's first write lands too, is the owner's (ADR
       0023's amendment, "Not decided here").
@@ -2892,6 +3104,23 @@ layout settles, not before.
         link, `online` and nine configs.
       - The will and Home Assistant's "unavailable" are not in the board's
         log: the broker's and Home Assistant's to show.
+      **Sixteen days unattended, 2026-10-24 to 11-08** (the card's `log/`, with
+      the hourly lines from 10-22):
+      - *Published*: 25,188 state messages and 20,220 heartbeats in 378 hours --
+        66.6 states an hour, about 1,600 a day, ADR 0030's replay (1,554-1,597);
+        837 discovery messages; refused 0.
+      - *Sessions*: 13 lost, every one `why=dropped` with the Wi-Fi up, each
+        back within 0.5-68 s. Seven of them in 11 minutes on 10-26
+        (13:53-14:05Z), the broker closing each new session within seconds
+        (`the broker closed it, or the keepalive`); that once the bar said `no
+        broker`, for 2.5 minutes. The other six, one at a time (`No PING_RESP`
+        among them): the Pi Zero W's broker, by every sign -- its journal says.
+      - *Home Assistant's birth*: 0-13 a day (`home assistant started: discovery
+        again`), each answered with nine configs in the session that was up.
+        Home Assistant restarting, or its client reconnecting to the broker:
+        Home Assistant's log says which.
+      - Still the owner's to see: Home Assistant's long-term statistics over
+        these days (requirements 16's acceptance).
 - [ ] **A change of screen as a full refresh (ADR 0034).** Built 2026-10-22,
       verified on the host only: every change of screen -- a tap, and the
       diagnostics screen's timeout -- is a full refresh, whatever the budget
@@ -3109,6 +3338,11 @@ layout settles, not before.
       the update screen and touch lock work with build `b358b13`. No detailed
       log or elapsed time accompanied the confirmation; the duration and
       individual failure paths remain to check.
+      **The duration, 2026-11-08** (`b358b13` installing a 1,454,208-byte image,
+      the owner's YAT log of 09:56): `took_ms=36884` from `installing` to
+      `restarting into it`, against 19.4 s before the screen existed -- the
+      progress redrawn partially every 3 s or so meanwhile, each 290-420 ms of
+      EPDiy, the flash waiting for each acknowledgement.
 - [ ] **Firmware from the card on the board (ADR 0037).** Built 2026-10-23,
       verified on the host only (`docs/adr/0037-firmware-from-the-card.md`):
       `home_air_monitor.bin` in the card's root is installed into the other OTA
@@ -3189,6 +3423,16 @@ layout settles, not before.
         restart comes before the next report. Enough today, with little margin:
         the stack to 8 KB, or the update's log lines split, before anything
         else lands on that task.
-      Still to see: a rollback; an older image back into the other slot; a copy
+      **A rollback, 2026-11-08** (the owner's YAT log of 09:56, `b358b13`
+      installing the first battery-gauge image, ELF `641fd03df...`, twice): the
+      new image booted in `ota_0` as `pending_verify` and overflowed app_main's
+      stack inside EPDiy's init (`***ERROR*** A stack overflow in task main`,
+      open item "The battery gauge on the board"); the bootloader started
+      `ota_1` at the reset after the panic, which logged `the other slot holds
+      an update that did not start: rolled back partition=ota_0 ...
+      state=aborted`, and ran as before. Twice the same: the log begins after
+      the first attempt's rollback. As designed, and the owner saw only the old
+      image.
+      Still to see: an older image back into the other slot; a copy
       cut short (`verdict=invalid`); `fw` after an update; the version in Home
       Assistant after one; the install's stack.

@@ -23,6 +23,7 @@ set(HAC_UNIT_TESTS
     test_gfx
     test_update_policy
     test_link_hold
+    test_battery_gauge
     test_tap
     test_screen_controller
     test_firmware_update_progress

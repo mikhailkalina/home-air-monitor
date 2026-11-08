@@ -39,8 +39,6 @@ idf_component_register(
         fw_image.c
     INCLUDE_DIRS .
     REQUIRES hac_core hac_drivers hac_platform hac_contract esp_timer console heap log
-             # The console's vbat: GPIO14's ADC2 beside Wi-Fi (phase 4e).
-             esp_adc
              # net_time.c: esp_netif's SNTP, lwIP's esp_sntp.h, the IP event.
              esp_netif lwip esp_event
              # main.c's MQTT discovery: the image's version, from its app

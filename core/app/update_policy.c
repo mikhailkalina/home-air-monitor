@@ -15,6 +15,7 @@ update_policy_config_t update_policy_config_default(void)
     cfg.humidity_delta_rh = UPDATE_POLICY_DEFAULT_HUMIDITY_DELTA_RH;
     cfg.pressure_delta_hpa = UPDATE_POLICY_DEFAULT_PRESSURE_DELTA_HPA;
     cfg.iaq_delta = UPDATE_POLICY_DEFAULT_IAQ_DELTA;
+    cfg.battery_delta_percent = UPDATE_POLICY_DEFAULT_BATTERY_DELTA_PERCENT;
     cfg.settle_after_ms = UPDATE_POLICY_DEFAULT_SETTLE_AFTER_MS;
     cfg.min_redraw_interval_ms = UPDATE_POLICY_DEFAULT_MIN_REDRAW_INTERVAL_MS;
     return cfg;
@@ -139,6 +140,7 @@ static void delta_fields(const update_policy_t *p, const air_reading_t *r,
         {&r->humidity_rh, &f->humidity_rh, p->cfg.humidity_delta_rh},
         {&r->pressure_hpa, &f->pressure_hpa, p->cfg.pressure_delta_hpa},
         {&r->iaq, &f->iaq, p->cfg.iaq_delta},
+        {&r->battery_percent, &f->battery_percent, p->cfg.battery_delta_percent},
     };
     memcpy(out, fields, sizeof(fields));
 }
@@ -210,6 +212,10 @@ static update_reason_t due_reason(const update_policy_t *p, const air_reading_t 
     }
     if (delta_exceeded(&reading->iaq, &p->last_rendered.iaq, p->cfg.iaq_delta)) {
         return UPDATE_REASON_IAQ;
+    }
+    if (delta_exceeded(&reading->battery_percent, &p->last_rendered.battery_percent,
+                       p->cfg.battery_delta_percent)) {
+        return UPDATE_REASON_BATTERY;
     }
     if (statuses_differ(reading, &p->last_rendered)) {
         return UPDATE_REASON_STATUS;
@@ -451,6 +457,8 @@ const char *update_policy_reason_name(update_reason_t reason)
             return "pressure";
         case UPDATE_REASON_IAQ:
             return "iaq";
+        case UPDATE_REASON_BATTERY:
+            return "battery";
         case UPDATE_REASON_SETTLE:
             return "settle";
         case UPDATE_REASON_STATUS:

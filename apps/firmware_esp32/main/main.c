@@ -91,6 +91,8 @@
 #include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"  // uxTaskGetStackHighWaterMark(): app_main's own stack
 
 #include "adp_clock.h"
 #include "adp_display.h"
@@ -101,11 +103,13 @@
 #include "adp_mqtt.h"
 #include "adp_net.h"
 #include "adp_sd.h"
+#include "board_battery.h"
 #include "board_button.h"
 #include "board_config.h"
 #include "board_gpio_isr.h"
 #include "board_power.h"
 
+#include "app/battery_gauge.h"
 #include "app/link_hold.h"
 #include "app/screen_controller.h"
 #include "app/sensor_manager.h"
@@ -151,6 +155,17 @@
 // this number is revisited from that line rather than kept out of
 // superstition.
 #define EVENT_LOOP_TASK_STACK_BYTES 8192u
+
+// The main task's, which runs app_main() and with it EPDiy's init, the deepest
+// thing in the boot: on ESP-IDF's default 3,584 bytes the boot left 72 unused
+// (log_main_stack(), on the board 2026-11-08). sdkconfig.defaults sets 6,144;
+// an sdkconfig made before that line, which a default never reaches
+// (CLAUDE.md), fails here rather than on the board.
+#define MAIN_TASK_MIN_STACK_BYTES 6144
+
+#if CONFIG_ESP_MAIN_TASK_STACK_SIZE < MAIN_TASK_MIN_STACK_BYTES
+#error "app_main needs ESP_MAIN_TASK_STACK_SIZE >= 6144: regenerate this build's sdkconfig"
+#endif
 
 // Off the protocol core (0), where ESP-IDF runs Wi-Fi when phase 4 brings it.
 #define EVENT_LOOP_TASK_PRIORITY 5
@@ -256,6 +271,14 @@ typedef bme68x_source_config_t bme68x_composed_config_t;
 // the BME68x's temperature with the SCD41's and a reference thermometer
 // (docs/requirements.md 13.2), seldom enough not to bury the rest.
 #define SAMPLE_LOG_INTERVAL_MS 60000u
+
+// CHOICE: conversions in one of the gauge's bursts, one after another: enough
+// that the ADC's noise averages out, few enough to be nothing on the event loop
+// beside the sensors' transfers (its `took_us` is in the minute's line).
+#define BATTERY_BURST_READS 16u
+
+// The source id the battery's numbers carry: not a sensor's.
+#define BATTERY_SOURCE_ID 3u
 
 typedef struct {
     const port_log_t *log;
@@ -915,6 +938,86 @@ static void on_reading(void *ctx_v, const sensor_manager_t *sensors, const air_r
     }
 }
 
+typedef struct {
+    battery_gauge_t gauge;
+    board_battery_burst_t last;
+    const port_log_t *log;
+    uint64_t next_log_ms;
+} battery_hook_ctx_t;
+
+// event_loop.h's battery hook, after every poll: a burst from GPIO14 when one
+// is due, the gauge's two numbers into the screen's reading, and once a minute
+// a line for the card's log -- a discharge's curve, read back from there, with
+// the battery the only supply and no terminal to watch it
+// (docs/adr/0040-a-battery-gauge-from-the-voltage.md).
+static void battery_step(void *ctx_v, air_reading_t *reading, uint64_t now_ms)
+{
+    battery_hook_ctx_t *ctx = (battery_hook_ctx_t *)ctx_v;
+    if (battery_gauge_due(&ctx->gauge, now_ms)) {
+        const bool ok = board_battery_burst(BATTERY_BURST_READS, 0u, &ctx->last);
+        battery_gauge_sample(&ctx->gauge, ok, ctx->last.battery_mv, now_ms);
+    }
+    battery_gauge_fill(&ctx->gauge, now_ms, &reading->battery_percent, &reading->battery_mv);
+
+    if (now_ms >= ctx->next_log_ms) {
+        const log_field_t fields[] = {
+            log_str("state", battery_gauge_state_name(battery_gauge_state(&ctx->gauge))),
+            value_field("percent", &reading->battery_percent),
+            value_field("median_mv", &reading->battery_mv),
+            log_u64("burst_mv", ctx->last.battery_mv),
+            log_u64("refused", ctx->last.refused),
+            log_u64("took_us", ctx->last.took_us),
+        };
+        port_log_write(ctx->log, LOG_LEVEL_INFO, "battery", "sample", fields,
+                       sizeof(fields) / sizeof(fields[0]));
+        ctx->next_log_ms = now_ms + SAMPLE_LOG_INTERVAL_MS;
+    }
+}
+
+// The gauge and its ADC, set up for battery_step(). A function of its own, not
+// lines in app_main(), because app_main()'s frame is on its 3,584-byte stack
+// for the whole boot: the first image with these lines inline grew that frame
+// to 624 bytes and overflowed the stack inside EPDiy's init, before any of them
+// ran (2026-11-08, ELF 641fd03df, rolled back by the bootloader). This frame is
+// on the stack only while it runs, when the stack is shallow.
+static battery_hook_ctx_t *start_battery(const port_log_t *log)
+{
+    static battery_hook_ctx_t s_battery;
+    const esp_err_t err = board_battery_init();
+    if (err != ESP_OK) {
+        // Without the ADC the gauge finds no good burst, and the bar says ERR
+        // once its silence is over; without the calibration, the same.
+        const log_field_t fields[] = {log_i64("esp_err", (int64_t)err),
+                                      log_bool("adc_ready", board_battery_ready())};
+        port_log_write(log, LOG_LEVEL_ERROR, "main", "battery: no millivolts from the ADC", fields,
+                       2u);
+    }
+    battery_gauge_config_t cfg = battery_gauge_config_default();
+    cfg.curve = board_battery_curve;
+    cfg.curve_points = board_battery_curve_points;
+    cfg.lowest_cell_mv = BOARD_BATTERY_LOWEST_CELL_MV;
+    cfg.highest_cell_mv = BOARD_BATTERY_HIGHEST_CELL_MV;
+    cfg.source_id = BATTERY_SOURCE_ID;
+    battery_gauge_init(&s_battery.gauge, &cfg);
+    s_battery.log = log;
+    return &s_battery;
+}
+
+// app_main()'s least free stack, logged as it returns: the margin the boot
+// left on the main task's stack, which nothing showed until a few more bytes
+// of frame overflowed ESP-IDF's default 3,584 (start_battery()). Its own frame
+// is above app_main()'s at the end of the boot, so it reads the deepest point
+// of everything before. uxTaskGetStackHighWaterMark() counts bytes on
+// ESP-IDF's Xtensa port (event_loop.c, log_stack_low()).
+static void log_main_stack(const port_log_t *log)
+{
+    const log_field_t fields[] = {
+        log_u64("stack_free_min_bytes", (uint64_t)uxTaskGetStackHighWaterMark(NULL)),
+        log_u64("stack_bytes", (uint64_t)CONFIG_ESP_MAIN_TASK_STACK_SIZE),
+    };
+    port_log_write(log, LOG_LEVEL_INFO, "main", "app_main: stack low-water mark", fields, 2u);
+}
+
 // The card: its SPI bus, the recorder with the two sources' tags, the log's
 // files, and the task that owns them all. The recorder and the log file hold
 // their buffers -- some 13 KB -- in PSRAM; only the task's stack is internal.
@@ -1107,6 +1210,7 @@ void app_main(void)
     s_hook.display = &s_display;
 #endif
     s_hook.next_sample_log_ms = 0u;
+    battery_hook_ctx_t *battery = start_battery(log);  // off app_main's frame: see there
     const screen_controller_config_t screens_cfg = screen_controller_config_default();
     screen_controller_init(&s_screens, &screens_cfg);
     adp_input_set_waker(&s_touch, wake_event_loop, NULL);
@@ -1125,6 +1229,8 @@ void app_main(void)
         .zone = &s_zone,
         .on_reading = on_reading,
         .on_reading_ctx = &s_hook,
+        .battery = battery_step,
+        .battery_ctx = battery,
         .input = adp_input_port(&s_touch),
         .screens = &s_screens,
         .facts = screen_facts,
@@ -1158,4 +1264,5 @@ void app_main(void)
         .log = log,
     };
     start_console(&console);
+    log_main_stack(log);
 }

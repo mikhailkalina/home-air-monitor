@@ -255,6 +255,15 @@
 // docs/hardware/board_notes.md "Pin assignments"). The battery is twice what
 // the pin sees. The console's vbat reads it (phase 4e).
 #define BOARD_BATTERY_DIVIDER_RATIO 2u
+// ESTIMATES: what a single lithium cell's voltage can read here, outside which
+// the node is not a cell (core/app/battery_gauge.h). The charger floats at 4.22 V
+// (HX6610S datasheet, VPROG open), and 180 mV more leave room for the ADC and the
+// divider's 1 %; USB alone should read above it, VBUS less D8 through Q3, read off
+// the schematic, not measured. A running board cannot hold a cell under the low
+// one: VDD3V3 is at the 2.44 V brownout level long before. To replace: `vbat`
+// with USB alone and with a cell (docs/hardware/phase-5-bench-plan.md).
+#define BOARD_BATTERY_HIGHEST_CELL_MV 4400u
+#define BOARD_BATTERY_LOWEST_CELL_MV 2500u
 
 // --- microSD card slot (phase 3f) ------------------------------------------
 // Pins: src/utilities.h:34-37 (CONFIG_IDF_TARGET_ESP32S3 block). The slot's

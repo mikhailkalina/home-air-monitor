@@ -899,6 +899,23 @@ the update screen and touch lock work on the board with build `b358b13` on 2026-
 No detailed log or timing accompanied that confirmation. Its first installation uses
 the old updater; copy an image again after installing it to exercise the screen.
 
+Ahead of phase 5, branch `phase-5-battery-gauge` (ADR 0040), at the owner's request: a percentage
+in the status bar, so that a real cell can be run down and timed. `core/app/battery_gauge.c`: a
+table of voltages the composition passes in (`board_battery.c`, an ESTIMATE), the median of five
+bursts 12 s apart, a two-point step; above 4.4 V or below 2.5 V not a cell, and the bar keeps its
+`n/a` -- USB alone, by the schematic. `update_policy` redraws past 5 points, reason `battery`. A
+hook on the event loop and a plain function, no port; `battery: sample` once a minute for the card's
+log; `vbat` over the same reader. No MQTT key, no cut-off, the simulator's bar still `n/a`. Verified
+on the host; the firmware, the test app and the slideshow build. What to measure and solder before
+phase 5's plan is rewritten: `docs/hardware/phase-5-bench-plan.md`. On the board, 2026-11-08: the
+first image overflowed the main task's stack (ESP-IDF's 3,584 bytes) in EPDiy's init, an inline
+set-up having grown app_main's frame by 128 bytes, and the bootloader rolled it back; the second
+logged 72 bytes to spare, so the main task has 6,144 since -- freed when app_main returns, about
+2 s in -- not yet seen on the board. The gauge on a cell alone: 4,230 to 3,940 mV in 54 minutes,
+ADC2 never refused beside Wi-Fi and MQTT; with USB it reads the charger's voltage. The card's 24
+days (`board_notes.md`): sixteen unattended without a crash, a watchdog or a Wi-Fi loss, the RTC's
+drift -20.85 ppm, and one power cut that cost the RTC 24 minutes with VL clear.
+
 Next: the board run of 4e to 4g -- a broker in the overlay, Home Assistant and the acceptance
 day; the board run of phases 3d to 3f, the rest of phase 3c's measurements -- now recordable
 unattended -- and this unit's own figures for the remaining estimates; the rest of the

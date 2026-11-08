@@ -2,16 +2,12 @@
 
 #include "console.h"
 
-#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
 
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-#include "esp_adc/adc_oneshot.h"
 #include "esp_app_desc.h"
 #include "esp_console.h"
 #include "esp_err.h"
@@ -25,6 +21,7 @@
 #include "adp_mqtt_pure.h"
 #include "adp_net.h"
 #include "adp_net_pure.h"
+#include "board_battery.h"
 #include "board_config.h"
 #include "card_writer.h"
 #include "domain/civil_time.h"
@@ -784,8 +781,10 @@ static int cmd_mqtt(void *context, int argc, char **argv)
 // The battery's divider on GPIO14, an ADC2 input, which ESP-IDF documents as
 // shared with Wi-Fi: adc_oneshot_read() arbitrates, and refuses a read it
 // cannot make with ESP_ERR_TIMEOUT (docs/hardware/board_notes.md, open item on
-// GPIO14). This answers whether it gives usable readings with Wi-Fi up --
-// phase 5's battery adapter is the reader, not this.
+// GPIO14). This answers whether it gives usable readings with Wi-Fi up, and what
+// the node reads -- with USB alone, with a cell -- against a meter; the status
+// bar's percentage comes from the same reader (board_battery.h), in shorter
+// bursts.
 
 // CHOICES: reads per command, and the wait between two, so a burst of Wi-Fi
 // traffic and its quiet both fall inside one command.
@@ -797,88 +796,28 @@ static int cmd_vbat(void *context, int argc, char **argv)
     (void)context;
     (void)argc;
     (void)argv;
-    adc_unit_t unit = ADC_UNIT_1;
-    adc_channel_t channel = ADC_CHANNEL_0;
-    esp_err_t err = adc_oneshot_io_to_channel(BOARD_BATTERY_ADC_GPIO, &unit, &channel);
-    adc_oneshot_unit_handle_t adc = NULL;
-    if (err == ESP_OK) {
-        const adc_oneshot_unit_init_cfg_t unit_cfg = {
-            .unit_id = unit,
-            .ulp_mode = ADC_ULP_MODE_DISABLE,
-        };
-        err = adc_oneshot_new_unit(&unit_cfg, &adc);
-    }
-    if (err == ESP_OK) {
-        const adc_oneshot_chan_cfg_t chan_cfg = {
-            .atten = ADC_ATTEN_DB_12,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        err = adc_oneshot_config_channel(adc, channel, &chan_cfg);
-    }
-    if (err != ESP_OK) {
-        printf("VBAT the ADC on GPIO%d did not start: esp_err 0x%x\n", BOARD_BATTERY_ADC_GPIO,
-               (unsigned)err);
-        if (adc != NULL) {
-            (void)adc_oneshot_del_unit(adc);
-        }
+    if (!board_battery_ready()) {
+        printf("VBAT the ADC on GPIO%d did not start\n", BOARD_BATTERY_ADC_GPIO);
         return 1;
     }
-    adc_cali_handle_t cali = NULL;
-    const adc_cali_curve_fitting_config_t cali_cfg = {
-        .unit_id = unit,
-        .chan = channel,
-        .atten = ADC_ATTEN_DB_12,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    const bool calibrated = adc_cali_create_scheme_curve_fitting(&cali_cfg, &cali) == ESP_OK;
-
-    unsigned ok = 0u;
-    unsigned refused = 0u;
-    int raw_min = INT_MAX;
-    int raw_max = INT_MIN;
-    int mv_min = INT_MAX;
-    int mv_max = INT_MIN;
-    long long mv_sum = 0;
-    for (unsigned i = 0u; i < VBAT_READS; ++i) {
-        int raw = 0;
-        const esp_err_t r = adc_oneshot_read(adc, channel, &raw);
-        if (r != ESP_OK) {
-            ++refused;
-        } else {
-            ++ok;
-            raw_min = (raw < raw_min) ? raw : raw_min;
-            raw_max = (raw > raw_max) ? raw : raw_max;
-            int mv = 0;
-            if (calibrated && adc_cali_raw_to_voltage(cali, raw, &mv) == ESP_OK) {
-                mv_min = (mv < mv_min) ? mv : mv_min;
-                mv_max = (mv > mv_max) ? mv : mv_max;
-                mv_sum += mv;
-            }
-        }
-        usleep(VBAT_READ_GAP_US);
-    }
-    if (calibrated) {
-        (void)adc_cali_delete_scheme_curve_fitting(cali);
-    }
-    (void)adc_oneshot_del_unit(adc);
+    board_battery_burst_t b;
+    const bool have_mv = board_battery_burst(VBAT_READS, VBAT_READ_GAP_US, &b);
 
     const net_state_t wifi =
         (s_deps.net != NULL) ? s_deps.net->port.state(&s_deps.net->port) : NET_DOWN;
-    printf("VBAT GPIO%d = ADC%d channel %d, Wi-Fi %s: %u reads, %u ok, %u refused (Wi-Fi held "
-           "ADC2)\n",
-           BOARD_BATTERY_ADC_GPIO, (int)unit + 1, (int)channel,
-           (s_deps.net != NULL) ? net_state_word(wifi) : "off", VBAT_READS, ok, refused);
-    if (ok == 0u) {
+    printf("VBAT GPIO%d, Wi-Fi %s: %lu reads, %lu ok, %lu refused (Wi-Fi held ADC2)\n",
+           BOARD_BATTERY_ADC_GPIO, (s_deps.net != NULL) ? net_state_word(wifi) : "off",
+           (unsigned long)b.reads, (unsigned long)b.ok, (unsigned long)b.refused);
+    if (b.ok == 0u) {
         return 1;
     }
-    if (!calibrated || mv_min > mv_max) {
-        printf("VBAT raw %d..%d of 4095, no calibration to millivolts\n", raw_min, raw_max);
+    if (!have_mv) {
+        printf("VBAT raw %d..%d of 4095, no calibration to millivolts\n", b.raw_min, b.raw_max);
         return 0;
     }
-    const long long mean = mv_sum / (long long)ok;
-    printf("VBAT raw %d..%d; the pin %d..%d mV, mean %lld; the battery x%u: %lld mV\n", raw_min,
-           raw_max, mv_min, mv_max, mean, (unsigned)BOARD_BATTERY_DIVIDER_RATIO,
-           mean * (long long)BOARD_BATTERY_DIVIDER_RATIO);
+    printf("VBAT raw %d..%d; the pin %d..%d mV, mean %d; the battery x%u: %lu mV\n", b.raw_min,
+           b.raw_max, b.pin_mv_min, b.pin_mv_max, b.pin_mv_mean,
+           (unsigned)BOARD_BATTERY_DIVIDER_RATIO, (unsigned long)b.battery_mv);
     return 0;
 }
 
